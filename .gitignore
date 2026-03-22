@@ -1,0 +1,16 @@
+# Environment files - NEVER upload these
+recall-backend/.env
+recall-frontend/.env
+
+# Python
+recall-backend/venv/
+recall-backend/__pycache__/
+*.pyc
+
+# Node
+recall-frontend/node_modules/
+recall-frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
