@@ -38,7 +38,8 @@ def get_embedding(text: str):
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     result = client.models.embed_content(
         model="text-embedding-004",
-        contents=text[:8000]
+        contents=text[:8000],
+        config={"output_dimensionality": 768}
     )
     return result.embeddings[0].values
 
