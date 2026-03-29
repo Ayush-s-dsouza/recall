@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 import os
 import httpx
 from supabase import create_client
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 load_dotenv()
 
@@ -20,7 +21,6 @@ app.add_middleware(
 )
 
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 class SaveRequest(BaseModel):
     url: str
@@ -35,17 +35,20 @@ def get_user_id(token: str):
     return user.user.id
 
 def get_embedding(text: str):
-    result = genai.embed_content(
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    result = client.models.embed_content(
         model="models/text-embedding-004",
-        content=text[:8000],
-        task_type="retrieval_document"
+        contents=text[:8000]
     )
-    return result["embedding"]
+    return result.embeddings[0].values
 
 def auto_tag(title: str, content: str):
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     prompt = f"Classify this content into exactly one category: Tech, Product, Business, Finance, Health, Personal, Other. Content: {title} {content[:500]}. Reply with just the category word, nothing else."
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt
+    )
     tag = response.text.strip()
     valid_tags = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
     return tag if tag in valid_tags else "Other"
