@@ -16,6 +16,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [view, setView] = useState("search")
   const [message, setMessage] = useState("")
+  const [isError, setIsError] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -44,8 +45,14 @@ export default function App() {
   }
 
   const handleSave = async (url) => {
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      setMessage("Please enter a valid URL starting with http:// or https://")
+      setIsError(true)
+      return
+    }
     setLoading(true)
     setMessage("")
+    setIsError(false)
     try {
       const token = await getToken()
       const res = await fetch(`${BACKEND}/save`, {
@@ -55,8 +62,10 @@ export default function App() {
       })
       const data = await res.json()
       setMessage(`Saved: ${data.title} [${data.tag}]`)
+      setIsError(false)
     } catch {
       setMessage("Failed to save. Try again.")
+      setIsError(true)
     }
     setLoading(false)
   }
@@ -144,7 +153,7 @@ export default function App() {
           >
             {loading ? "Saving..." : "Save"}
           </button>
-          {message && <p style={styles.message}>{message}</p>}
+          {message && <p style={isError ? styles.error : styles.success}>{message}</p>}
         </div>
       )}
     </div>
@@ -171,5 +180,6 @@ const styles = {
   cardTitle: { fontSize: "15px", fontWeight: "600", marginBottom: "4px" },
   cardUrl: { fontSize: "12px", color: "#555", marginBottom: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   cardScore: { fontSize: "12px", color: "#888" },
-  message: { color: "#ef4444", fontSize: "14px", margin: 0 },
+  success: { color: "#4ade80", fontSize: "14px", margin: 0 },
+  error: { color: "#ef4444", fontSize: "14px", margin: 0 },
 }
