@@ -43,15 +43,18 @@ def get_embedding(text: str):
     return result.embeddings[0].values
 
 def auto_tag(title: str, content: str):
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-    prompt = f"Classify this content into exactly one category: Tech, Product, Business, Finance, Health, Personal, Other. Content: {title} {content[:500]}. Reply with just the category word, nothing else."
-    response = client.models.generate_content(
-        model="gemini-3-flash-preview",
-        contents=prompt
-    )
-    tag = response.text.strip()
-    valid_tags = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
-    return tag if tag in valid_tags else "Other"
+    try:
+        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        prompt = f"Classify this content into exactly one category: Tech, Product, Business, Finance, Health, Personal, Other. Content: {title} {content[:500]}. Reply with just the category word, nothing else."
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-preview-04-17",
+            contents=prompt
+        )
+        tag = response.text.strip()
+        valid_tags = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
+        return tag if tag in valid_tags else "Other"
+    except:
+        return "Other"
 
 @app.post("/save")
 async def save_url(req: SaveRequest):
