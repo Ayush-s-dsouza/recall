@@ -38,15 +38,13 @@ def get_embedding(text: str):
     import requests
     api_key = os.getenv("GEMINI_API_KEY")
     response = requests.post(
-        f"https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent?key={api_key}",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={api_key}",
         json={
-            "model": "models/text-embedding-004",
-            "content": {"parts": [{"text": text[:8000]}]},
-            "outputDimensionality": 768
+            "model": "models/gemini-embedding-001",
+            "content": {"parts": [{"text": text[:8000]}]}
         }
     )
     data = response.json()
-    print("EMBEDDING RESPONSE:", data)
     return data["embedding"]["values"]
 
 def auto_tag(title: str, content: str):
