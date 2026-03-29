@@ -35,16 +35,18 @@ def get_user_id(token: str):
     return user.user.id
 
 def get_embedding(text: str):
-    client = genai.Client(
-        api_key=os.getenv("GEMINI_API_KEY"),
-        http_options={"api_version": "v1"}
+    import requests
+    api_key = os.getenv("GEMINI_API_KEY")
+    response = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={api_key}",
+        json={
+            "model": "models/text-embedding-004",
+            "content": {"parts": [{"text": text[:8000]}]},
+            "outputDimensionality": 768
+        }
     )
-    result = client.models.embed_content(
-        model="text-embedding-004",
-        contents=text[:8000],
-        config={"output_dimensionality": 768}
-    )
-    return result.embeddings[0].values
+    data = response.json()
+    return data["embedding"]["values"]
 
 def auto_tag(title: str, content: str):
     try:
