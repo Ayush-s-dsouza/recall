@@ -17,6 +17,18 @@ export default function App() {
   const [view, setView] = useState("search")
   const [message, setMessage] = useState("")
   const [isError, setIsError] = useState(false)
+  const [clipboardUrl, setClipboardUrl] = useState("")
+
+  const checkClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText()
+      if (text.startsWith("http://") || text.startsWith("https://")) {
+        setClipboardUrl(text)
+      }
+    } catch {
+      // Clipboard access denied
+    }
+  }
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -37,6 +49,7 @@ export default function App() {
         }
       }, 500)
     }
+    checkClipboard()
   }, [])
 
   const signIn = async () => {
@@ -122,8 +135,8 @@ export default function App() {
       </div>
 
       <div style={styles.tabs}>
-        <button onClick={() => setView("search")} style={view === "search" ? styles.tabActive : styles.tab}>Search</button>
-        <button onClick={() => setView("save")} style={view === "save" ? styles.tabActive : styles.tab}>Save</button>
+        <button onClick={() => { setView("search") }} style={view === "search" ? styles.tabActive : styles.tab}>Search</button>
+        <button onClick={() => { setView("save"); checkClipboard() }} style={view === "save" ? styles.tabActive : styles.tab}>Save</button>
       </div>
 
       {view === "search" && (
@@ -153,6 +166,17 @@ export default function App() {
 
       {view === "save" && (
         <div style={styles.section}>
+          {clipboardUrl && (
+            <div style={styles.clipboardBanner}>
+              <span style={styles.clipboardText}>Copied: {clipboardUrl.slice(0, 50)}...</span>
+              <button
+                onClick={() => { handleSave(clipboardUrl); setClipboardUrl("") }}
+                style={styles.clipboardButton}
+              >
+                Save this
+              </button>
+            </div>
+          )}
           <input
             style={styles.input}
             placeholder="Paste a URL to save"
@@ -171,7 +195,6 @@ export default function App() {
     </div>
   )
 }
-
 
 const styles = {
   container: { minHeight: "100vh", background: "#0f0f0f", color: "#fff", fontFamily: "system-ui, sans-serif", padding: "0 16px" },
@@ -195,4 +218,7 @@ const styles = {
   cardScore: { fontSize: "12px", color: "#888" },
   success: { color: "#4ade80", fontSize: "14px", margin: 0 },
   error: { color: "#ef4444", fontSize: "14px", margin: 0 },
+  clipboardBanner: { background: "#1a1a1a", border: "1px solid #444", borderRadius: "12px", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" },
+  clipboardText: { fontSize: "12px", color: "#888", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  clipboardButton: { background: "#fff", color: "#000", border: "none", borderRadius: "8px", padding: "6px 14px", fontSize: "13px", fontWeight: "600", cursor: "pointer", flexShrink: 0 },
 }
