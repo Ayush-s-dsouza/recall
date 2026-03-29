@@ -171,5 +171,5 @@ const styles = {
   cardTitle: { fontSize: "15px", fontWeight: "600", marginBottom: "4px" },
   cardUrl: { fontSize: "12px", color: "#555", marginBottom: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   cardScore: { fontSize: "12px", color: "#888" },
-  message: { color: "#4ade80", fontSize: "14px", margin: 0 },
+  message: { color: "#ef4444", fontSize: "14px", margin: 0 },
 }
