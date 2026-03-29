@@ -46,7 +46,7 @@ def auto_tag(title: str, content: str):
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     prompt = f"Classify this content into exactly one category: Tech, Product, Business, Finance, Health, Personal, Other. Content: {title} {content[:500]}. Reply with just the category word, nothing else."
     response = client.models.generate_content(
-        model="gemini-2.0-flash-lite",
+        model="gemini-3-flash-preview",
         contents=prompt
     )
     tag = response.text.strip()
