@@ -35,15 +35,12 @@ def get_user_id(token: str):
     return user.user.id
 
 def get_embedding(text: str):
-    try:
-        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-        result = client.models.embed_content(
-            model="text-embedding-004",
-            contents=text[:8000]
-        )
-        return result.embeddings[0].values
-    except:
-        return [0.0] * 768
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    result = client.models.embed_content(
+        model="text-embedding-004",
+        contents=text[:8000]
+    )
+    return result.embeddings[0].values
 
 def auto_tag(title: str, content: str):
     try:
