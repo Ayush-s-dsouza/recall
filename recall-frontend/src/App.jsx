@@ -160,6 +160,7 @@ export default function App() {
   )
 }
 
+
 const styles = {
   container: { minHeight: "100vh", background: "#0f0f0f", color: "#fff", fontFamily: "system-ui, sans-serif", padding: "0 16px" },
   hero: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", gap: "16px" },
