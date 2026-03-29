@@ -35,7 +35,10 @@ def get_user_id(token: str):
     return user.user.id
 
 def get_embedding(text: str):
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    client = genai.Client(
+        api_key=os.getenv("GEMINI_API_KEY"),
+        http_options={"api_version": "v1"}
+    )
     result = client.models.embed_content(
         model="text-embedding-004",
         contents=text[:8000],
