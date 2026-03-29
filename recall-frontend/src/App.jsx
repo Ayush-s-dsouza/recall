@@ -25,6 +25,18 @@ export default function App() {
     supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
     })
+    const params = new URLSearchParams(window.location.search)
+    const sharedUrl = params.get("url") || params.get("text")
+    if (sharedUrl && sharedUrl.startsWith("http")) {
+      setView("save")
+      setTimeout(() => {
+        const input = document.getElementById("urlInput")
+        if (input) {
+          input.value = sharedUrl
+          handleSave(sharedUrl)
+        }
+      }, 500)
+    }
   }, [])
 
   const signIn = async () => {
