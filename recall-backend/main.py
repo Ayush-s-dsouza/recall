@@ -46,6 +46,7 @@ def get_embedding(text: str):
         }
     )
     data = response.json()
+    print("EMBEDDING RESPONSE:", data)
     return data["embedding"]["values"]
 
 def auto_tag(title: str, content: str):
