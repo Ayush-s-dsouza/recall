@@ -41,7 +41,8 @@ def get_embedding(text: str):
         f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={api_key}",
         json={
             "model": "models/gemini-embedding-001",
-            "content": {"parts": [{"text": text[:8000]}]}
+            "content": {"parts": [{"text": text[:8000]}]},
+            "outputDimensionality": 768
         }
     )
     data = response.json()
