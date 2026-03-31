@@ -6,7 +6,6 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_ANON_KEY
 )
 
-const [pendingUrl, setPendingUrl] = useState("")
 const BACKEND = import.meta.env.VITE_BACKEND_URL
 
 export default function App() {
@@ -19,6 +18,7 @@ export default function App() {
   const [message, setMessage] = useState("")
   const [isError, setIsError] = useState(false)
   const [clipboardUrl, setClipboardUrl] = useState("")
+  const [pendingUrl, setPendingUrl] = useState("")
 
   const checkClipboard = async () => {
     try {
@@ -32,30 +32,30 @@ export default function App() {
   }
 
   useEffect(() => {
-  if (window.location.pathname === "/share-target") {
-    window.history.replaceState({}, "", "/" + window.location.search)
-  }
-  supabase.auth.getSession().then(({ data: { session } }) => {
-    setUser(session?.user ?? null)
-  })
-  supabase.auth.onAuthStateChange((_event, session) => {
-    setUser(session?.user ?? null)
-  })
-  const params = new URLSearchParams(window.location.search)
-  const sharedUrl = params.get("url") || params.get("text")
-  if (sharedUrl && sharedUrl.startsWith("http")) {
-    setPendingUrl(sharedUrl)
-    setView("save")
-  }
-  checkClipboard()
-}, [])
+    if (window.location.pathname === "/share-target") {
+      window.history.replaceState({}, "", "/" + window.location.search)
+    }
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null)
+    })
+    supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+    })
+    const params = new URLSearchParams(window.location.search)
+    const sharedUrl = params.get("url") || params.get("text")
+    if (sharedUrl && sharedUrl.startsWith("http")) {
+      setPendingUrl(sharedUrl)
+      setView("save")
+    }
+    checkClipboard()
+  }, [])
 
-useEffect(() => {
-  if (user && pendingUrl) {
-    handleSave(pendingUrl)
-    setPendingUrl("")
-  }
-}, [user, pendingUrl])
+  useEffect(() => {
+    if (user && pendingUrl) {
+      handleSave(pendingUrl)
+      setPendingUrl("")
+    }
+  }, [user, pendingUrl])
 
   const signIn = async () => {
     await supabase.auth.signInWithOAuth({
