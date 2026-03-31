@@ -18,7 +18,6 @@ export default function App() {
   const [message, setMessage] = useState("")
   const [isError, setIsError] = useState(false)
   const [clipboardUrl, setClipboardUrl] = useState("")
-  const [pendingUrl, setPendingUrl] = useState("")
   const [debugUrl, setDebugUrl] = useState("")
 
   const checkClipboard = async () => {
@@ -33,31 +32,31 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (window.location.pathname === "/share-target") {
-      window.history.replaceState({}, "", "/" + window.location.search)
-    }
     setDebugUrl(window.location.href)
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null)
-    })
-    supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
-    })
     const params = new URLSearchParams(window.location.search)
     const sharedUrl = params.get("url") || params.get("text")
     if (sharedUrl && sharedUrl.startsWith("http")) {
-      setPendingUrl(sharedUrl)
+      sessionStorage.setItem("pendingUrl", sharedUrl)
       setView("save")
     }
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null)
+      const pending = sessionStorage.getItem("pendingUrl")
+      if (pending && session?.user) {
+        sessionStorage.removeItem("pendingUrl")
+        handleSave(pending)
+      }
+    })
+    supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+      const pending = sessionStorage.getItem("pendingUrl")
+      if (pending && session?.user) {
+        sessionStorage.removeItem("pendingUrl")
+        handleSave(pending)
+      }
+    })
     checkClipboard()
   }, [])
-
-  useEffect(() => {
-    if (user && pendingUrl) {
-      handleSave(pendingUrl)
-      setPendingUrl("")
-    }
-  }, [user, pendingUrl])
 
   const signIn = async () => {
     await supabase.auth.signInWithOAuth({
@@ -173,7 +172,7 @@ export default function App() {
 
       {view === "save" && (
         <div style={styles.section}>
-          <p style={{color: "#888", fontSize: "11px", margin: 0}}>{debugUrl}</p>
+          <p style={{color: "#555", fontSize: "11px", margin: 0, wordBreak: "break-all"}}>{debugUrl}</p>
           {clipboardUrl && (
             <div style={styles.clipboardBanner}>
               <span style={styles.clipboardText}>Copied: {clipboardUrl.slice(0, 50)}...</span>
