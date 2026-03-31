@@ -19,6 +19,7 @@ export default function App() {
   const [isError, setIsError] = useState(false)
   const [clipboardUrl, setClipboardUrl] = useState("")
   const [pendingUrl, setPendingUrl] = useState("")
+  const [debugUrl, setDebugUrl] = useState("")
 
   const checkClipboard = async () => {
     try {
@@ -35,6 +36,7 @@ export default function App() {
     if (window.location.pathname === "/share-target") {
       window.history.replaceState({}, "", "/" + window.location.search)
     }
+    setDebugUrl(window.location.href)
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
     })
@@ -171,6 +173,7 @@ export default function App() {
 
       {view === "save" && (
         <div style={styles.section}>
+          <p style={{color: "#888", fontSize: "11px", margin: 0}}>{debugUrl}</p>
           {clipboardUrl && (
             <div style={styles.clipboardBanner}>
               <span style={styles.clipboardText}>Copied: {clipboardUrl.slice(0, 50)}...</span>
