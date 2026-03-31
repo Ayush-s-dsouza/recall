@@ -31,6 +31,9 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (window.location.pathname === "/share-target") {
+      window.history.replaceState({}, "", "/" + window.location.search)
+    }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
     })
