@@ -18,7 +18,6 @@ export default function App() {
   const [message, setMessage] = useState("")
   const [isError, setIsError] = useState(false)
   const [clipboardUrl, setClipboardUrl] = useState("")
-  const [debugUrl, setDebugUrl] = useState("")
 
   const checkClipboard = async () => {
     try {
@@ -32,7 +31,6 @@ export default function App() {
   }
 
   useEffect(() => {
-    setDebugUrl(window.location.href)
     const params = new URLSearchParams(window.location.search)
     const sharedUrl = params.get("url") || params.get("text")
     if (sharedUrl && sharedUrl.startsWith("http")) {
@@ -172,7 +170,6 @@ export default function App() {
 
       {view === "save" && (
         <div style={styles.section}>
-          <p style={{color: "#555", fontSize: "11px", margin: 0, wordBreak: "break-all"}}>{debugUrl}</p>
           {clipboardUrl && (
             <div style={styles.clipboardBanner}>
               <span style={styles.clipboardText}>Copied: {clipboardUrl.slice(0, 50)}...</span>
