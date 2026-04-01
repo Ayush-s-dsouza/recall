@@ -48,7 +48,8 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const sharedUrl = params.get("url") || params.get("text")
-    if (sharedUrl && sharedUrl.startsWith("http")) {
+    const viaShareSheet = !!(sharedUrl && sharedUrl.startsWith("http"))
+    if (viaShareSheet) {
       sessionStorage.setItem("pendingUrl", sharedUrl)
       setView("save")
     }
@@ -68,7 +69,9 @@ export default function App() {
         handleSave(pending)
       }
     })
-    checkClipboard()
+    if (!viaShareSheet) {
+      checkClipboard()
+    }
   }, [])
 
   const signIn = async () => {
