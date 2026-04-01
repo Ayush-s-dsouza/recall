@@ -130,12 +130,16 @@ async def search(req: SearchRequest):
     }).execute()
 
     # Full-text search over content + title
-    fts_result = supabase.table("saves") \
-        .select("id, url, title, tag") \
-        .eq("user_id", user_id) \
-        .text_search("content_text", req.query, type="plain") \
-        .limit(20) \
-        .execute()
+    try:
+        fts_result = supabase.table("saves") \
+            .select("id, url, title, tag") \
+            .eq("user_id", user_id) \
+            .text_search("content_text", req.query, type="plain") \
+            .limit(20) \
+            .execute()
+        fts_rows = fts_result.data
+    except Exception:
+        fts_rows = []
 
     # Reciprocal Rank Fusion (k=60 is standard)
     K = 60
@@ -147,7 +151,7 @@ async def search(req: SearchRequest):
         scores[rid] = scores.get(rid, 0) + 1 / (K + rank + 1)
         metadata[rid] = row
 
-    for rank, row in enumerate(fts_result.data):
+    for rank, row in enumerate(fts_rows):
         rid = row["id"]
         scores[rid] = scores.get(rid, 0) + 1 / (K + rank + 1)
         if rid not in metadata:
