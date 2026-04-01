@@ -121,15 +121,48 @@ async def search(req: SearchRequest):
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+    # Semantic search — get 20 candidates for RRF pool
     query_embedding = get_embedding(req.query)
-
-    result = supabase.rpc("match_saves", {
+    semantic_result = supabase.rpc("match_saves", {
         "query_embedding": query_embedding,
         "match_user_id": user_id,
-        "match_count": 5
+        "match_count": 20
     }).execute()
 
-    return {"results": result.data}
+    # Full-text search over content + title
+    fts_result = supabase.table("saves") \
+        .select("id, url, title, tag") \
+        .eq("user_id", user_id) \
+        .text_search("content_text", req.query, type="plain") \
+        .limit(20) \
+        .execute()
+
+    # Reciprocal Rank Fusion (k=60 is standard)
+    K = 60
+    scores = {}
+    metadata = {}
+
+    for rank, row in enumerate(semantic_result.data):
+        rid = row["id"]
+        scores[rid] = scores.get(rid, 0) + 1 / (K + rank + 1)
+        metadata[rid] = row
+
+    for rank, row in enumerate(fts_result.data):
+        rid = row["id"]
+        scores[rid] = scores.get(rid, 0) + 1 / (K + rank + 1)
+        if rid not in metadata:
+            metadata[rid] = row
+
+    # Normalize scores to 0–1 so the frontend % display stays meaningful
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]
+    max_score = ranked[0][1] if ranked else 1
+    results = []
+    for rid, score in ranked:
+        row = metadata[rid]
+        row["similarity"] = score / max_score
+        results.append(row)
+
+    return {"results": results}
 
 @app.get("/")
 async def root():
