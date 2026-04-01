@@ -8,6 +8,21 @@ const supabase = createClient(
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL
 
+function getSourceLabel(url) {
+  if (!url) return "Page"
+  if (url.includes("twitter.com") || url.includes("x.com")) return "X (Twitter)"
+  if (url.includes("linkedin.com")) return "LinkedIn"
+  if (url.includes("reddit.com")) return "Reddit"
+  if (url.includes("youtube.com") || url.includes("youtu.be")) return "YouTube"
+  if (url.includes("substack.com")) return "Substack"
+  try {
+    const host = new URL(url).hostname.replace("www.", "")
+    return host.charAt(0).toUpperCase() + host.slice(1)
+  } catch {
+    return "Page"
+  }
+}
+
 export default function App() {
   const [user, setUser] = useState(null)
   const [query, setQuery] = useState("")
@@ -82,6 +97,7 @@ export default function App() {
     setLoading(true)
     setMessage("")
     setIsError(false)
+    const source = getSourceLabel(url)
     try {
       const token = await getToken()
       const res = await fetch(`${BACKEND}/save`, {
@@ -90,10 +106,10 @@ export default function App() {
         body: JSON.stringify({ url, token })
       })
       const data = await res.json()
-      setMessage(`Saved: ${data.title} [${data.tag}]`)
+      setMessage(`Saved from ${source} ✓`)
       setIsError(false)
     } catch {
-      setMessage("Failed to save. Try again.")
+      setMessage(`Failed to save from ${source}. Try again.`)
       setIsError(true)
     }
     setLoading(false)
@@ -172,7 +188,7 @@ export default function App() {
         <div style={styles.section}>
           {clipboardUrl && (
             <div style={styles.clipboardBanner}>
-              <span style={styles.clipboardText}>Copied: {clipboardUrl.slice(0, 50)}...</span>
+              <span style={styles.clipboardText}>Copied from {getSourceLabel(clipboardUrl)}</span>
               <button
                 onClick={() => { handleSave(clipboardUrl); setClipboardUrl("") }}
                 style={styles.clipboardButton}
@@ -201,7 +217,7 @@ export default function App() {
 }
 
 const styles = {
-  container: { minHeight: "100vh", background: "#0f0f0f", color: "#fff", fontFamily: "system-ui, sans-serif", padding: "0 16px" },
+  container: { minHeight: "100vh", maxWidth: "100vw", overflowX: "hidden", background: "#0f0f0f", color: "#fff", fontFamily: "system-ui, sans-serif", padding: "0 16px", boxSizing: "border-box" },
   hero: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", gap: "16px" },
   logo: { fontSize: "48px", fontWeight: "700", margin: 0, letterSpacing: "-2px" },
   logoSmall: { fontSize: "24px", fontWeight: "700", margin: 0, letterSpacing: "-1px" },
@@ -210,19 +226,19 @@ const styles = {
   tabs: { display: "flex", gap: "8px", marginBottom: "24px" },
   tab: { background: "none", border: "1px solid #333", color: "#888", padding: "8px 20px", borderRadius: "20px", cursor: "pointer", fontSize: "14px" },
   tabActive: { background: "#fff", border: "1px solid #fff", color: "#000", padding: "8px 20px", borderRadius: "20px", cursor: "pointer", fontSize: "14px", fontWeight: "600" },
-  section: { display: "flex", flexDirection: "column", gap: "12px" },
+  section: { display: "flex", flexDirection: "column", gap: "12px", width: "100%", boxSizing: "border-box" },
   input: { width: "100%", padding: "14px", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", color: "#fff", fontSize: "16px", boxSizing: "border-box" },
   button: { width: "100%", padding: "14px", background: "#fff", color: "#000", border: "none", borderRadius: "12px", fontSize: "16px", fontWeight: "600", cursor: "pointer" },
   signOut: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "8px", cursor: "pointer", fontSize: "13px" },
   results: { display: "flex", flexDirection: "column", gap: "12px", marginTop: "8px" },
-  card: { display: "block", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", padding: "16px", textDecoration: "none", color: "#fff" },
+  card: { display: "block", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", padding: "16px", textDecoration: "none", color: "#fff", overflow: "hidden" },
   cardTag: { fontSize: "11px", color: "#888", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" },
-  cardTitle: { fontSize: "15px", fontWeight: "600", marginBottom: "4px" },
+  cardTitle: { fontSize: "15px", fontWeight: "600", marginBottom: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   cardUrl: { fontSize: "12px", color: "#555", marginBottom: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   cardScore: { fontSize: "12px", color: "#888" },
   success: { color: "#4ade80", fontSize: "14px", margin: 0 },
   error: { color: "#ef4444", fontSize: "14px", margin: 0 },
-  clipboardBanner: { background: "#1a1a1a", border: "1px solid #444", borderRadius: "12px", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" },
+  clipboardBanner: { background: "#1a1a1a", border: "1px solid #444", borderRadius: "12px", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", overflow: "hidden" },
   clipboardText: { fontSize: "12px", color: "#888", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   clipboardButton: { background: "#fff", color: "#000", border: "none", borderRadius: "8px", padding: "6px 14px", fontSize: "13px", fontWeight: "600", cursor: "pointer", flexShrink: 0 },
 }
