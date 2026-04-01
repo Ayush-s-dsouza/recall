@@ -134,7 +134,7 @@ async def search(req: SearchRequest):
         fts_result = supabase.table("saves") \
             .select("id, url, title, tag") \
             .eq("user_id", user_id) \
-            .text_search("content_text", req.query, type="plain") \
+            .filter("content_text", "fts", req.query) \
             .limit(20) \
             .execute()
         fts_rows = fts_result.data
