@@ -198,7 +198,7 @@ export default function App() {
                   {filtered.map(r => (
                     <a key={r.id} href={r.url} target="_blank" rel="noreferrer" style={styles.card}>
                       <div style={styles.cardTag}>{r.tag}</div>
-                      <div style={styles.cardTitle}>{r.title && !r.title.startsWith("http") ? r.title : getSourceLabel(r.url)}</div>
+                      <div style={styles.cardTitle}>{r.title || getSourceLabel(r.url)}</div>
                       <div style={styles.cardUrl}>{r.url}</div>
                       <div style={styles.cardScore}>Match: {Math.round(r.similarity * 100)}%</div>
                     </a>
