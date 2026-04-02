@@ -93,7 +93,7 @@ export default function App() {
 
   const handleSave = async (url) => {
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      setMessage("Please enter a valid URL starting with http:// or https://")
+      setMessage("Links only, please!")
       setIsError(true)
       return
     }
