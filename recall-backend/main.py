@@ -75,6 +75,26 @@ Respond with exactly three lines, nothing else."""
     except:
         return raw_title, "Other"
 
+async def fetch_tweet(url: str):
+    """Use Twitter's free oEmbed API to get tweet text and author without auth."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.get(
+                "https://publish.twitter.com/oembed",
+                params={"url": url, "omit_script": "true"},
+                follow_redirects=True
+            )
+        data = res.json()
+        author = data.get("author_name", "")
+        import re
+        # Strip HTML tags from the embed HTML to get plain tweet text
+        raw_html = data.get("html", "")
+        text = re.sub(r'<[^>]+>', ' ', raw_html)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text, author
+    except:
+        return "", ""
+
 @app.post("/save")
 async def save_url(req: SaveRequest):
     try:
@@ -82,36 +102,42 @@ async def save_url(req: SaveRequest):
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(req.url, follow_redirects=True)
-            content_text = response.text[:10000]
-    except:
-        content_text = ""
+    is_tweet = "x.com" in req.url or "twitter.com" in req.url
 
-    from html.parser import HTMLParser
-    class TextExtractor(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.text = []
-            self.in_script = False
-        def handle_starttag(self, tag, attrs):
-            if tag in ['script', 'style']:
-                self.in_script = True
-        def handle_endtag(self, tag):
-            if tag in ['script', 'style']:
+    if is_tweet:
+        clean_text, tweet_author = await fetch_tweet(req.url)
+        title = tweet_author or req.url
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(req.url, follow_redirects=True)
+                content_text = response.text[:10000]
+        except:
+            content_text = ""
+
+        from html.parser import HTMLParser
+        class TextExtractor(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.text = []
                 self.in_script = False
-        def handle_data(self, data):
-            if not self.in_script:
-                self.text.append(data.strip())
+            def handle_starttag(self, tag, attrs):
+                if tag in ['script', 'style']:
+                    self.in_script = True
+            def handle_endtag(self, tag):
+                if tag in ['script', 'style']:
+                    self.in_script = False
+            def handle_data(self, data):
+                if not self.in_script:
+                    self.text.append(data.strip())
 
-    parser = TextExtractor()
-    parser.feed(content_text)
-    clean_text = " ".join(t for t in parser.text if t)[:5000]
+        parser = TextExtractor()
+        parser.feed(content_text)
+        clean_text = " ".join(t for t in parser.text if t)[:5000]
 
-    import re
-    title_match = re.search(r'<title>(.*?)</title>', content_text, re.IGNORECASE)
-    title = title_match.group(1) if title_match else req.url
+        import re
+        title_match = re.search(r'<title>(.*?)</title>', content_text, re.IGNORECASE)
+        title = title_match.group(1) if title_match else req.url
 
     title, tag = extract_save_metadata(title, clean_text)
     embedding = get_embedding(f"{title} {clean_text}")
