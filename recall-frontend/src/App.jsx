@@ -33,6 +33,7 @@ export default function App() {
   const [message, setMessage] = useState("")
   const [isError, setIsError] = useState(false)
   const [clipboardUrl, setClipboardUrl] = useState("")
+  const [selectedSource, setSelectedSource] = useState(null)
 
   const checkClipboard = async () => {
     try {
@@ -121,6 +122,7 @@ export default function App() {
   const handleSearch = async () => {
     if (!query.trim()) return
     setLoading(true)
+    setSelectedSource(null)
     try {
       const token = await getToken()
       const res = await fetch(`${BACKEND}/search`, {
@@ -174,16 +176,37 @@ export default function App() {
           <button onClick={handleSearch} style={styles.button} disabled={loading}>
             {loading ? "Searching..." : "Search"}
           </button>
-          <div style={styles.results}>
-            {results.map(r => (
-              <a key={r.id} href={r.url} target="_blank" rel="noreferrer" style={styles.card}>
-                <div style={styles.cardTag}>{r.tag}</div>
-                <div style={styles.cardTitle}>{r.title || r.url}</div>
-                <div style={styles.cardUrl}>{r.url}</div>
-                <div style={styles.cardScore}>Match: {Math.round(r.similarity * 100)}%</div>
-              </a>
-            ))}
-          </div>
+          {results.length > 0 && (() => {
+            const sources = [...new Set(results.map(r => getSourceLabel(r.url)))]
+            const filtered = selectedSource ? results.filter(r => getSourceLabel(r.url) === selectedSource) : results
+            return (
+              <>
+                {sources.length > 1 && (
+                  <div style={styles.filters}>
+                    {sources.map(src => (
+                      <button
+                        key={src}
+                        onClick={() => setSelectedSource(selectedSource === src ? null : src)}
+                        style={selectedSource === src ? styles.filterActive : styles.filter}
+                      >
+                        {src}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div style={styles.results}>
+                  {filtered.map(r => (
+                    <a key={r.id} href={r.url} target="_blank" rel="noreferrer" style={styles.card}>
+                      <div style={styles.cardTag}>{r.tag}</div>
+                      <div style={styles.cardTitle}>{r.title || r.url}</div>
+                      <div style={styles.cardUrl}>{r.url}</div>
+                      <div style={styles.cardScore}>Match: {Math.round(r.similarity * 100)}%</div>
+                    </a>
+                  ))}
+                </div>
+              </>
+            )
+          })()}
         </div>
       )}
 
@@ -233,6 +256,9 @@ const styles = {
   input: { width: "100%", padding: "14px", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", color: "#fff", fontSize: "16px", boxSizing: "border-box" },
   button: { width: "100%", padding: "14px", background: "#fff", color: "#000", border: "none", borderRadius: "12px", fontSize: "16px", fontWeight: "600", cursor: "pointer" },
   signOut: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "8px", cursor: "pointer", fontSize: "13px" },
+  filters: { display: "flex", flexWrap: "wrap", gap: "8px" },
+  filter: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "20px", cursor: "pointer", fontSize: "13px" },
+  filterActive: { background: "#fff", border: "1px solid #fff", color: "#000", padding: "6px 14px", borderRadius: "20px", cursor: "pointer", fontSize: "13px", fontWeight: "600" },
   results: { display: "flex", flexDirection: "column", gap: "12px", marginTop: "8px" },
   card: { display: "block", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", padding: "16px", textDecoration: "none", color: "#fff", overflow: "hidden" },
   cardTag: { fontSize: "11px", color: "#888", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" },
