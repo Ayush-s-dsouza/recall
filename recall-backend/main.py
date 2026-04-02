@@ -61,7 +61,7 @@ Content: {content[:1500]}
 
 Respond with exactly three lines, nothing else."""
         response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-04-17",
+            model="gemini-2.5-flash",
             contents=prompt
         )
         lines = [l.strip() for l in response.text.strip().split('\n') if l.strip()]
