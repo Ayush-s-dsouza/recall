@@ -132,20 +132,55 @@ async def analyze_image(image_url: str) -> str:
         return ""
 
 async def fetch_instagram(url: str):
-    """Use Instagram's free oEmbed API to get post caption, author, and thumbnail."""
+    """Fetch Instagram post content via the embed endpoint (no auth required for public posts)."""
+    import re
+
+    match = re.search(r'instagram\.com/(p|reel|tv)/([A-Za-z0-9_-]+)', url)
+    if not match:
+        return "", "", ""
+    post_type, shortcode = match.group(1), match.group(2)
+    embed_url = f"https://www.instagram.com/{post_type}/{shortcode}/embed/captioned/"
+
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            res = await client.get(
-                "https://api.instagram.com/oembed/",
-                params={"url": url, "omit_script": "true"},
-                follow_redirects=True
-            )
-        data = res.json()
-        author = data.get("author_name", "")
-        caption = data.get("title", "")
-        thumbnail_url = data.get("thumbnail_url", "")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        async with httpx.AsyncClient(timeout=15, headers=headers) as client:
+            res = await client.get(embed_url, follow_redirects=True)
+            html = res.text
+
+        print(f"[instagram] embed status={res.status_code} html_len={len(html)}")
+
+        # Extract caption text
+        caption = ""
+        caption_match = re.search(r'class="[^"]*Caption[^"]*"[^>]*>.*?<span[^>]*>(.*?)</span>', html, re.DOTALL | re.IGNORECASE)
+        if caption_match:
+            caption = re.sub(r'<[^>]+>', '', caption_match.group(1)).strip()
+
+        # Extract username
+        author = ""
+        for pattern in [
+            r'"owner":\{"username":"([^"]+)"',
+            r'class="[^"]*UsernameText[^"]*"[^>]*>([^<]+)<',
+            r'@([A-Za-z0-9_.]+)',
+        ]:
+            m = re.search(pattern, html)
+            if m:
+                author = m.group(1)
+                break
+
+        # Extract thumbnail
+        thumbnail_url = ""
+        thumb_match = re.search(r'<img[^>]+src="(https://[^"]+(?:cdninstagram|fbcdn)[^"]+)"', html)
+        if thumb_match:
+            thumbnail_url = thumb_match.group(1)
+
+        print(f"[instagram] author={author!r} caption_len={len(caption)} thumbnail={'yes' if thumbnail_url else 'no'}")
         return caption, author, thumbnail_url
-    except:
+    except Exception as e:
+        print(f"[instagram] embed fetch failed: {e}")
         return "", "", ""
 
 async def fetch_tweet(url: str):
@@ -186,8 +221,7 @@ async def save_url(req: SaveRequest):
     elif is_instagram:
         caption, author, thumbnail_url = await fetch_instagram(req.url)
         clean_text = caption
-        title = author or req.url
-        print(f"[instagram] author={author!r} caption={caption!r} thumbnail={thumbnail_url!r}")
+        title = author or "Instagram"
         # If caption is sparse, analyze the thumbnail image
         if thumbnail_url and len(clean_text) < 400:
             image_description = await analyze_image(thumbnail_url)
