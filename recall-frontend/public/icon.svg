@@ -1,17 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- Gray background -->
-  <rect width="512" height="512" rx="90" fill="#c0c0c0"/>
-
-  <!-- Left bracket [ -->
-  <rect x="138" y="148" width="62" height="36" fill="white"/>
-  <rect x="138" y="148" width="36" height="216" fill="white"/>
-  <rect x="138" y="328" width="62" height="36" fill="white"/>
-
-  <!-- Right bracket ] -->
-  <rect x="312" y="148" width="62" height="36" fill="white"/>
-  <rect x="338" y="148" width="36" height="216" fill="white"/>
-  <rect x="312" y="328" width="62" height="36" fill="white"/>
-
-  <!-- Center dot -->
-  <circle cx="256" cy="256" r="42" fill="white"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80">
+  <rect width="80" height="80" rx="17.6" fill="#3a3a3a"/>
+  <line x1="15" y1="12" x2="15" y2="68" stroke="white" stroke-width="8" stroke-linecap="butt"/>
+  <line x1="15" y1="12" x2="23" y2="12" stroke="white" stroke-width="8" stroke-linecap="butt"/>
+  <line x1="15" y1="68" x2="23" y2="68" stroke="white" stroke-width="8" stroke-linecap="butt"/>
+  <line x1="65" y1="12" x2="65" y2="68" stroke="white" stroke-width="8" stroke-linecap="butt"/>
+  <line x1="57" y1="12" x2="65" y2="12" stroke="white" stroke-width="8" stroke-linecap="butt"/>
+  <line x1="57" y1="68" x2="65" y2="68" stroke="white" stroke-width="8" stroke-linecap="butt"/>
+  <circle cx="40" cy="40" r="8" fill="white"/>
 </svg>
