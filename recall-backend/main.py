@@ -54,6 +54,9 @@ def extract_save_metadata(raw_title: str, content: str, extra_context: str = "")
         context_block = content[:1500]
         if extra_context:
             context_block += f"\n\nAdditional context (post description / image content):\n{extra_context[:800]}"
+        # Don't call Gemini with an essentially empty prompt — it produces garbage titles
+        if len(context_block.strip()) < 30 and not raw_title:
+            return "Saved post", "Other"
         prompt = f"""Analyze this web content and return exactly three lines:
 Line 1: A concise, accurate title (max 8 words) describing what this specific content is about — not the platform name
 Line 2: The author's full name, or organisation name if no individual author. Write "Unknown" if not found.
@@ -93,12 +96,23 @@ def extract_og_tags(html: str) -> dict:
 async def analyze_image(image_url: str) -> str:
     """Use Gemini vision to describe image content — used when page text is sparse."""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Referer": image_url,
+        }
+        async with httpx.AsyncClient(timeout=15, headers=headers) as client:
             res = await client.get(image_url, follow_redirects=True)
             image_bytes = res.content
-            mime_type = res.headers.get("content-type", "image/jpeg").split(";")[0]
-            if not mime_type.startswith("image/"):
+            mime_type = res.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+            # Reject if too small (likely an error page) or clearly not an image
+            if len(image_bytes) < 1000:
                 return ""
+            if not mime_type.startswith("image/") and mime_type not in ("application/octet-stream",):
+                return ""
+            # Force a safe mime type if CDN returns octet-stream
+            if mime_type == "application/octet-stream":
+                mime_type = "image/jpeg"
         gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash",
