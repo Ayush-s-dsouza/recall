@@ -160,18 +160,18 @@ async def fetch_instagram(url: str):
 
         print(f"[instagram] embed status={res.status_code} html_len={len(html)}", flush=True)
 
-        # Extract username from JSON (reliable across embed versions)
+        # Extract username — try several patterns across embed versions
         author = ""
         for pattern in [
-            r'"username"\s*:\s*"([^"]+)"',
-            r'instagram\.com/([A-Za-z0-9_.]+)/"',
-            r'@([A-Za-z0-9_.]{3,})',
+            r'"username"\s*:\s*"([^"]+)"',                              # JSON field
+            r'<title>[^<]*by\s+([A-Za-z0-9_.]+)\s*[•·|]',              # "photo by username •"
+            r'href="https://www\.instagram\.com/([A-Za-z0-9_.]+)/?["\?]',  # profile link
+            r'@([A-Za-z0-9_.]{3,30})',                                  # @mention anywhere
         ]:
-            m = re.search(pattern, html)
+            m = re.search(pattern, html, re.IGNORECASE)
             if m:
                 candidate = m.group(1).strip()
-                # Skip generic Instagram usernames that are just paths
-                if candidate and candidate not in ('p', 'reel', 'tv', 'explore', 'accounts'):
+                if candidate and candidate not in ('p', 'reel', 'tv', 'explore', 'accounts', 'instagram'):
                     author = candidate
                     break
 
