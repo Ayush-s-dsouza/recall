@@ -105,10 +105,13 @@ async def analyze_image(image_url: str) -> str:
             res = await client.get(image_url, follow_redirects=True)
             image_bytes = res.content
             mime_type = res.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+            print(f"[analyze_image] status={res.status_code} mime={mime_type} size={len(image_bytes)}")
             # Reject if too small (likely an error page) or clearly not an image
             if len(image_bytes) < 1000:
+                print(f"[analyze_image] rejected: too small")
                 return ""
             if not mime_type.startswith("image/") and mime_type not in ("application/octet-stream",):
+                print(f"[analyze_image] rejected: bad mime type")
                 return ""
             # Force a safe mime type if CDN returns octet-stream
             if mime_type == "application/octet-stream":
@@ -153,18 +156,34 @@ async def fetch_instagram(url: str):
 
         print(f"[instagram] embed status={res.status_code} html_len={len(html)}")
 
-        # Extract caption text
+        # Extract caption — try multiple patterns since Instagram changes their HTML structure
         caption = ""
-        caption_match = re.search(r'class="[^"]*Caption[^"]*"[^>]*>.*?<span[^>]*>(.*?)</span>', html, re.DOTALL | re.IGNORECASE)
-        if caption_match:
-            caption = re.sub(r'<[^>]+>', '', caption_match.group(1)).strip()
+        caption_patterns = [
+            # JSON data embedded in script tags (most reliable)
+            r'"edge_media_to_caption"\s*:\s*\{"edges"\s*:\s*\[\{"node"\s*:\s*\{"text"\s*:\s*"((?:[^"\\]|\\.)*)"\}',
+            r'"caption"\s*:\s*\{"edges"\s*:\s*\[\{"node"\s*:\s*\{"text"\s*:\s*"((?:[^"\\]|\\.)*)"\}',
+            r'"text"\s*:\s*"((?:[^"\\]|\\.){30,})"',  # any long text string in JSON
+            # HTML class patterns (older embed versions)
+            r'class="[^"]*Caption[^"]*"[^>]*>.*?<span[^>]*>(.*?)</span>',
+            r'<div[^>]+data-testid="post-comment-root"[^>]*>.*?<span[^>]*>(.*?)</span>',
+        ]
+        for pattern in caption_patterns:
+            m = re.search(pattern, html, re.DOTALL)
+            if m:
+                raw = m.group(1)
+                # Unescape JSON unicode escapes and strip HTML tags
+                raw = raw.replace('\\n', ' ').replace('\\"', '"').replace('\\u0026', '&')
+                caption = re.sub(r'<[^>]+>', '', raw).strip()
+                if len(caption) > 10:
+                    print(f"[instagram] caption matched pattern: {pattern[:50]}")
+                    break
 
         # Extract username
         author = ""
         for pattern in [
-            r'"owner":\{"username":"([^"]+)"',
+            r'"username"\s*:\s*"([^"]+)"',
+            r'"owner"\s*:\s*\{"username"\s*:\s*"([^"]+)"',
             r'class="[^"]*UsernameText[^"]*"[^>]*>([^<]+)<',
-            r'@([A-Za-z0-9_.]+)',
         ]:
             m = re.search(pattern, html)
             if m:
@@ -173,11 +192,18 @@ async def fetch_instagram(url: str):
 
         # Extract thumbnail
         thumbnail_url = ""
-        thumb_match = re.search(r'<img[^>]+src="(https://[^"]+(?:cdninstagram|fbcdn)[^"]+)"', html)
-        if thumb_match:
-            thumbnail_url = thumb_match.group(1)
+        for pattern in [
+            r'"thumbnail_src"\s*:\s*"(https://[^"]+)"',
+            r'"display_url"\s*:\s*"(https://[^"]+)"',
+            r'<img[^>]+src="(https://[^"]+(?:cdninstagram|fbcdn)[^"]+)"',
+        ]:
+            m = re.search(pattern, html)
+            if m:
+                thumbnail_url = m.group(1).replace('\\/', '/')
+                break
 
         print(f"[instagram] author={author!r} caption_len={len(caption)} thumbnail={'yes' if thumbnail_url else 'no'}")
+        print(f"[instagram] caption_preview={caption[:100]!r}")
         return caption, author, thumbnail_url
     except Exception as e:
         print(f"[instagram] embed fetch failed: {e}")
