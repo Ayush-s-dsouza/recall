@@ -163,13 +163,17 @@ async def fetch_instagram(url: str):
         # Extract username from JSON (reliable across embed versions)
         author = ""
         for pattern in [
-            r'"username"\s*:\s*"([A-Za-z0-9_.]+)"',
-            r'"owner"\s*:\s*\{[^}]*"username"\s*:\s*"([A-Za-z0-9_.]+)"',
+            r'"username"\s*:\s*"([^"]+)"',
+            r'instagram\.com/([A-Za-z0-9_.]+)/"',
+            r'@([A-Za-z0-9_.]{3,})',
         ]:
             m = re.search(pattern, html)
             if m:
-                author = m.group(1)
-                break
+                candidate = m.group(1).strip()
+                # Skip generic Instagram usernames that are just paths
+                if candidate and candidate not in ('p', 'reel', 'tv', 'explore', 'accounts'):
+                    author = candidate
+                    break
 
         # Extract all visible text from the embed page — avoids brittle JSON regex
         class TextExtractor(HTMLParser):
@@ -193,10 +197,10 @@ async def fetch_instagram(url: str):
         parser.feed(html)
         all_text = " ".join(parser.chunks)
 
-        # The caption is the longest single contiguous chunk — UI strings are short
-        best_chunk = max(parser.chunks, key=len) if parser.chunks else ""
-        # If the best chunk is long enough to be the caption, use it
-        caption = best_chunk if len(best_chunk) > 20 else all_text[:1000]
+        # Combine all chunks longer than 15 chars — skips UI noise like "Like", "Share"
+        # This captures the caption + any surrounding visible text in the embed
+        meaningful_chunks = [c for c in parser.chunks if len(c) > 15]
+        caption = " ".join(meaningful_chunks)[:2000] if meaningful_chunks else all_text[:1000]
 
         print(f"[instagram] author={author!r} caption_len={len(caption)}", flush=True)
         print(f"[instagram] caption_preview={caption[:150]!r}", flush=True)
