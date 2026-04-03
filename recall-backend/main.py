@@ -10,6 +10,9 @@ from google.genai import types
 
 load_dotenv()
 
+import sys
+sys.stdout.reconfigure(line_buffering=True)
+
 app = FastAPI()
 
 app.add_middleware(
@@ -137,6 +140,7 @@ async def analyze_image(image_url: str) -> str:
 async def fetch_instagram(url: str):
     """Fetch Instagram post content via the embed endpoint (no auth required for public posts)."""
     import re
+    from html.parser import HTMLParser
 
     match = re.search(r'instagram\.com/(p|reel|tv)/([A-Za-z0-9_-]+)', url)
     if not match:
@@ -154,59 +158,51 @@ async def fetch_instagram(url: str):
             res = await client.get(embed_url, follow_redirects=True)
             html = res.text
 
-        print(f"[instagram] embed status={res.status_code} html_len={len(html)}")
+        print(f"[instagram] embed status={res.status_code} html_len={len(html)}", flush=True)
 
-        # Extract caption — try multiple patterns since Instagram changes their HTML structure
-        caption = ""
-        caption_patterns = [
-            # JSON data embedded in script tags (most reliable)
-            r'"edge_media_to_caption"\s*:\s*\{"edges"\s*:\s*\[\{"node"\s*:\s*\{"text"\s*:\s*"((?:[^"\\]|\\.)*)"\}',
-            r'"caption"\s*:\s*\{"edges"\s*:\s*\[\{"node"\s*:\s*\{"text"\s*:\s*"((?:[^"\\]|\\.)*)"\}',
-            r'"text"\s*:\s*"((?:[^"\\]|\\.){30,})"',  # any long text string in JSON
-            # HTML class patterns (older embed versions)
-            r'class="[^"]*Caption[^"]*"[^>]*>.*?<span[^>]*>(.*?)</span>',
-            r'<div[^>]+data-testid="post-comment-root"[^>]*>.*?<span[^>]*>(.*?)</span>',
-        ]
-        for pattern in caption_patterns:
-            m = re.search(pattern, html, re.DOTALL)
-            if m:
-                raw = m.group(1)
-                # Unescape JSON unicode escapes and strip HTML tags
-                raw = raw.replace('\\n', ' ').replace('\\"', '"').replace('\\u0026', '&')
-                caption = re.sub(r'<[^>]+>', '', raw).strip()
-                if len(caption) > 10:
-                    print(f"[instagram] caption matched pattern: {pattern[:50]}")
-                    break
-
-        # Extract username
+        # Extract username from JSON (reliable across embed versions)
         author = ""
         for pattern in [
-            r'"username"\s*:\s*"([^"]+)"',
-            r'"owner"\s*:\s*\{"username"\s*:\s*"([^"]+)"',
-            r'class="[^"]*UsernameText[^"]*"[^>]*>([^<]+)<',
+            r'"username"\s*:\s*"([A-Za-z0-9_.]+)"',
+            r'"owner"\s*:\s*\{[^}]*"username"\s*:\s*"([A-Za-z0-9_.]+)"',
         ]:
             m = re.search(pattern, html)
             if m:
                 author = m.group(1)
                 break
 
-        # Extract thumbnail
-        thumbnail_url = ""
-        for pattern in [
-            r'"thumbnail_src"\s*:\s*"(https://[^"]+)"',
-            r'"display_url"\s*:\s*"(https://[^"]+)"',
-            r'<img[^>]+src="(https://[^"]+(?:cdninstagram|fbcdn)[^"]+)"',
-        ]:
-            m = re.search(pattern, html)
-            if m:
-                thumbnail_url = m.group(1).replace('\\/', '/')
-                break
+        # Extract all visible text from the embed page — avoids brittle JSON regex
+        class TextExtractor(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.chunks = []
+                self.skip = False
+            def handle_starttag(self, tag, attrs):
+                if tag in ('script', 'style', 'head'):
+                    self.skip = True
+            def handle_endtag(self, tag):
+                if tag in ('script', 'style', 'head'):
+                    self.skip = False
+            def handle_data(self, data):
+                if not self.skip:
+                    stripped = data.strip()
+                    if stripped:
+                        self.chunks.append(stripped)
 
-        print(f"[instagram] author={author!r} caption_len={len(caption)} thumbnail={'yes' if thumbnail_url else 'no'}")
-        print(f"[instagram] caption_preview={caption[:100]!r}")
-        return caption, author, thumbnail_url
+        parser = TextExtractor()
+        parser.feed(html)
+        all_text = " ".join(parser.chunks)
+
+        # The caption is the longest single contiguous chunk — UI strings are short
+        best_chunk = max(parser.chunks, key=len) if parser.chunks else ""
+        # If the best chunk is long enough to be the caption, use it
+        caption = best_chunk if len(best_chunk) > 20 else all_text[:1000]
+
+        print(f"[instagram] author={author!r} caption_len={len(caption)}", flush=True)
+        print(f"[instagram] caption_preview={caption[:150]!r}", flush=True)
+        return caption, author, ""  # skip thumbnail — Instagram CDN blocks direct access
     except Exception as e:
-        print(f"[instagram] embed fetch failed: {e}")
+        print(f"[instagram] embed fetch failed: {e}", flush=True)
         return "", "", ""
 
 async def fetch_tweet(url: str):
