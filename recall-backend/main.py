@@ -131,6 +131,23 @@ async def analyze_image(image_url: str) -> str:
     except:
         return ""
 
+async def fetch_instagram(url: str):
+    """Use Instagram's free oEmbed API to get post caption, author, and thumbnail."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.get(
+                "https://api.instagram.com/oembed/",
+                params={"url": url, "omit_script": "true"},
+                follow_redirects=True
+            )
+        data = res.json()
+        author = data.get("author_name", "")
+        caption = data.get("title", "")
+        thumbnail_url = data.get("thumbnail_url", "")
+        return caption, author, thumbnail_url
+    except:
+        return "", "", ""
+
 async def fetch_tweet(url: str):
     """Use Twitter's free oEmbed API to get tweet text and author without auth."""
     try:
@@ -159,12 +176,25 @@ async def save_url(req: SaveRequest):
         raise HTTPException(status_code=401, detail="Invalid token")
 
     is_tweet = "x.com" in req.url or "twitter.com" in req.url
+    is_instagram = "instagram.com" in req.url
 
     extra_context = ""
 
     if is_tweet:
         clean_text, tweet_author = await fetch_tweet(req.url)
         title = tweet_author or req.url
+    elif is_instagram:
+        caption, author, thumbnail_url = await fetch_instagram(req.url)
+        clean_text = caption
+        title = author or req.url
+        print(f"[instagram] author={author!r} caption={caption!r} thumbnail={thumbnail_url!r}")
+        # If caption is sparse, analyze the thumbnail image
+        if thumbnail_url and len(clean_text) < 400:
+            image_description = await analyze_image(thumbnail_url)
+            print(f"[instagram] image_description={image_description!r}")
+            if image_description:
+                extra_context = f"Image: {image_description}"
+                clean_text = (clean_text + "\n\n" + extra_context).strip()
     else:
         try:
             async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:

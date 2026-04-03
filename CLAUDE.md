@@ -103,7 +103,8 @@ GEMINI_API_KEY=<Gemini API key>
 
 **Backend (`main.py` → `POST /save`)**
 1. Verifies the JWT via `supabase.auth.get_user(token)` to get `user_id`
-2. **If tweet** (`x.com` or `twitter.com`): calls Twitter's free oEmbed API at `publish.twitter.com/oembed` — strips HTML tags to get plain text and author name. No Twitter auth required.
+2. **If tweet** (`x.com` or `twitter.com`): calls Twitter's free oEmbed API at `publish.twitter.com/oembed` — strips HTML tags to get plain text and author name. No auth required.
+   **If Instagram** (`instagram.com`): calls Instagram's free oEmbed API at `api.instagram.com/oembed/` — returns post caption, author, and thumbnail URL. If caption is sparse (<400 chars), runs `analyze_image()` on the thumbnail. No auth required, public posts only.
 3. **Otherwise**: fetches the page with `httpx` (with a browser User-Agent), strips `<script>`/`<style>` tags, extracts plain text (up to 5000 chars) and `<title>`
 4. Calls `extract_og_tags()`: parses all `<meta>` tags from the raw HTML to extract `og:title`, `og:description`, `og:image`, and `description`. These are served even by JS-heavy sites like LinkedIn. Uses `og:title` as a better fallback title when `<title>` is generic.
 5. **Image analysis** (triggered when `len(clean_text) < 400` and `og:image` exists): calls `analyze_image()` which fetches the image bytes and passes them to `gemini-2.5-flash` vision to get a 2–3 sentence description of what's in the image.
