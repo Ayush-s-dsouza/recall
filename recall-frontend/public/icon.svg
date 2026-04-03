@@ -1,4 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="80" fill="#ffffff"/>
-  <text x="256" y="340" font-family="system-ui" font-weight="700" font-size="280" text-anchor="middle" fill="#0f0f0f">R</text>
+  <!-- Gray background -->
+  <rect width="512" height="512" rx="90" fill="#c0c0c0"/>
+
+  <!-- Left bracket [ -->
+  <rect x="138" y="148" width="62" height="36" fill="white"/>
+  <rect x="138" y="148" width="36" height="216" fill="white"/>
+  <rect x="138" y="328" width="62" height="36" fill="white"/>
+
+  <!-- Right bracket ] -->
+  <rect x="312" y="148" width="62" height="36" fill="white"/>
+  <rect x="338" y="148" width="36" height="216" fill="white"/>
+  <rect x="312" y="328" width="62" height="36" fill="white"/>
+
+  <!-- Center dot -->
+  <circle cx="256" cy="256" r="42" fill="white"/>
 </svg>
