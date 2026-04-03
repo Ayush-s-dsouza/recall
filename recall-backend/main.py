@@ -198,9 +198,12 @@ async def fetch_instagram(url: str):
         all_text = " ".join(parser.chunks)
 
         # Combine all chunks longer than 15 chars — skips UI noise like "Like", "Share"
-        # This captures the caption + any surrounding visible text in the embed
         meaningful_chunks = [c for c in parser.chunks if len(c) > 15]
         caption = " ".join(meaningful_chunks)[:2000] if meaningful_chunks else all_text[:1000]
+
+        # Strip leading Instagram UI boilerplate (follower counts, profile stats)
+        caption = re.sub(r'^[\d\w\s,\.·•]+(?:posts?|followers?|following)[^a-z]*', '', caption, flags=re.IGNORECASE).strip()
+        caption = re.sub(r'^View more on Instagram\s*', '', caption, flags=re.IGNORECASE).strip()
 
         print(f"[instagram] author={author!r} caption_len={len(caption)}", flush=True)
         print(f"[instagram] caption_preview={caption[:150]!r}", flush=True)
