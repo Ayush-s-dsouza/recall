@@ -108,13 +108,10 @@ async def analyze_image(image_url: str) -> str:
             res = await client.get(image_url, follow_redirects=True)
             image_bytes = res.content
             mime_type = res.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-            print(f"[analyze_image] status={res.status_code} mime={mime_type} size={len(image_bytes)}")
             # Reject if too small (likely an error page) or clearly not an image
             if len(image_bytes) < 1000:
-                print(f"[analyze_image] rejected: too small")
                 return ""
             if not mime_type.startswith("image/") and mime_type not in ("application/octet-stream",):
-                print(f"[analyze_image] rejected: bad mime type")
                 return ""
             # Force a safe mime type if CDN returns octet-stream
             if mime_type == "application/octet-stream":
@@ -158,7 +155,7 @@ async def fetch_instagram(url: str):
             res = await client.get(embed_url, follow_redirects=True)
             html = res.text
 
-        print(f"[instagram] embed status={res.status_code} html_len={len(html)}", flush=True)
+        print(f"[instagram] embed status={res.status_code}", flush=True)
 
         # Extract username — try several patterns across embed versions
         author = ""
@@ -205,8 +202,6 @@ async def fetch_instagram(url: str):
         caption = re.sub(r'^[\d\w\s,\.·•]+(?:posts?|followers?|following)[^a-z]*', '', caption, flags=re.IGNORECASE).strip()
         caption = re.sub(r'^View more on Instagram\s*', '', caption, flags=re.IGNORECASE).strip()
 
-        print(f"[instagram] author={author!r} caption_len={len(caption)}", flush=True)
-        print(f"[instagram] caption_preview={caption[:150]!r}", flush=True)
         return caption, author, ""  # skip thumbnail — Instagram CDN blocks direct access
     except Exception as e:
         print(f"[instagram] embed fetch failed: {e}", flush=True)
@@ -254,7 +249,6 @@ async def save_url(req: SaveRequest):
         # If caption is sparse, analyze the thumbnail image
         if thumbnail_url and len(clean_text) < 400:
             image_description = await analyze_image(thumbnail_url)
-            print(f"[instagram] image_description={image_description!r}")
             if image_description:
                 extra_context = f"Image: {image_description}"
                 clean_text = (clean_text + "\n\n" + extra_context).strip()
@@ -296,12 +290,6 @@ async def save_url(req: SaveRequest):
         og_description = og.get("og:description", "") or og.get("description", "")
         og_image = og.get("og:image", "")
 
-        print(f"[save] url={req.url}")
-        print(f"[save] clean_text length={len(clean_text)}")
-        print(f"[save] og_title={og_title!r}")
-        print(f"[save] og_description={og_description!r}")
-        print(f"[save] og_image={og_image!r}")
-
         # Prefer og:title over <title> when the latter is generic
         if og_title and (not title or title == req.url):
             title = og_title
@@ -311,13 +299,10 @@ async def save_url(req: SaveRequest):
         if og_description:
             extra_parts.append(og_description)
         if og_image and len(clean_text) < 400:
-            print(f"[save] attempting image analysis: {og_image[:80]}")
             image_description = await analyze_image(og_image)
-            print(f"[save] image_description={image_description!r}")
             if image_description:
                 extra_parts.append(f"Image: {image_description}")
         extra_context = "\n".join(extra_parts)
-        print(f"[save] extra_context={extra_context!r}")
 
         # Append extra context to stored text so full-text search also benefits
         if extra_context:
