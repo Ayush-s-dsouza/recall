@@ -55,8 +55,8 @@ def extract_save_metadata(raw_title: str, content: str, extra_context: str = "")
         if extra_context:
             context_block += f"\n\nAdditional context (post description / image content):\n{extra_context[:800]}"
         # Don't call Gemini with an essentially empty prompt — it produces garbage titles
-        if len(context_block.strip()) < 30 and not raw_title:
-            return "Saved post", "Other"
+        if len(context_block.strip()) < 30:
+            return raw_title or "Saved post", "Other"
         prompt = f"""Analyze this web content and return exactly three lines:
 Line 1: A concise, accurate title (max 8 words) describing what this specific content is about — not the platform name
 Line 2: The author's full name, or organisation name if no individual author. Write "Unknown" if not found.
@@ -203,6 +203,12 @@ async def save_url(req: SaveRequest):
         og_description = og.get("og:description", "") or og.get("description", "")
         og_image = og.get("og:image", "")
 
+        print(f"[save] url={req.url}")
+        print(f"[save] clean_text length={len(clean_text)}")
+        print(f"[save] og_title={og_title!r}")
+        print(f"[save] og_description={og_description!r}")
+        print(f"[save] og_image={og_image!r}")
+
         # Prefer og:title over <title> when the latter is generic
         if og_title and (not title or title == req.url):
             title = og_title
@@ -212,10 +218,13 @@ async def save_url(req: SaveRequest):
         if og_description:
             extra_parts.append(og_description)
         if og_image and len(clean_text) < 400:
+            print(f"[save] attempting image analysis: {og_image[:80]}")
             image_description = await analyze_image(og_image)
+            print(f"[save] image_description={image_description!r}")
             if image_description:
                 extra_parts.append(f"Image: {image_description}")
         extra_context = "\n".join(extra_parts)
+        print(f"[save] extra_context={extra_context!r}")
 
         # Append extra context to stored text so full-text search also benefits
         if extra_context:
