@@ -141,6 +141,8 @@ export default function App() {
     setSaveReceipt(r => ({ ...r, title: newTitle }))
     setTodaySaves(prev => prev.map(s => s.id === saveReceipt.id ? { ...s, title: newTitle } : s))
     setEditingTitle(false)
+    playSuccessChime()
+    navigator.vibrate?.([50])
   }
 
   const handleSave = async (url) => {
@@ -288,14 +290,21 @@ export default function App() {
               <span style={styles.receiptTag}>{saveReceipt.tag}</span>
               <div style={styles.receiptTitleRow}>
                 {editingTitle ? (
-                  <input
-                    style={styles.receiptTitleInput}
-                    value={draftTitle}
-                    onChange={e => setDraftTitle(e.target.value)}
-                    onBlur={() => updateSaveTitle(draftTitle)}
-                    onKeyDown={e => { if (e.key === "Enter") updateSaveTitle(draftTitle) }}
-                    autoFocus
-                  />
+                  <>
+                    <input
+                      style={styles.receiptTitleInput}
+                      value={draftTitle}
+                      onChange={e => setDraftTitle(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") updateSaveTitle(draftTitle) }}
+                      autoFocus
+                    />
+                    <button
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={() => updateSaveTitle(draftTitle)}
+                      style={styles.confirmButton}
+                      title="Save name"
+                    >✓</button>
+                  </>
                 ) : (
                   <>
                     <span style={styles.receiptTitle}>{saveReceipt.title}</span>
@@ -367,6 +376,7 @@ const styles = {
   receiptTitle: { fontSize: "15px", fontWeight: "600", flex: 1, lineHeight: 1.4 },
   receiptTitleInput: { flex: 1, background: "#222", border: "1px solid #555", borderRadius: "8px", color: "#fff", fontSize: "15px", fontWeight: "600", padding: "4px 8px", outline: "none" },
   editButton: { background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: "15px", padding: "2px 4px", lineHeight: 1, flexShrink: 0 },
+  confirmButton: { background: "#4ade80", border: "none", color: "#000", cursor: "pointer", fontSize: "14px", fontWeight: "700", padding: "4px 10px", borderRadius: "8px", flexShrink: 0 },
   receiptFooter: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" },
   receiptUrl: { fontSize: "12px", color: "#444", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 },
   receiptSaved: { fontSize: "13px", color: "#4ade80", fontWeight: "600", flexShrink: 0 },
