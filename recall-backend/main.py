@@ -33,6 +33,10 @@ class SearchRequest(BaseModel):
     query: str
     token: str
 
+class UpdateTitleRequest(BaseModel):
+    title: str
+    token: str
+
 def get_user_id(token: str):
     user = supabase.auth.get_user(token)
     return user.user.id
@@ -311,7 +315,7 @@ async def save_url(req: SaveRequest):
     title, tag = extract_save_metadata(title, clean_text, extra_context)
     embedding = get_embedding(f"{title} {clean_text}")
 
-    supabase.table("saves").insert({
+    result = supabase.table("saves").insert({
         "user_id": user_id,
         "url": req.url,
         "title": title,
@@ -319,8 +323,9 @@ async def save_url(req: SaveRequest):
         "embedding": embedding,
         "tag": tag
     }).execute()
+    inserted_id = result.data[0]["id"]
 
-    return {"success": True, "title": title, "tag": tag}
+    return {"success": True, "title": title, "tag": tag, "id": inserted_id}
 
 @app.post("/search")
 async def search(req: SearchRequest):
@@ -375,6 +380,16 @@ async def search(req: SearchRequest):
         results.append(row)
 
     return {"results": results}
+
+@app.patch("/save/{save_id}/title")
+async def update_title(save_id: str, req: UpdateTitleRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    supabase.table("saves").update({"title": req.title}) \
+        .eq("id", save_id).eq("user_id", user_id).execute()
+    return {"success": True}
 
 @app.get("/")
 async def root():
