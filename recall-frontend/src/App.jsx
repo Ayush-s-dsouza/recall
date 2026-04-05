@@ -13,22 +13,13 @@ const LOADING_STEPS = ["Fetching...", "Reading...", "Analyzing...", "Almost ther
 
 function getAppScheme(url) {
   if (!url) return null
-  if (url.includes("twitter.com") || url.includes("x.com")) return "twitter://"
-  if (url.includes("instagram.com")) return "instagram://"
-  if (url.includes("reddit.com")) return "reddit://"
-  if (url.includes("linkedin.com")) return "linkedin://"
+  if (url.includes("twitter.com") || url.includes("x.com")) return "twitter://timeline"
+  if (url.includes("instagram.com")) return "instagram://feed"
+  if (url.includes("reddit.com")) return "reddit://front"
+  if (url.includes("linkedin.com")) return "linkedin://feed"
   if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube://"
   if (url.includes("substack.com")) return "substack://"
   return null
-}
-
-function returnToSource(url) {
-  const scheme = getAppScheme(url)
-  if (scheme) {
-    window.location.href = scheme
-  } else {
-    window.history.back()
-  }
 }
 
 function getSourceLabel(url) {
@@ -438,9 +429,13 @@ export default function App() {
           )}
 
           {saveReceipt?.fromShareSheet && !saveReceipt.optimistic && !saveReceipt.duplicate && (
-            <button onClick={() => returnToSource(saveReceipt.url)} style={styles.returnButton}>
+            <a
+              href={getAppScheme(saveReceipt.url) ?? undefined}
+              onClick={!getAppScheme(saveReceipt.url) ? e => { e.preventDefault(); window.history.back() } : undefined}
+              style={styles.returnButton}
+            >
               ← Return to {getSourceLabel(saveReceipt.url)}
-            </button>
+            </a>
           )}
 
           {message && <p style={isError ? styles.error : styles.success}>{message}</p>}
@@ -527,7 +522,7 @@ const styles = {
   duplicateHeader: { fontSize: "13px", color: "#fbbf24", fontWeight: "600" },
   shimmerPill: { height: "14px", width: "48px", borderRadius: "4px", background: "#2a2a2a", display: "block" },
   shimmerTitle: { height: "18px", width: "70%", borderRadius: "4px", background: "#2a2a2a", display: "block" },
-  returnButton: { background: "none", border: "1px solid #333", color: "#aaa", borderRadius: "12px", padding: "13px 14px", fontSize: "14px", cursor: "pointer", width: "100%", textAlign: "center", boxSizing: "border-box" },
+  returnButton: { display: "block", background: "none", border: "1px solid #333", color: "#aaa", borderRadius: "12px", padding: "13px 14px", fontSize: "14px", cursor: "pointer", width: "100%", textAlign: "center", boxSizing: "border-box", textDecoration: "none" },
   todaySection: { marginTop: "4px", display: "flex", flexDirection: "column", gap: "8px" },
   todayHeader: { fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "1px", margin: 0 },
   todayList: { display: "flex", flexDirection: "column", gap: "6px", maxHeight: "320px", overflowY: "auto" },
