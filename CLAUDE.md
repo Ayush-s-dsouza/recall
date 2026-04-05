@@ -48,7 +48,7 @@ ReCall/
 │   ├── src/
 │   │   ├── App.jsx             ← entire frontend (single component file)
 │   │   ├── main.jsx            ← React entry point
-│   │   ├── index.css           ← global CSS variables and base styles
+│   │   ├── index.css           ← global CSS variables, base styles, shimmer keyframes
 │   │   └── App.css             ← Vite boilerplate, not actively used by the app
 │   ├── public/
 │   │   ├── manifest.json       ← PWA manifest + Share Target config
@@ -92,48 +92,85 @@ GEMINI_API_KEY=<Gemini API key>
 
 ---
 
+## Backend API Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/save` | Save a URL (full pipeline) |
+| `POST` | `/search` | Hybrid semantic + FTS search |
+| `PATCH` | `/save/{id}/title` | Update a save's display title |
+| `PATCH` | `/save/{id}/tag` | Update a save's category tag |
+| `DELETE` | `/save/{id}` | Delete a save |
+| `GET` | `/` | Health check |
+
+All mutating endpoints verify the Supabase JWT and enforce `user_id` ownership before touching any row.
+
+---
+
 ## How Each Major Feature Works
 
 ### 1. Save a URL
 
-**Frontend (`App.jsx` → `handleSave`)**
-1. Validates that the URL starts with `http://` or `https://`
-2. POSTs `{ url, token }` to `BACKEND/save` (token is the Supabase session JWT)
-3. Shows "Saved from {Source} ✓" or an error message
+**Frontend (`App.jsx` → `handleSave(url, fromShareSheet = false)`)**
+1. Validates URL starts with `http://` or `https://`; shows error and returns early if not
+2. Immediately sets an optimistic `saveReceipt` with `{ url, optimistic: true }` — renders a shimmer card at once
+3. Button text cycles through `["Fetching...", "Reading...", "Analyzing...", "Almost there..."]` every 800 ms via a `useEffect` on `loading`
+4. POSTs `{ url, token }` to `BACKEND/save`
+5. **On duplicate** (`data.duplicate === true`): sets receipt to `{ ...data, duplicate: true }` — shows amber "Already in ReCall" card with original save date. No chime, no re-save.
+6. **On success**: clears input, sets full receipt `{ title, tag, id, url, fromShareSheet }`, refreshes Today list, plays chime + vibrates, flashes green box-shadow glow for 1.5 s
+7. **On failure**: clears receipt, shows red error message
 
 **Backend (`main.py` → `POST /save`)**
-1. Verifies the JWT via `supabase.auth.get_user(token)` to get `user_id`
-2. **If tweet** (`x.com` or `twitter.com`): calls Twitter's free oEmbed API at `publish.twitter.com/oembed` — strips HTML tags to get plain text and author name. No auth required.
-   **If Instagram** (`instagram.com`): fetches the embed page at `instagram.com/p/SHORTCODE/embed/captioned/` with a mobile User-Agent. Extracts all visible text (skipping script/style tags), strips follower count UI boilerplate, and uses the result as the caption. Extracts author from JSON username fields or profile href links. Instagram CDN blocks direct image fetches so thumbnail vision is skipped. Works for public posts only; no API credentials needed.
-3. **Otherwise**: fetches the page with `httpx` (with a browser User-Agent), strips `<script>`/`<style>` tags, extracts plain text (up to 5000 chars) and `<title>`
-4. Calls `extract_og_tags()`: parses all `<meta>` tags from the raw HTML to extract `og:title`, `og:description`, `og:image`, and `description`. These are served even by JS-heavy sites like LinkedIn. Uses `og:title` as a better fallback title when `<title>` is generic.
-5. **Image analysis** (triggered when `len(clean_text) < 400` and `og:image` exists): calls `analyze_image()` which fetches the image bytes and passes them to `gemini-2.5-flash` vision to get a 2–3 sentence description of what's in the image.
-6. Builds `extra_context` from `og:description` + image description. Appends it to `content_text` (so full-text search benefits) and passes it separately to the AI tagging prompt.
-7. Calls `extract_save_metadata()`: sends raw title + up to 1500 chars of content + up to 800 chars of extra context to `gemini-2.5-flash`. The model returns exactly 3 lines:
-   - Line 1: Concise title (≤8 words)
-   - Line 2: Author name or org ("Unknown" if not found)
-   - Line 3: Category tag (Tech / Product / Business / Finance / Health / Personal / Other)
-   - Display title is formatted as `"Title · Author"` (or just title if author is Unknown)
-8. Calls `get_embedding()`: POSTs directly to `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent` with combined `title + content_text` (which now includes og/image context), capped at 8000 chars, returns 768-dim float array
-9. Inserts row into `saves` table: `{ user_id, url, title, content_text, embedding, tag }`
+1. Verifies JWT → `user_id`
+2. **Duplicate check first**: queries `saves` table for matching `url + user_id`. If found, returns `{ duplicate: True, id, title, tag, created_at }` immediately — no pipeline work.
+3. **If tweet** (`x.com`/`twitter.com`): oEmbed API at `publish.twitter.com/oembed` — strips HTML to get plain text + author. No auth required.
+   **If Instagram** (`instagram.com`): fetches `instagram.com/p/SHORTCODE/embed/captioned/` with mobile UA. Extracts visible text, strips UI boilerplate, extracts author from JSON/href. Instagram CDN blocks image fetches so vision is skipped. Public posts only.
+4. **Otherwise**: fetches page with `httpx` (browser UA), strips `<script>`/`<style>`, extracts plain text (≤5000 chars) and `<title>`
+5. Calls `extract_og_tags()`: parses `<meta>` tags for `og:title`, `og:description`, `og:image`, `description`
+6. **Image analysis** (when `len(clean_text) < 400` and `og:image` exists): passes image bytes to `gemini-2.5-flash` vision for a 2–3 sentence description
+7. Calls `extract_save_metadata()`: sends title + content + extra context to `gemini-2.5-flash` → returns exactly 3 lines: concise title, author, category tag. Display title formatted as `"Title · Author"` (or just title if Unknown)
+8. Calls `get_embedding()`: direct REST POST to `gemini-embedding-001`, returns 768-dim float array
+9. Inserts into `saves` table, captures `result.data[0]["id"]`, returns `{ success, title, tag, id }`
 
-### 2. Search
+### 2. Save Receipt Card
+
+After a successful save, a card replaces the input area showing:
+- **Tag pill** — tappable; opens a 7-pill inline picker to change the category. Selecting a new tag PATCHes `/save/{id}/tag` and updates the Today list in-place.
+- **Title** — editable via ✎ pencil icon → input + green ✓ button. Confirming PATCHes `/save/{id}/title`, updates the Today list, plays chime + vibrates.
+- **URL** + **"Saved ✓"** footer
+- **"← Return to [Source]"** link — shown only when the save was triggered via the share sheet. Implemented as `<a href="twitter://timeline">` (not programmatic `window.location.href`) — see Known Issues #13.
+
+Receipt clears when the user starts typing a new URL into the input.
+
+### 3. Today's Saves
+
+A scrollable list below the save form showing all saves from the current calendar day. Fetched directly from Supabase (anon key + RLS) — no backend endpoint needed:
+```js
+supabase.from("saves").select("id, url, title, tag")
+  .gte("created_at", today.toISOString())
+  .order("created_at", { ascending: false }).limit(20)
+```
+Refreshed on: user sign-in, after each successful save.
+
+Each card shows tag + title + source label. Trash icon (🗑) expands the card to a confirmation row ("Remove from ReCall?" + Delete/Cancel). Deleting calls `DELETE /save/{id}`, filters from state, and clears the receipt if it matches.
+
+### 4. Search
 
 **Frontend (`App.jsx` → `handleSearch`)**
 1. POSTs `{ query, token }` to `BACKEND/search`
 2. Renders up to 5 result cards: tag, title, URL, match %
-3. If results span >1 source (Twitter, Reddit, etc.), shows source filter pills
+3. If results span >1 source, shows source filter pills
 
 **Backend (`main.py` → `POST /search`)**
 
 Hybrid search with Reciprocal Rank Fusion (RRF):
 1. Embeds the query using `get_embedding()`
-2. **Semantic search**: Supabase RPC `match_saves` with query embedding, `match_user_id`, `match_count=20`. Returns cosine-similarity ranked results.
-3. **Full-text search**: `saves` table filtered with `.filter("content_text", "fts", req.query)`, limit 20
-4. **RRF fusion** (k=60): scores `1/(k + rank + 1)` for each result per list, sums across lists — boosts items appearing in both
-5. Takes top 5 fused results, normalizes scores to 0–1 for the frontend % display
+2. **Semantic search**: Supabase RPC `match_saves` — cosine similarity, top 20
+3. **Full-text search**: `saves` table with `.filter("content_text", "fts", req.query)`, limit 20
+4. **RRF fusion** (k=60): `1/(k + rank + 1)` per list, summed — boosts items in both
+5. Top 5 fused results, scores normalized to 0–1 for the % display
 
-### 3. Android Share Sheet
+### 5. Android Share Sheet
 
 **`manifest.json` config:**
 ```json
@@ -143,23 +180,36 @@ Hybrid search with Reciprocal Rank Fusion (RRF):
   "params": { "url": "url", "text": "text", "title": "title" }
 }
 ```
-When Android shares a URL to ReCall, it opens `/?url=<shared-url>`.
 
 **Frontend handling (`App.jsx` → `useEffect` on mount):**
-1. Reads `window.location.search` for `?url=` or `?text=` params
-2. If a valid `http` URL is found, stores it in `sessionStorage` as `pendingUrl` and switches to "save" view
-3. After auth resolves (or on `onAuthStateChange`), if there's a `pendingUrl` and a logged-in user, auto-calls `handleSave()` and clears `pendingUrl`
-4. Handles the race condition where the share arrives before auth loads
 
-### 4. Clipboard Detection
+Uses `extractSharedUrl(params)` — a robust helper that handles the fact that different apps encode the shared URL differently:
+1. Checks `url` param first — if it starts with `http`, uses it directly (X/Twitter sends this)
+2. Falls through to `text` then `title` params
+3. If the param value starts with `http`, takes everything up to the first whitespace
+4. Otherwise scans for an embedded URL anywhere in the string via regex (handles LinkedIn which prepends `"Article title\nhttps://..."` to the `text` param)
+
+Once a URL is extracted:
+- Stores it in `sessionStorage` as `pendingUrl` and switches to "save" view
+- After auth resolves, auto-calls `handleSave(pending, true)` — the `true` is the `fromShareSheet` flag
+- The `fromShareSheet` flag is passed as a **parameter**, not read from state, to avoid a stale closure bug (the `useEffect` closure captures the initial `handleSave` before any state updates take effect)
+
+### 6. Clipboard Detection
 
 On the Save tab (and on initial load if not a share-sheet trigger), `checkClipboard()` runs:
 1. Calls `navigator.clipboard.readText()` — requires focus + user permission; silently ignores errors
-2. If clipboard contains `http://` or `https://` URL, sets `clipboardUrl` state
-3. A banner appears: "Copied from {Source}" + "Save this" button
-4. Tapping "Save this" calls `handleSave(clipboardUrl)` and clears the banner
+2. If clipboard contains a valid URL, **pre-fills the URL input directly** (no banner — the input just appears with the URL ready to go)
 
-### 5. Authentication
+### 7. Feedback — Chime + Haptic
+
+`playSuccessChime()` uses the Web Audio API to synthesise a short rising-tone chime (880 Hz → 1320 Hz over 0.12 s, fading out over 0.45 s). Called on:
+- Successful save
+- Title edit confirmed
+- Tag edit confirmed
+
+`navigator.vibrate?.([50])` fires alongside each chime. The `?.` silently skips it on browsers/devices that don't support it.
+
+### 8. Authentication
 
 - Google OAuth via Supabase Auth
 - `signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin } })`
@@ -168,16 +218,18 @@ On the Save tab (and on initial load if not a share-sheet trigger), `checkClipbo
 - The `anon` key is safe to expose — RLS enforces per-user data isolation
 - The backend uses the **service role key** (bypasses RLS) but manually enforces ownership via verified JWT `user_id`
 
-### 6. Source Label Detection
+### 9. Source Label + App Scheme Detection
 
-`getSourceLabel(url)` maps URLs to human-readable source names:
-- `twitter.com` or `x.com` → "X (Twitter)"
-- `linkedin.com` → "LinkedIn"
-- `reddit.com` → "Reddit"
-- `youtube.com` or `youtu.be` → "YouTube"
-- `substack.com` → "Substack"
-- Anything else → hostname with first letter capitalized (e.g. "medium.com" → "Medium")
-- Fallback → "Page"
+`getSourceLabel(url)` maps URLs to human-readable names: X (Twitter), LinkedIn, Reddit, YouTube, Substack, or hostname-capitalised fallback.
+
+`getAppScheme(url)` maps the same sources to native app deep link schemes used by the "Return to" button:
+- X/Twitter → `twitter://timeline`
+- Instagram → `instagram://feed`
+- Reddit → `reddit://front`
+- LinkedIn → `linkedin://feed`
+- YouTube → `youtube://`
+- Substack → `substack://`
+- Unknown → `null` (falls back to `window.history.back()`)
 
 ---
 
@@ -251,8 +303,9 @@ Returns rows ordered by `embedding <=> query_embedding` (cosine distance), filte
 | Muted text | `#888` / `#555` |
 | Active button | white bg, black text |
 | Inactive button | `#333` border, `#888` text |
-| Success message | `#4ade80` (green) |
-| Error message | `#ef4444` (red) |
+| Success / green | `#4ade80` |
+| Error / red | `#ef4444` |
+| Duplicate / amber | `#fbbf24` |
 
 ### Colors (CSS Variables — light/dark system, currently only used in index.css)
 
@@ -298,17 +351,25 @@ A lightning bolt / cursor-shaped path:
 
 5. **Share Sheet race condition is handled** — the share URL arrives before auth loads. This is handled via `sessionStorage("pendingUrl")` consumed once auth resolves. Don't refactor the auth flow without preserving this.
 
-6. **Clipboard API silently fails** — requires page focus and user permission. The `try/catch` around it is correct and intentional — don't remove it or replace with alerts.
+6. **Clipboard API silently fails** — requires page focus and user permission. The `try/catch` around `checkClipboard()` is correct and intentional — don't remove it.
 
-7. **Tweet fetching uses oEmbed (no auth)** — only works for public tweets. The HTML-to-text stripping is regex-based (not a full parser), which is intentional for simplicity.
+7. **Tweet fetching uses oEmbed (no auth)** — only works for public tweets. The HTML-to-text stripping is regex-based (not a full parser), intentional for simplicity.
 
 8. **`vite-plugin-pwa` is NOT installed** — PWA is manual (manifest.json only). No service worker exists. The app is installable but not offline-capable.
 
-9. **`App.css` is not used by the app** — it's leftover Vite boilerplate. The real styles are inline in `App.jsx`.
+9. **`App.css` is not used by the app** — it's leftover Vite boilerplate. All styles are inline in `App.jsx` via the `styles` object at the bottom of the file.
 
 10. **React 19 + Vite 8** — cutting-edge versions; check plugin/library compatibility before adding new dependencies.
 
-11. **Gemini model name** — the backend uses `"gemini-2.5-flash"` (not `"gemini-2.5-flash-preview-04-17"` which was an older preview name). Keep this consistent.
+11. **Gemini model name** — the backend uses `"gemini-2.5-flash"`. Keep this consistent.
+
+12. **`fromShareSheet` must be a parameter, not state** — `handleSave` is defined before the `useEffect` state updates resolve. Reading `viaShareSheet` state inside `handleSave` would always see the initial `false` value (stale closure). The flag is passed as `handleSave(pending, isViaShareSheet)` using the local variable from the useEffect scope.
+
+13. **"Return to [App]" button must be an `<a>` tag, not a `<button>` with `onClick`** — Chrome's PWA standalone mode blocks programmatic `window.location.href` navigation to custom schemes (`twitter://`, etc.). Direct user-tap on an `<a href="twitter://timeline">` bypasses this restriction. Do not refactor to `onClick` + `window.location.href`.
+
+14. **Share sheet URL extraction must handle embedded URLs** — different apps encode the shared URL differently. LinkedIn prepends the article title to the `text` param (e.g., `"Article title\nhttps://..."`). The `extractSharedUrl()` helper in the `useEffect` scans all three params (`url`, `text`, `title`) and uses a regex fallback to find the URL anywhere in the string. Don't simplify this back to a plain `startsWith("http")` check.
+
+15. **Duplicate check happens before the full pipeline** — `/save` queries for an existing row with the same `url + user_id` before fetching the page or calling Gemini. If found, returns `{ duplicate: True, ... }` immediately. The frontend shows an amber receipt and plays no chime. There is no re-save path.
 
 ---
 
@@ -316,21 +377,30 @@ A lightning bolt / cursor-shaped path:
 
 ### Working
 - Google OAuth sign-in / sign-out
-- Saving URLs: web pages and X/Twitter tweets
+- Saving URLs: web pages, X/Twitter tweets, Instagram posts, LinkedIn articles
 - AI-generated title with author attribution (`"Title · Author"`)
+- Inline title editing from the save receipt card
+- Inline tag editing from the save receipt card (7-category pill picker)
 - Auto-categorization into 7 tags (Tech, Product, Business, Finance, Health, Personal, Other)
+- Duplicate URL detection — shows "Already in ReCall" with original save date, no re-save
+- Optimistic UI — shimmer receipt appears instantly on save tap
+- Cycling loading button text during save ("Fetching..." → "Analyzing..." etc.)
+- Green glow flash on successful save receipt
+- Chime + haptic on successful save, title edit, and tag edit
 - Hybrid semantic + full-text search with Reciprocal Rank Fusion
-- Source-based result filter pills
+- Source-based result filter pills on search results
 - Match % display per result card
-- Android Share Sheet integration (auto-saves on return from share)
-- Clipboard URL detection on Save tab
+- Android Share Sheet integration — robust URL extraction across all apps
+- "Return to [App]" deep-link button on share-sheet-triggered saves (in progress — not fully reliable on all devices yet)
+- Clipboard URL auto-paste into save input on tab switch
+- Today's saves list below save form (fetched from Supabase, refreshed after each save)
+- Delete from Today list with trash icon + confirmation flow
 - PWA installable (manifest + icons)
 - Vercel (frontend) + Railway (backend) deployments live
 
 ### Not Yet Built
 - Offline support / service worker caching
-- Delete or edit saved items
-- Browse / view all saves (no list view — only search)
+- Browse / view all saves (no full library view — only today + search)
 - Pagination for large save libraries
 - iOS Share Sheet (not supported by PWA spec yet)
 - Browser extension for desktop saving
