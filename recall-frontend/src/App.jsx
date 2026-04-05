@@ -30,6 +30,13 @@ function getAppScheme(url) {
   }
 }
 
+function formatDate(isoString) {
+  if (!isoString) return ""
+  try {
+    return new Date(isoString).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+  } catch { return "" }
+}
+
 function getSourceLabel(url) {
   if (!url) return "Page"
   if (url.includes("twitter.com") || url.includes("x.com")) return "X (Twitter)"
@@ -65,6 +72,13 @@ export default function App() {
   const [loadingStep, setLoadingStep] = useState(0)
   const [editingTag, setEditingTag] = useState(false)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [hasSearched, setHasSearched] = useState(false)
+  const [displayCount, setDisplayCount] = useState(5)
+  const [recentSearches, setRecentSearches] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("recall_recent_searches") || "[]") }
+    catch { return [] }
+  })
+  const [searchInputFocused, setSearchInputFocused] = useState(false)
 
   useEffect(() => {
     if (!loading) { setLoadingStep(0); return }
@@ -165,6 +179,11 @@ export default function App() {
   const signOut = async () => {
     await supabase.auth.signOut()
     setUser(null)
+    localStorage.removeItem("recall_recent_searches")
+    setRecentSearches([])
+    setHasSearched(false)
+    setResults([])
+    setQuery("")
   }
 
   const getToken = async () => {
@@ -255,16 +274,24 @@ export default function App() {
     setLoading(false)
   }
 
-  const handleSearch = async () => {
-    if (!query.trim()) return
+  const handleSearch = async (overrideQuery) => {
+    const q = (overrideQuery ?? query).trim()
+    if (!q) return
     setLoading(true)
     setSelectedSource(null)
+    setHasSearched(true)
+    setDisplayCount(5)
+    setRecentSearches(prev => {
+      const updated = [q, ...prev.filter(s => s !== q)].slice(0, 5)
+      localStorage.setItem("recall_recent_searches", JSON.stringify(updated))
+      return updated
+    })
     try {
       const token = await getToken()
       const res = await fetch(`${BACKEND}/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, token })
+        body: JSON.stringify({ query: q, token })
       })
       const data = await res.json()
       setResults(data.results)
@@ -302,19 +329,90 @@ export default function App() {
 
       {view === "search" && (
         <div style={styles.section}>
-          <input
-            style={styles.input}
-            placeholder="What are you looking for?"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleSearch()}
-          />
-          <button onClick={handleSearch} style={styles.button} disabled={loading}>
-            {loading ? "Searching..." : "Search"}
-          </button>
-          {results.length > 0 && (() => {
+
+          {/* 1. Unified search bar */}
+          <div style={styles.searchBarWrapper}>
+            <input
+              style={styles.searchBarInput}
+              placeholder="What are you looking for?"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handleSearch()}
+              onFocus={() => setSearchInputFocused(true)}
+              onBlur={() => setTimeout(() => setSearchInputFocused(false), 150)}
+            />
+            <button
+              onClick={() => handleSearch()}
+              style={styles.searchBarButton}
+              disabled={loading}
+              aria-label="Search"
+            >🔍</button>
+          </div>
+
+          {/* 6. Recent searches — shown when input focused + query empty */}
+          {searchInputFocused && !loading && recentSearches.length > 0 && query.trim() === "" && (
+            <div style={styles.recentSearchesBox}>
+              <span style={styles.recentSearchesLabel}>Recent</span>
+              <div style={styles.recentChips}>
+                {recentSearches.map(s => (
+                  <div key={s} style={styles.recentChipRow}>
+                    <button
+                      style={styles.recentChip}
+                      onMouseDown={e => { e.preventDefault(); setQuery(s); handleSearch(s) }}
+                    >{s}</button>
+                    <button
+                      style={styles.recentChipDismiss}
+                      onMouseDown={e => {
+                        e.preventDefault()
+                        setRecentSearches(prev => {
+                          const updated = prev.filter(r => r !== s)
+                          localStorage.setItem("recall_recent_searches", JSON.stringify(updated))
+                          return updated
+                        })
+                      }}
+                    >×</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 3. Neutral shimmer loading bar */}
+          {loading && (
+            <span className="shimmer" style={styles.searchShimmerBar} />
+          )}
+
+          {/* 2. Empty state with example chips */}
+          {!hasSearched && !loading && (
+            <div style={styles.emptyState}>
+              <p style={styles.emptyStateHint}>Try searching for…</p>
+              <div style={styles.exampleChips}>
+                {["startup ideas I saved", "that AI article", "product design tips"].map(chip => (
+                  <button
+                    key={chip}
+                    style={styles.exampleChip}
+                    onClick={() => { setQuery(chip); handleSearch(chip) }}
+                  >{chip}</button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 4. Zero-results state */}
+          {hasSearched && !loading && results.length === 0 && (
+            <div style={styles.zeroResults}>
+              <p style={styles.zeroResultsMain}>Nothing found for "{query}"</p>
+              <p style={styles.zeroResultsSub}>Try different words, or save more content.</p>
+            </div>
+          )}
+
+          {/* 5 + 7. Source filters, cleaned-up result cards, show more */}
+          {results.length > 0 && !loading && (() => {
             const sources = [...new Set(results.map(r => getSourceLabel(r.url)))]
-            const filtered = selectedSource ? results.filter(r => getSourceLabel(r.url) === selectedSource) : results
+            const filtered = selectedSource
+              ? results.filter(r => getSourceLabel(r.url) === selectedSource)
+              : results
+            const visible = filtered.slice(0, displayCount)
             return (
               <>
                 {sources.length > 1 && (
@@ -322,27 +420,36 @@ export default function App() {
                     {sources.map(src => (
                       <button
                         key={src}
-                        onClick={() => setSelectedSource(selectedSource === src ? null : src)}
+                        onClick={() => { setSelectedSource(selectedSource === src ? null : src); setDisplayCount(5) }}
                         style={selectedSource === src ? styles.filterActive : styles.filter}
-                      >
-                        {src}
-                      </button>
+                      >{src}</button>
                     ))}
                   </div>
                 )}
                 <div style={styles.results}>
-                  {filtered.map(r => (
+                  {visible.map(r => (
                     <a key={r.id} href={r.url} target="_blank" rel="noreferrer" style={styles.card}>
-                      <div style={styles.cardTag}>{r.tag}</div>
+                      <div style={styles.cardMeta}>
+                        <span style={styles.cardTag}>{r.tag}</span>
+                        {r.created_at && <span style={styles.cardDate}>{formatDate(r.created_at)}</span>}
+                      </div>
                       <div style={styles.cardTitle}>{r.title || getSourceLabel(r.url)}</div>
-                      <div style={styles.cardUrl}>{r.url}</div>
-                      <div style={styles.cardScore}>Match: {Math.round(r.similarity * 100)}%</div>
+                      <div style={styles.cardSource}>{getSourceLabel(r.url)}</div>
                     </a>
                   ))}
                 </div>
+                {filtered.length > displayCount && (
+                  <button
+                    style={styles.showMoreButton}
+                    onClick={() => setDisplayCount(c => c + 5)}
+                  >
+                    Show {Math.min(5, filtered.length - displayCount)} more
+                  </button>
+                )}
               </>
             )
           })()}
+
         </div>
       )}
 
@@ -561,4 +668,40 @@ const styles = {
   deleteConfirmText: { fontSize: "12px", color: "#888", flex: 1 },
   deleteConfirmYes: { background: "#ef4444", border: "none", color: "#fff", borderRadius: "6px", padding: "4px 10px", fontSize: "12px", fontWeight: "600", cursor: "pointer", flexShrink: 0 },
   deleteConfirmNo: { background: "none", border: "1px solid #333", color: "#888", borderRadius: "6px", padding: "4px 10px", fontSize: "12px", cursor: "pointer", flexShrink: 0 },
+
+  // Unified search bar
+  searchBarWrapper: { position: "relative", display: "flex", alignItems: "center", width: "100%", boxSizing: "border-box" },
+  searchBarInput: { width: "100%", padding: "14px 52px 14px 16px", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", color: "#fff", fontSize: "16px", boxSizing: "border-box", outline: "none" },
+  searchBarButton: { position: "absolute", right: "10px", background: "none", border: "none", cursor: "pointer", fontSize: "18px", padding: "4px", lineHeight: 1, color: "#888" },
+
+  // Recent searches
+  recentSearchesBox: { background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", padding: "12px 16px", display: "flex", flexDirection: "column", gap: "8px" },
+  recentSearchesLabel: { fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "1px" },
+  recentChips: { display: "flex", flexDirection: "column", gap: "4px" },
+  recentChipRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" },
+  recentChip: { background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: "14px", padding: "4px 0", textAlign: "left", flex: 1 },
+  recentChipDismiss: { background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "16px", padding: "0 4px", lineHeight: 1, flexShrink: 0 },
+
+  // Shimmer loading bar
+  searchShimmerBar: { display: "block", width: "100%", height: "4px", borderRadius: "4px", background: "linear-gradient(90deg, #2a2a2a 0%, #444 50%, #2a2a2a 100%)" },
+
+  // Empty state
+  emptyState: { display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", marginTop: "16px" },
+  emptyStateHint: { fontSize: "13px", color: "#555", margin: 0 },
+  exampleChips: { display: "flex", flexWrap: "wrap", gap: "8px", justifyContent: "center" },
+  exampleChip: { background: "none", border: "1px solid #333", color: "#888", padding: "8px 16px", borderRadius: "20px", cursor: "pointer", fontSize: "13px" },
+
+  // Zero results
+  zeroResults: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", marginTop: "24px" },
+  zeroResultsMain: { fontSize: "15px", color: "#aaa", fontWeight: "600", margin: 0, textAlign: "center" },
+  zeroResultsSub: { fontSize: "13px", color: "#555", margin: 0, textAlign: "center" },
+
+  // Updated card (cardTitle overrides the earlier definition; cardUrl/cardScore are now dead)
+  cardMeta: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" },
+  cardDate: { fontSize: "11px", color: "#555" },
+  cardTitle: { fontSize: "15px", fontWeight: "600", marginBottom: "4px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
+  cardSource: { fontSize: "12px", color: "#555" },
+
+  // Show more
+  showMoreButton: { background: "none", border: "1px solid #333", color: "#888", padding: "10px 20px", borderRadius: "20px", cursor: "pointer", fontSize: "14px", alignSelf: "center" },
 }

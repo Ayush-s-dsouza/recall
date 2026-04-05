@@ -361,7 +361,7 @@ async def search(req: SearchRequest):
     # Full-text search over content + title
     try:
         fts_result = supabase.table("saves") \
-            .select("id, url, title, tag") \
+            .select("id, url, title, tag, created_at") \
             .eq("user_id", user_id) \
             .filter("content_text", "fts", req.query) \
             .limit(20) \
@@ -387,7 +387,7 @@ async def search(req: SearchRequest):
             metadata[rid] = row
 
     # Normalize scores to 0–1 so the frontend % display stays meaningful
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:20]
     max_score = ranked[0][1] if ranked else 1
     results = []
     for rid, score in ranked:
