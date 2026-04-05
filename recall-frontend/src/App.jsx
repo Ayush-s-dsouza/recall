@@ -106,8 +106,20 @@ export default function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const sharedUrl = params.get("url") || params.get("text")
-    const isViaShareSheet = !!(sharedUrl && sharedUrl.startsWith("http"))
+    function extractSharedUrl(p) {
+      const urlParam = p.get("url")
+      if (urlParam && urlParam.startsWith("http")) return urlParam
+      for (const key of ["text", "title"]) {
+        const val = p.get(key)
+        if (!val) continue
+        if (val.startsWith("http")) return val.split(/\s/)[0]
+        const m = val.match(/https?:\/\/\S+/)
+        if (m) return m[0]
+      }
+      return null
+    }
+    const sharedUrl = extractSharedUrl(params)
+    const isViaShareSheet = !!sharedUrl
     if (isViaShareSheet) {
       sessionStorage.setItem("pendingUrl", sharedUrl)
       setView("save")
