@@ -41,7 +41,7 @@ export default function App() {
   const [editingTitle, setEditingTitle] = useState(false)
   const [draftTitle, setDraftTitle] = useState("")
   const [todaySaves, setTodaySaves] = useState([])
-  const [viaShareSheet, setViaShareSheet] = useState(false)
+
   const [isFreshReceipt, setIsFreshReceipt] = useState(false)
   const [loadingStep, setLoadingStep] = useState(0)
   const [editingTag, setEditingTag] = useState(false)
@@ -100,7 +100,6 @@ export default function App() {
     if (isViaShareSheet) {
       sessionStorage.setItem("pendingUrl", sharedUrl)
       setView("save")
-      setViaShareSheet(true)
     }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
@@ -108,7 +107,7 @@ export default function App() {
       const pending = sessionStorage.getItem("pendingUrl")
       if (pending && session?.user) {
         sessionStorage.removeItem("pendingUrl")
-        handleSave(pending)
+        handleSave(pending, isViaShareSheet)
       }
     })
     supabase.auth.onAuthStateChange((_event, session) => {
@@ -117,7 +116,7 @@ export default function App() {
       const pending = sessionStorage.getItem("pendingUrl")
       if (pending && session?.user) {
         sessionStorage.removeItem("pendingUrl")
-        handleSave(pending)
+        handleSave(pending, isViaShareSheet)
       }
     })
     if (!isViaShareSheet) {
@@ -184,7 +183,7 @@ export default function App() {
     if (saveReceipt?.id === id) setSaveReceipt(null)
   }
 
-  const handleSave = async (url) => {
+  const handleSave = async (url, fromShareSheet = false) => {
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
       setMessage("Links only, please!")
       setIsError(true)
@@ -210,7 +209,7 @@ export default function App() {
         setSaveReceipt({ ...data, url, duplicate: true })
       } else {
         setUrlInput("")
-        setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet: viaShareSheet })
+        setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet })
         fetchTodaySaves()
         playSuccessChime()
         navigator.vibrate?.([50])
@@ -413,14 +412,15 @@ export default function App() {
                     <span style={styles.receiptUrl}>{saveReceipt.url}</span>
                     <span style={styles.receiptSaved}>Saved ✓</span>
                   </div>
-                  {saveReceipt.fromShareSheet && (
-                    <button onClick={() => window.history.back()} style={styles.returnButton}>
-                      ← Return to {getSourceLabel(saveReceipt.url)}
-                    </button>
-                  )}
                 </>
               )}
             </div>
+          )}
+
+          {saveReceipt?.fromShareSheet && !saveReceipt.optimistic && !saveReceipt.duplicate && (
+            <button onClick={() => window.history.back()} style={styles.returnButton}>
+              ← Return to {getSourceLabel(saveReceipt.url)}
+            </button>
           )}
 
           {message && <p style={isError ? styles.error : styles.success}>{message}</p>}
@@ -507,7 +507,7 @@ const styles = {
   duplicateHeader: { fontSize: "13px", color: "#fbbf24", fontWeight: "600" },
   shimmerPill: { height: "14px", width: "48px", borderRadius: "4px", background: "#2a2a2a", display: "block" },
   shimmerTitle: { height: "18px", width: "70%", borderRadius: "4px", background: "#2a2a2a", display: "block" },
-  returnButton: { background: "none", border: "1px solid #2a2a2a", color: "#666", borderRadius: "10px", padding: "10px 14px", fontSize: "14px", cursor: "pointer", width: "100%", textAlign: "left", boxSizing: "border-box" },
+  returnButton: { background: "none", border: "1px solid #333", color: "#aaa", borderRadius: "12px", padding: "13px 14px", fontSize: "14px", cursor: "pointer", width: "100%", textAlign: "center", boxSizing: "border-box" },
   todaySection: { marginTop: "4px", display: "flex", flexDirection: "column", gap: "8px" },
   todayHeader: { fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "1px", margin: 0 },
   todayList: { display: "flex", flexDirection: "column", gap: "6px", maxHeight: "320px", overflowY: "auto" },
