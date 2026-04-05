@@ -365,7 +365,7 @@ A lightning bolt / cursor-shaped path:
 
 12. **`fromShareSheet` must be a parameter, not state** — `handleSave` is defined before the `useEffect` state updates resolve. Reading `viaShareSheet` state inside `handleSave` would always see the initial `false` value (stale closure). The flag is passed as `handleSave(pending, isViaShareSheet)` using the local variable from the useEffect scope.
 
-13. **"Return to [App]" button must be an `<a>` tag, not a `<button>` with `onClick`** — Chrome's PWA standalone mode blocks programmatic `window.location.href` navigation to custom schemes (`twitter://`, etc.). Direct user-tap on an `<a href="twitter://timeline">` bypasses this restriction. Do not refactor to `onClick` + `window.location.href`.
+13. **"Return to [App]" button uses Android Intent URLs** — Chrome standalone mode blocks both programmatic navigation (`window.location.href`) AND `<a href="custom-scheme://...">` to custom app schemes. The only reliable fix is Android Intent URL format: `intent://{host}{pathname}#Intent;scheme=https;package={app.package.id};end`. This goes through Android's intent system directly. The button must remain an `<a>` tag (not a `<button>` with `onClick`) and must NOT call `e.preventDefault()`.
 
 14. **Share sheet URL extraction must handle embedded URLs** — different apps encode the shared URL differently. LinkedIn prepends the article title to the `text` param (e.g., `"Article title\nhttps://..."`). The `extractSharedUrl()` helper in the `useEffect` scans all three params (`url`, `text`, `title`) and uses a regex fallback to find the URL anywhere in the string. Don't simplify this back to a plain `startsWith("http")` check.
 

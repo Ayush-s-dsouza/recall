@@ -13,13 +13,21 @@ const LOADING_STEPS = ["Fetching...", "Reading...", "Analyzing...", "Almost ther
 
 function getAppScheme(url) {
   if (!url) return null
-  if (url.includes("twitter.com") || url.includes("x.com")) return "twitter://timeline"
-  if (url.includes("instagram.com")) return "instagram://feed"
-  if (url.includes("reddit.com")) return "reddit://front"
-  if (url.includes("linkedin.com")) return "linkedin://feed"
-  if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube://"
-  if (url.includes("substack.com")) return "substack://"
-  return null
+  try {
+    const { host, pathname } = new URL(url)
+    const pkg =
+      url.includes("twitter.com") || url.includes("x.com") ? "com.twitter.android" :
+      url.includes("instagram.com") ? "com.instagram.android" :
+      url.includes("reddit.com") ? "com.reddit.frontpage" :
+      url.includes("linkedin.com") ? "com.linkedin.android" :
+      url.includes("youtube.com") || url.includes("youtu.be") ? "com.google.android.youtube" :
+      url.includes("substack.com") ? "com.substack.app" :
+      null
+    if (!pkg) return null
+    return `intent://${host}${pathname}#Intent;scheme=https;package=${pkg};end`
+  } catch {
+    return null
+  }
 }
 
 function getSourceLabel(url) {
