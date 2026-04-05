@@ -98,6 +98,7 @@ GEMINI_API_KEY=<Gemini API key>
 |---|---|---|
 | `POST` | `/save` | Save a URL (full pipeline) |
 | `POST` | `/search` | Hybrid semantic + FTS search |
+| `POST` | `/suggestions` | Personalised search chip suggestions |
 | `PATCH` | `/save/{id}/title` | Update a save's display title |
 | `PATCH` | `/save/{id}/tag` | Update a save's category tag |
 | `DELETE` | `/save/{id}` | Delete a save |
@@ -156,21 +157,52 @@ Each card shows tag + title + source label. Trash icon (🗑) expands the card t
 
 ### 4. Search
 
-**Frontend (`App.jsx` → `handleSearch`)**
-1. POSTs `{ query, token }` to `BACKEND/search`
-2. Renders up to 5 result cards: tag, title, URL, match %
-3. If results span >1 source, shows source filter pills
+**Frontend (`App.jsx` → `handleSearch(overrideQuery?)`)**
+1. Accepts an optional `overrideQuery` parameter to avoid stale closure when called from chip clicks (same pattern as `fromShareSheet` in save flow)
+2. Resets `selectedSource`, `selectedTag`, `displayCount` (to 5) on each new search
+3. Writes the query to recent searches (`localStorage` key `recall_recent_searches`, max 5, newest-first, deduped)
+4. POSTs `{ query, token }` to `BACKEND/search`
+5. Persists last query + results to `sessionStorage` (`recall_last_query`, `recall_last_results`) — restored on tab revisit within the same session
+6. Renders result cards with tag, date, title, 3-line excerpt, source label — no raw match %
+7. Two filter dropdowns (Source + Tag) replace the old pill row — only shown when >1 distinct value exists in results; each resets `displayCount`
+8. "Show more" button reveals results 5 at a time (`displayCount` state); pagination applies within the active filter combination
 
 **Backend (`main.py` → `POST /search`)**
 
 Hybrid search with Reciprocal Rank Fusion (RRF):
 1. Embeds the query using `get_embedding()`
 2. **Semantic search**: Supabase RPC `match_saves` — cosine similarity, top 20
-3. **Full-text search**: `saves` table with `.filter("content_text", "fts", req.query)`, limit 20
+3. **Full-text search**: `saves` table, selects `id, url, title, tag, created_at, content_text`, limit 20
 4. **RRF fusion** (k=60): `1/(k + rank + 1)` per list, summed — boosts items in both
-5. Top 5 fused results, scores normalized to 0–1 for the % display
+5. Top 20 fused results returned (frontend paginates with `displayCount`)
+6. Each result gets an `excerpt` field: first ~220 chars of `content_text`, trimmed to word boundary with `…`
+7. `content_text` and `embedding` are stripped from the response before sending to client
 
-### 5. Android Share Sheet
+### 5. Search UI — Empty & Edge States
+
+- **Empty state (has saves)**: On first load of the Search tab, shows 3 personalised chip suggestions fetched from `/suggestions`. Chips are cached in `sessionStorage` (`recall_suggestions`) for the session — static per session, not re-fetched on tab switch.
+- **Empty state (no saves)**: If `/suggestions` returns `has_saves: false`, shows "Nothing saved yet. Save your first link →" with a CTA that switches to the Save tab.
+- **Shimmer loading bar**: A single 4px-tall shimmer bar below the search input while loading — does not imply a result count.
+- **Zero-results state**: Shows `"Nothing found for '[query]'"` with a "Save a page about this →" CTA that switches to the Save tab.
+- **Recent searches**: Last 5 queries shown as dismissible rows when the search input is focused and empty. Tapping re-runs the search. Cleared on sign-out.
+- **Session persistence**: Last query + results survive tab switching and page reload within the same browser session.
+
+### 6. Personalised Search Suggestions
+
+**Backend (`main.py` → `POST /suggestions`)**
+1. Verifies JWT → `user_id`
+2. Fetches `tag` + `url` for all of the user's saves
+3. Tallies tag frequency and source frequency (using the same `get_source_label()` logic as the frontend)
+4. Builds up to 3 chips using templates:
+   - Top tag → `"my [tag] reads"`
+   - 2nd tag → `"[tag] articles"`
+   - Top source → `"things from [Source]"`
+5. Falls back to generic phrases (`"what I've been reading"`, etc.) if the library lacks variety
+6. Returns `{ chips: [...], has_saves: bool }` — frontend shows new-user nudge when `has_saves` is false
+
+`get_source_label(url)` is a Python mirror of the frontend helper — kept in sync manually.
+
+### 7. Android Share Sheet
 
 **`manifest.json` config:**
 ```json
@@ -194,13 +226,13 @@ Once a URL is extracted:
 - After auth resolves, auto-calls `handleSave(pending, true)` — the `true` is the `fromShareSheet` flag
 - The `fromShareSheet` flag is passed as a **parameter**, not read from state, to avoid a stale closure bug (the `useEffect` closure captures the initial `handleSave` before any state updates take effect)
 
-### 6. Clipboard Detection
+### 8. Clipboard Detection
 
 On the Save tab (and on initial load if not a share-sheet trigger), `checkClipboard()` runs:
 1. Calls `navigator.clipboard.readText()` — requires focus + user permission; silently ignores errors
 2. If clipboard contains a valid URL, **pre-fills the URL input directly** (no banner — the input just appears with the URL ready to go)
 
-### 7. Feedback — Chime + Haptic
+### 9. Feedback — Chime + Haptic
 
 `playSuccessChime()` uses the Web Audio API to synthesise a short rising-tone chime (880 Hz → 1320 Hz over 0.12 s, fading out over 0.45 s). Called on:
 - Successful save
@@ -209,7 +241,7 @@ On the Save tab (and on initial load if not a share-sheet trigger), `checkClipbo
 
 `navigator.vibrate?.([50])` fires alongside each chime. The `?.` silently skips it on browsers/devices that don't support it.
 
-### 8. Authentication
+### 10. Authentication
 
 - Google OAuth via Supabase Auth
 - `signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin } })`
@@ -218,7 +250,7 @@ On the Save tab (and on initial load if not a share-sheet trigger), `checkClipbo
 - The `anon` key is safe to expose — RLS enforces per-user data isolation
 - The backend uses the **service role key** (bypasses RLS) but manually enforces ownership via verified JWT `user_id`
 
-### 9. Source Label + App Scheme Detection
+### 11. Source Label + App Scheme Detection
 
 `getSourceLabel(url)` maps URLs to human-readable names: X (Twitter), LinkedIn, Reddit, YouTube, Substack, or hostname-capitalised fallback.
 
@@ -371,6 +403,14 @@ A lightning bolt / cursor-shaped path:
 
 15. **Duplicate check happens before the full pipeline** — `/save` queries for an existing row with the same `url + user_id` before fetching the page or calling Gemini. If found, returns `{ duplicate: True, ... }` immediately. The frontend shows an amber receipt and plays no chime. There is no re-save path.
 
+16. **`handleSearch` uses `overrideQuery` parameter, not `query` state** — chip clicks (example chips, recent searches) call `handleSearch(chipText)` directly. Reading `query` state inside the function would see the pre-update value (stale closure). Always pass the intended query string as `overrideQuery` when calling from chip click handlers.
+
+17. **`get_source_label()` exists in both frontend and backend** — the frontend `getSourceLabel(url)` (in `App.jsx`) and the backend `get_source_label(url)` (in `main.py`) must stay in sync. The backend version is used by `/suggestions` to tally source frequency. If new sources are added to one, add to the other.
+
+18. **Search session persistence uses `sessionStorage`, not `localStorage`** — `recall_last_query` and `recall_last_results` survive tab switching and page reload but are cleared when the browser session ends. `recall_suggestions` is also session-scoped so chips refresh on next login. `recall_recent_searches` uses `localStorage` so it persists across sessions until sign-out.
+
+19. **Filter dropdowns reset `displayCount`** — both the Source and Tag dropdowns call `setDisplayCount(5)` on change. This is intentional: switching filters should always start from the top of the filtered set, not mid-paginated.
+
 ---
 
 ## Current Status
@@ -387,9 +427,6 @@ A lightning bolt / cursor-shaped path:
 - Cycling loading button text during save ("Fetching..." → "Analyzing..." etc.)
 - Green glow flash on successful save receipt
 - Chime + haptic on successful save, title edit, and tag edit
-- Hybrid semantic + full-text search with Reciprocal Rank Fusion
-- Source-based result filter pills on search results
-- Match % display per result card
 - Android Share Sheet integration — robust URL extraction across all apps
 - "Return to [App]" deep-link button on share-sheet-triggered saves (in progress — not fully reliable on all devices yet)
 - Clipboard URL auto-paste into save input on tab switch
@@ -397,13 +434,20 @@ A lightning bolt / cursor-shaped path:
 - Delete from Today list with trash icon + confirmation flow
 - PWA installable (manifest + icons)
 - Vercel (frontend) + Railway (backend) deployments live
+- **Search — unified search bar** (single pill input with 🔍 icon, no separate button)
+- **Search — personalised suggestion chips** on empty state, derived from user's tag + source history via `/suggestions`; new-user nudge when library is empty
+- **Search — content excerpts** on each result card (first ~220 chars of saved text)
+- **Search — source + tag filter dropdowns** replacing old pill row; only shown when >1 distinct value present
+- **Search — "Show more" pagination** — 5 results at a time, paginating within active filters
+- **Search — recent searches** — last 5 queries as dismissible chips, shown when input focused + empty; cleared on sign-out
+- **Search — session persistence** — last query + results restored on tab switch / reload within same browser session
+- **Search — zero-results CTA** — "Save a page about this →" switches to Save tab
+- **Search — shimmer loading bar** — neutral 4px bar, no skeleton cards
 
 ### Not Yet Built
 - Offline support / service worker caching
 - Browse / view all saves (no full library view — only today + search)
-- Pagination for large save libraries
 - iOS Share Sheet (not supported by PWA spec yet)
 - Browser extension for desktop saving
-- Filtering search by source or tag before searching
 - Bulk import / export
 - Analytics or usage tracking

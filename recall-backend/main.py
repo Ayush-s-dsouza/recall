@@ -44,9 +44,33 @@ class UpdateTagRequest(BaseModel):
 class DeleteRequest(BaseModel):
     token: str
 
+class SuggestionsRequest(BaseModel):
+    token: str
+
 def get_user_id(token: str):
     user = supabase.auth.get_user(token)
     return user.user.id
+
+def get_source_label(url: str) -> str:
+    if not url:
+        return "Page"
+    if "twitter.com" in url or "x.com" in url:
+        return "X (Twitter)"
+    if "linkedin.com" in url:
+        return "LinkedIn"
+    if "reddit.com" in url:
+        return "Reddit"
+    if "youtube.com" in url or "youtu.be" in url:
+        return "YouTube"
+    if "substack.com" in url:
+        return "Substack"
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or ""
+        host = host.replace("www.", "")
+        return host.capitalize() if host else "Page"
+    except:
+        return "Page"
 
 def get_embedding(text: str):
     import requests
@@ -361,7 +385,7 @@ async def search(req: SearchRequest):
     # Full-text search over content + title
     try:
         fts_result = supabase.table("saves") \
-            .select("id, url, title, tag, created_at") \
+            .select("id, url, title, tag, created_at, content_text") \
             .eq("user_id", user_id) \
             .filter("content_text", "fts", req.query) \
             .limit(20) \
@@ -386,13 +410,23 @@ async def search(req: SearchRequest):
         if rid not in metadata:
             metadata[rid] = row
 
-    # Normalize scores to 0–1 so the frontend % display stays meaningful
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:20]
     max_score = ranked[0][1] if ranked else 1
     results = []
     for rid, score in ranked:
         row = metadata[rid]
         row["similarity"] = score / max_score
+        # Build a short excerpt from content_text
+        content = (row.get("content_text") or "").strip()
+        if len(content) > 220:
+            truncated = content[:220]
+            last_space = truncated.rfind(" ")
+            row["excerpt"] = (truncated[:last_space] + "…") if last_space > 0 else (truncated + "…")
+        else:
+            row["excerpt"] = content
+        # Strip heavy fields before sending to client
+        row.pop("content_text", None)
+        row.pop("embedding", None)
         results.append(row)
 
     return {"results": results}
@@ -429,6 +463,49 @@ async def update_title(save_id: str, req: UpdateTitleRequest):
     supabase.table("saves").update({"title": req.title}) \
         .eq("id", save_id).eq("user_id", user_id).execute()
     return {"success": True}
+
+@app.post("/suggestions")
+async def get_suggestions(req: SuggestionsRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    result = supabase.table("saves") \
+        .select("tag, url") \
+        .eq("user_id", user_id) \
+        .execute()
+
+    if not result.data:
+        return {"chips": [], "has_saves": False}
+
+    # Count tags and sources across all saves
+    tag_counts = {}
+    source_counts = {}
+    for row in result.data:
+        t = row.get("tag") or "Other"
+        tag_counts[t] = tag_counts.get(t, 0) + 1
+        src = get_source_label(row.get("url", ""))
+        if src and src != "Page":
+            source_counts[src] = source_counts.get(src, 0) + 1
+
+    sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
+    sorted_sources = sorted(source_counts.items(), key=lambda x: x[1], reverse=True)
+
+    chips = []
+    if sorted_tags:
+        chips.append(f"my {sorted_tags[0][0].lower()} reads")
+    if len(sorted_tags) > 1:
+        chips.append(f"{sorted_tags[1][0].lower()} articles")
+    if sorted_sources and len(chips) < 3:
+        chips.append(f"things from {sorted_sources[0][0]}")
+
+    # Fallbacks if not enough variety
+    fallbacks = ["what I've been reading", "recent saves", "links I collected"]
+    while len(chips) < 3:
+        chips.append(fallbacks[len(chips) % len(fallbacks)])
+
+    return {"chips": chips[:3], "has_saves": True}
 
 @app.get("/")
 async def root():

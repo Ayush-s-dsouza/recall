@@ -79,6 +79,8 @@ export default function App() {
     catch { return [] }
   })
   const [searchInputFocused, setSearchInputFocused] = useState(false)
+  const [selectedTag, setSelectedTag] = useState(null)
+  const [suggestedChips, setSuggestedChips] = useState(null)
 
   useEffect(() => {
     if (!loading) { setLoadingStep(0); return }
@@ -111,6 +113,24 @@ export default function App() {
       }
     } catch {
       // Clipboard access denied or unavailable
+    }
+  }
+
+  const fetchSuggestions = async () => {
+    try {
+      const cached = sessionStorage.getItem("recall_suggestions")
+      if (cached) { setSuggestedChips(JSON.parse(cached)); return }
+      const token = await getToken()
+      const res = await fetch(`${BACKEND}/suggestions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token })
+      })
+      const data = await res.json()
+      setSuggestedChips(data.chips)
+      sessionStorage.setItem("recall_suggestions", JSON.stringify(data.chips))
+    } catch {
+      setSuggestedChips([])
     }
   }
 
@@ -148,7 +168,18 @@ export default function App() {
     }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
-      if (session?.user) fetchTodaySaves()
+      if (session?.user) {
+        fetchTodaySaves()
+        fetchSuggestions()
+        // Restore last search session
+        const savedQuery = sessionStorage.getItem("recall_last_query")
+        const savedResults = sessionStorage.getItem("recall_last_results")
+        if (savedQuery && savedResults) {
+          setQuery(savedQuery)
+          setResults(JSON.parse(savedResults))
+          setHasSearched(true)
+        }
+      }
       const pending = sessionStorage.getItem("pendingUrl")
       if (pending && session?.user) {
         sessionStorage.removeItem("pendingUrl")
@@ -157,7 +188,10 @@ export default function App() {
     })
     supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
-      if (session?.user) fetchTodaySaves()
+      if (session?.user) {
+        fetchTodaySaves()
+        fetchSuggestions()
+      }
       const pending = sessionStorage.getItem("pendingUrl")
       if (pending && session?.user) {
         sessionStorage.removeItem("pendingUrl")
@@ -180,10 +214,15 @@ export default function App() {
     await supabase.auth.signOut()
     setUser(null)
     localStorage.removeItem("recall_recent_searches")
+    sessionStorage.removeItem("recall_last_query")
+    sessionStorage.removeItem("recall_last_results")
+    sessionStorage.removeItem("recall_suggestions")
     setRecentSearches([])
+    setSuggestedChips(null)
     setHasSearched(false)
     setResults([])
     setQuery("")
+    setSelectedTag(null)
   }
 
   const getToken = async () => {
@@ -279,6 +318,7 @@ export default function App() {
     if (!q) return
     setLoading(true)
     setSelectedSource(null)
+    setSelectedTag(null)
     setHasSearched(true)
     setDisplayCount(5)
     setRecentSearches(prev => {
@@ -295,6 +335,8 @@ export default function App() {
       })
       const data = await res.json()
       setResults(data.results)
+      sessionStorage.setItem("recall_last_query", q)
+      sessionStorage.setItem("recall_last_results", JSON.stringify(data.results))
     } catch {
       setResults([])
     }
@@ -330,7 +372,7 @@ export default function App() {
       {view === "search" && (
         <div style={styles.section}>
 
-          {/* 1. Unified search bar */}
+          {/* Search bar */}
           <div style={styles.searchBarWrapper}>
             <input
               style={styles.searchBarInput}
@@ -349,7 +391,7 @@ export default function App() {
             >🔍</button>
           </div>
 
-          {/* 6. Recent searches — shown when input focused + query empty */}
+          {/* Recent searches — shown when input focused + query empty */}
           {searchInputFocused && !loading && recentSearches.length > 0 && query.trim() === "" && (
             <div style={styles.recentSearchesBox}>
               <span style={styles.recentSearchesLabel}>Recent</span>
@@ -377,55 +419,90 @@ export default function App() {
             </div>
           )}
 
-          {/* 3. Neutral shimmer loading bar */}
+          {/* Shimmer loading bar */}
           {loading && (
             <span className="shimmer" style={styles.searchShimmerBar} />
           )}
 
-          {/* 2. Empty state with example chips */}
+          {/* Empty state — personalised chips or new-user nudge */}
           {!hasSearched && !loading && (
-            <div style={styles.emptyState}>
-              <p style={styles.emptyStateHint}>Try searching for…</p>
-              <div style={styles.exampleChips}>
-                {["startup ideas I saved", "that AI article", "product design tips"].map(chip => (
-                  <button
-                    key={chip}
-                    style={styles.exampleChip}
-                    onClick={() => { setQuery(chip); handleSearch(chip) }}
-                  >{chip}</button>
-                ))}
+            suggestedChips === null ? null : suggestedChips.length === 0 ? (
+              <div style={styles.emptyState}>
+                <p style={styles.emptyStateHint}>Nothing saved yet.</p>
+                <button
+                  style={styles.emptyStateCta}
+                  onClick={() => setView("save")}
+                >Save your first link →</button>
               </div>
-            </div>
+            ) : (
+              <div style={styles.emptyState}>
+                <p style={styles.emptyStateHint}>Try searching for…</p>
+                <div style={styles.exampleChips}>
+                  {suggestedChips.map(chip => (
+                    <button
+                      key={chip}
+                      style={styles.exampleChip}
+                      onClick={() => { setQuery(chip); handleSearch(chip) }}
+                    >{chip}</button>
+                  ))}
+                </div>
+              </div>
+            )
           )}
 
-          {/* 4. Zero-results state */}
+          {/* Zero-results state */}
           {hasSearched && !loading && results.length === 0 && (
             <div style={styles.zeroResults}>
               <p style={styles.zeroResultsMain}>Nothing found for "{query}"</p>
               <p style={styles.zeroResultsSub}>Try different words, or save more content.</p>
+              <button
+                style={styles.zeroResultsCta}
+                onClick={() => setView("save")}
+              >Save a page about this →</button>
             </div>
           )}
 
-          {/* 5 + 7. Source filters, cleaned-up result cards, show more */}
+          {/* Filters + result cards + show more */}
           {results.length > 0 && !loading && (() => {
             const sources = [...new Set(results.map(r => getSourceLabel(r.url)))]
-            const filtered = selectedSource
-              ? results.filter(r => getSourceLabel(r.url) === selectedSource)
-              : results
+            const tags = [...new Set(results.map(r => r.tag).filter(Boolean))]
+            const filtered = results.filter(r =>
+              (!selectedSource || getSourceLabel(r.url) === selectedSource) &&
+              (!selectedTag || r.tag === selectedTag)
+            )
             const visible = filtered.slice(0, displayCount)
             return (
               <>
-                {sources.length > 1 && (
-                  <div style={styles.filters}>
-                    {sources.map(src => (
-                      <button
-                        key={src}
-                        onClick={() => { setSelectedSource(selectedSource === src ? null : src); setDisplayCount(5) }}
-                        style={selectedSource === src ? styles.filterActive : styles.filter}
-                      >{src}</button>
-                    ))}
+                {/* Dropdowns row — only show if there's something to filter */}
+                {(sources.length > 1 || tags.length > 1) && (
+                  <div style={styles.filterRow}>
+                    {sources.length > 1 && (
+                      <div style={styles.filterDropdownWrapper}>
+                        <select
+                          style={styles.filterDropdown}
+                          value={selectedSource || ""}
+                          onChange={e => { setSelectedSource(e.target.value || null); setDisplayCount(5) }}
+                        >
+                          <option value="">All sources</option>
+                          {sources.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </div>
+                    )}
+                    {tags.length > 1 && (
+                      <div style={styles.filterDropdownWrapper}>
+                        <select
+                          style={styles.filterDropdown}
+                          value={selectedTag || ""}
+                          onChange={e => { setSelectedTag(e.target.value || null); setDisplayCount(5) }}
+                        >
+                          <option value="">All tags</option>
+                          {tags.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </div>
+                    )}
                   </div>
                 )}
+
                 <div style={styles.results}>
                   {visible.map(r => (
                     <a key={r.id} href={r.url} target="_blank" rel="noreferrer" style={styles.card}>
@@ -434,10 +511,12 @@ export default function App() {
                         {r.created_at && <span style={styles.cardDate}>{formatDate(r.created_at)}</span>}
                       </div>
                       <div style={styles.cardTitle}>{r.title || getSourceLabel(r.url)}</div>
+                      {r.excerpt && <div style={styles.cardExcerpt}>{r.excerpt}</div>}
                       <div style={styles.cardSource}>{getSourceLabel(r.url)}</div>
                     </a>
                   ))}
                 </div>
+
                 {filtered.length > displayCount && (
                   <button
                     style={styles.showMoreButton}
@@ -704,4 +783,18 @@ const styles = {
 
   // Show more
   showMoreButton: { background: "none", border: "1px solid #333", color: "#888", padding: "10px 20px", borderRadius: "20px", cursor: "pointer", fontSize: "14px", alignSelf: "center" },
+
+  // Empty state CTA (new-user nudge)
+  emptyStateCta: { background: "none", border: "none", color: "#888", fontSize: "14px", cursor: "pointer", padding: 0, textDecoration: "underline", textDecorationColor: "#444" },
+
+  // Zero results CTA
+  zeroResultsCta: { background: "none", border: "1px solid #333", color: "#888", padding: "10px 20px", borderRadius: "20px", cursor: "pointer", fontSize: "14px", marginTop: "8px" },
+
+  // Filter dropdowns
+  filterRow: { display: "flex", gap: "8px", flexWrap: "wrap" },
+  filterDropdownWrapper: { position: "relative", flexShrink: 0 },
+  filterDropdown: { appearance: "none", WebkitAppearance: "none", background: "#1a1a1a", border: "1px solid #333", color: "#888", padding: "7px 32px 7px 12px", borderRadius: "20px", fontSize: "13px", cursor: "pointer", backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23555'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center" },
+
+  // Card excerpt
+  cardExcerpt: { fontSize: "13px", color: "#666", lineHeight: 1.5, marginBottom: "6px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" },
 }
