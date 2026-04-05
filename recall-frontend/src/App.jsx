@@ -52,6 +52,7 @@ export default function App() {
   const [editingTitle, setEditingTitle] = useState(false)
   const [draftTitle, setDraftTitle] = useState("")
   const [todaySaves, setTodaySaves] = useState([])
+  const [debugInfo, setDebugInfo] = useState(null)
 
   const [isFreshReceipt, setIsFreshReceipt] = useState(false)
   const [loadingStep, setLoadingStep] = useState(0)
@@ -443,11 +444,25 @@ export default function App() {
           {saveReceipt?.fromShareSheet && !saveReceipt.optimistic && !saveReceipt.duplicate && (
             <a
               href={getAppScheme(saveReceipt.url) ?? undefined}
-              onClick={!getAppScheme(saveReceipt.url) ? e => { e.preventDefault(); window.history.back() } : undefined}
+              onClick={e => {
+                const scheme = getAppScheme(saveReceipt.url)
+                const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+                const debugMsg = `scheme: ${scheme}\nstandalone: ${isStandalone}\nreferrer: "${document.referrer}"\nhistory.length: ${window.history.length}`
+                setDebugInfo(debugMsg)
+                if (!scheme) {
+                  e.preventDefault()
+                  window.history.back()
+                }
+              }}
               style={styles.returnButton}
             >
               ← Return to {getSourceLabel(saveReceipt.url)}
             </a>
+          )}
+          {debugInfo && (
+            <pre style={{ marginTop: 12, padding: 10, background: '#111', color: '#4ade80', fontSize: 11, borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+              {debugInfo}
+            </pre>
           )}
 
           {message && <p style={isError ? styles.error : styles.success}>{message}</p>}
