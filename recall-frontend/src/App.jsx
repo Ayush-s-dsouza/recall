@@ -11,6 +11,26 @@ const BACKEND = import.meta.env.VITE_BACKEND_URL
 const VALID_TAGS = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
 const LOADING_STEPS = ["Fetching...", "Reading...", "Analyzing...", "Almost there..."]
 
+function getAppScheme(url) {
+  if (!url) return null
+  if (url.includes("twitter.com") || url.includes("x.com")) return "twitter://"
+  if (url.includes("instagram.com")) return "instagram://"
+  if (url.includes("reddit.com")) return "reddit://"
+  if (url.includes("linkedin.com")) return "linkedin://"
+  if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube://"
+  if (url.includes("substack.com")) return "substack://"
+  return null
+}
+
+function returnToSource(url) {
+  const scheme = getAppScheme(url)
+  if (scheme) {
+    window.location.href = scheme
+  } else {
+    window.history.back()
+  }
+}
+
 function getSourceLabel(url) {
   if (!url) return "Page"
   if (url.includes("twitter.com") || url.includes("x.com")) return "X (Twitter)"
@@ -418,7 +438,7 @@ export default function App() {
           )}
 
           {saveReceipt?.fromShareSheet && !saveReceipt.optimistic && !saveReceipt.duplicate && (
-            <button onClick={() => window.history.back()} style={styles.returnButton}>
+            <button onClick={() => returnToSource(saveReceipt.url)} style={styles.returnButton}>
               ← Return to {getSourceLabel(saveReceipt.url)}
             </button>
           )}
