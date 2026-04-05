@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { createClient } from "@supabase/supabase-js"
 
 const supabase = createClient(
@@ -81,6 +81,14 @@ export default function App() {
   const [searchInputFocused, setSearchInputFocused] = useState(false)
   const [selectedTag, setSelectedTag] = useState(null)
   const [suggestedChips, setSuggestedChips] = useState(null)
+  const [onboardingStep, setOnboardingStep] = useState(null)
+  const [first5Count, setFirst5Count] = useState(() =>
+    parseInt(localStorage.getItem('recall_first5_count') || '0')
+  )
+  const [firstSaveSheetOpen, setFirstSaveSheetOpen] = useState(false)
+  const urlInputRef = useRef(null)
+  const searchInputRef = useRef(null)
+  const isIOS = /iPhone|iPad/i.test(navigator.userAgent)
 
   useEffect(() => {
     if (!loading) { setLoadingStep(0); return }
@@ -179,6 +187,17 @@ export default function App() {
           setResults(JSON.parse(savedResults))
           setHasSearched(true)
         }
+        // Initialize onboarding for first-time users
+        if (!localStorage.getItem('recall_onboarded')) {
+          const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+          if (isStandalone || localStorage.getItem('recall_onboarding_install')) {
+            setOnboardingStep('firstSave')
+            setFirstSaveSheetOpen(true)
+            setView('save')
+          } else {
+            setOnboardingStep('install')
+          }
+        }
       }
       const pending = sessionStorage.getItem("pendingUrl")
       if (pending && session?.user) {
@@ -191,6 +210,16 @@ export default function App() {
       if (session?.user) {
         fetchTodaySaves()
         fetchSuggestions()
+        if (!localStorage.getItem('recall_onboarded')) {
+          const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+          if (isStandalone || localStorage.getItem('recall_onboarding_install')) {
+            setOnboardingStep('firstSave')
+            setFirstSaveSheetOpen(true)
+            setView('save')
+          } else {
+            setOnboardingStep('install')
+          }
+        }
       }
       const pending = sessionStorage.getItem("pendingUrl")
       if (pending && session?.user) {
@@ -213,6 +242,7 @@ export default function App() {
   const signOut = async () => {
     await supabase.auth.signOut()
     setUser(null)
+    setOnboardingStep(null)
     localStorage.removeItem("recall_recent_searches")
     sessionStorage.removeItem("recall_last_query")
     sessionStorage.removeItem("recall_last_results")
@@ -223,6 +253,23 @@ export default function App() {
     setResults([])
     setQuery("")
     setSelectedTag(null)
+  }
+
+  const advanceOnboarding = (step) => {
+    if (step === 'install') {
+      localStorage.setItem('recall_onboarding_install', 'true')
+      setOnboardingStep('firstSave')
+      setFirstSaveSheetOpen(true)
+      setView('save')
+    } else if (step === 'firstSave') {
+      localStorage.setItem('recall_onboarding_save', 'true')
+      setFirstSaveSheetOpen(false)
+      setOnboardingStep('firstSearch')
+    } else if (step === 'firstSearch') {
+      localStorage.setItem('recall_onboarding_search', 'true')
+      localStorage.setItem('recall_onboarded', 'true')
+      setOnboardingStep('done')
+    }
   }
 
   const getToken = async () => {
@@ -298,12 +345,28 @@ export default function App() {
         setSaveReceipt({ ...data, url, duplicate: true })
       } else {
         setUrlInput("")
-        setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet })
+        const storedCount = parseInt(localStorage.getItem('recall_first5_count') || '0')
+        const newCount = storedCount < 5 ? storedCount + 1 : storedCount
+        if (storedCount < 5) {
+          localStorage.setItem('recall_first5_count', String(newCount))
+          setFirst5Count(newCount)
+        }
+        setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet, milestoneCount: storedCount < 5 ? newCount : null })
         fetchTodaySaves()
         playSuccessChime()
-        navigator.vibrate?.([50])
-        setIsFreshReceipt(true)
-        setTimeout(() => setIsFreshReceipt(false), 1500)
+        if (newCount === 5 && storedCount < 5) {
+          setTimeout(() => playSuccessChime(), 200)
+          navigator.vibrate?.([50, 80, 50, 80, 100])
+          setIsFreshReceipt(true)
+          setTimeout(() => setIsFreshReceipt(false), 3000)
+        } else {
+          navigator.vibrate?.([50])
+          setIsFreshReceipt(true)
+          setTimeout(() => setIsFreshReceipt(false), storedCount >= 2 ? 2000 : 1500)
+        }
+        if (onboardingStep === 'firstSave') {
+          setTimeout(() => advanceOnboarding('firstSave'), 600)
+        }
       }
     } catch {
       setSaveReceipt(null)
@@ -316,6 +379,7 @@ export default function App() {
   const handleSearch = async (overrideQuery) => {
     const q = (overrideQuery ?? query).trim()
     if (!q) return
+    if (onboardingStep === 'firstSearch') advanceOnboarding('firstSearch')
     setLoading(true)
     setSelectedSource(null)
     setSelectedTag(null)
@@ -348,7 +412,20 @@ export default function App() {
       <div style={styles.container}>
         <div style={styles.hero}>
           <h1 style={styles.logo}>ReCall</h1>
-          <p style={styles.tagline}>Your saved internet, finally searchable.</p>
+          <p style={styles.heroTagline}>Your saved internet,<br />on recall.</p>
+          <p style={styles.heroBody}>Save links from any app. Search them later in plain English.</p>
+          <div style={styles.mockCards}>
+            {[
+              { tag: "TECH", title: "The science of deep work · Cal Newport" },
+              { tag: "PRODUCT", title: "Why Apple is betting on spatial computing" },
+              { tag: "BUSINESS", title: "How to raise a seed round in 2024" },
+            ].map(c => (
+              <div key={c.tag} style={styles.mockCard}>
+                <span style={styles.mockCardTag}>{c.tag}</span>
+                <span style={styles.mockCardTitle}>{c.title}</span>
+              </div>
+            ))}
+          </div>
           <button onClick={signIn} style={styles.button}>
             Sign in with Google
           </button>
@@ -375,6 +452,7 @@ export default function App() {
           {/* Search bar */}
           <div style={styles.searchBarWrapper}>
             <input
+              ref={searchInputRef}
               style={styles.searchBarInput}
               placeholder="What are you looking for?"
               value={query}
@@ -534,7 +612,19 @@ export default function App() {
 
       {view === "save" && (
         <div style={styles.section}>
+          {first5Count > 0 && first5Count < 5 && (
+            <div style={styles.progressPill}>
+              <span style={{ fontSize: "12px", color: "#fbbf24" }}>⚡ {first5Count} of 5 saves · ReCall is climbing your Share Sheet</span>
+              <div style={styles.progressDotsRow}>
+                {[1,2,3,4,5].map(i => (
+                  <span key={i} style={i <= first5Count ? styles.dotFilledSmall : styles.dotEmptySmall} />
+                ))}
+              </div>
+            </div>
+          )}
+
           <input
+            ref={urlInputRef}
             style={styles.input}
             placeholder="Paste a URL to save"
             value={urlInput}
@@ -629,6 +719,26 @@ export default function App() {
                     <span style={styles.receiptUrl}>{saveReceipt.url}</span>
                     <span style={styles.receiptSaved}>Saved ✓</span>
                   </div>
+                  {saveReceipt.milestoneCount && (
+                    <div style={styles.milestoneRow}>
+                      {saveReceipt.milestoneCount === 5 ? (
+                        <>
+                          <div style={styles.progressDotsRow}>
+                            {[1,2,3,4,5].map(i => <span key={i} style={styles.dotFilled} />)}
+                          </div>
+                          <p style={styles.milestoneHeadline}>ReCall is at the top of your Share Sheet.</p>
+                          <p style={styles.milestoneSub}>You'll never have to hunt for it again.</p>
+                        </>
+                      ) : (
+                        <p style={styles.milestoneText}>
+                          {saveReceipt.milestoneCount === 1 && "1/5 — 4 more to unlock the top of your Share Sheet"}
+                          {saveReceipt.milestoneCount === 2 && "2/5 — building momentum ⚡"}
+                          {saveReceipt.milestoneCount === 3 && "Halfway! 3/5 — ReCall is climbing 🔥"}
+                          {saveReceipt.milestoneCount === 4 && "4/5 — one more and you're set"}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -686,6 +796,73 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {onboardingStep === 'firstSave' && firstSaveSheetOpen && (
+            <div style={styles.bottomSheet}>
+              <div style={styles.bottomSheetHandle} />
+              <p style={styles.bottomSheetTitle}>Save your first link</p>
+              <p style={styles.bottomSheetBody}>
+                5 saves and ReCall moves to the top of your Share Sheet — permanently.
+              </p>
+              <div style={styles.progressDotsRow}>
+                {[1,2,3,4,5].map(i => (
+                  <span key={i} style={i <= first5Count ? styles.dotFilled : styles.dotEmpty} />
+                ))}
+                <span style={styles.progressLabel}>{first5Count} of 5</span>
+              </div>
+              <button
+                style={{ ...styles.button, marginTop: "4px" }}
+                onClick={() => { setFirstSaveSheetOpen(false); setTimeout(() => urlInputRef.current?.focus(), 100) }}
+              >I'll paste a link</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Install onboarding overlay */}
+      {onboardingStep === 'install' && (
+        <div style={styles.overlay}>
+          <div style={styles.overlayCard}>
+            <div style={{ fontSize: "36px", marginBottom: "4px" }}>📱</div>
+            <p style={styles.overlayTitle}>Get the full experience</p>
+            <p style={styles.overlayBody}>
+              ReCall's Share Sheet feature — saving from any app — needs the installed version.
+            </p>
+            <div style={styles.overlaySteps}>
+              {isIOS ? (
+                <>
+                  <p style={styles.overlayStep}>① Tap the <strong>Share</strong> icon in Safari</p>
+                  <p style={styles.overlayStep}>② Tap <strong>"Add to Home Screen"</strong></p>
+                  <p style={styles.overlayStep}>③ Tap <strong>"Add"</strong></p>
+                  <p style={styles.overlayNote}>Share Sheet isn't available on iOS — you can still paste links directly.</p>
+                </>
+              ) : (
+                <>
+                  <p style={styles.overlayStep}>① Tap <strong>⋮</strong> in Chrome</p>
+                  <p style={styles.overlayStep}>② Tap <strong>"Add to Home Screen"</strong></p>
+                  <p style={styles.overlayStep}>③ Tap <strong>"Add"</strong></p>
+                </>
+              )}
+            </div>
+            <button style={styles.button} onClick={() => advanceOnboarding('install')}>
+              Done, I've installed it
+            </button>
+            <button style={styles.overlaySkip} onClick={() => advanceOnboarding('install')}>
+              Skip for now
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Search nudge toast */}
+      {onboardingStep === 'firstSearch' && (
+        <div style={styles.nudgeToast}>
+          <span style={styles.nudgeText}>Your link is saved. Try searching.</span>
+          <button
+            style={styles.nudgeCta}
+            onClick={() => { advanceOnboarding('firstSearch'); setView('search'); setTimeout(() => searchInputRef.current?.focus(), 100) }}
+          >Search now →</button>
+          <button style={styles.nudgeDismiss} onClick={() => advanceOnboarding('firstSearch')}>✕</button>
         </div>
       )}
     </div>
@@ -797,4 +974,49 @@ const styles = {
 
   // Card excerpt
   cardExcerpt: { fontSize: "13px", color: "#666", lineHeight: 1.5, marginBottom: "6px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" },
+
+  // Hero redesign
+  heroTagline: { fontSize: "28px", fontWeight: "700", textAlign: "center", lineHeight: 1.25, margin: 0, letterSpacing: "-0.5px", color: "#fff" },
+  heroBody: { fontSize: "15px", color: "#888", textAlign: "center", margin: 0, maxWidth: "280px" },
+  mockCards: { display: "flex", flexDirection: "column", gap: "8px", width: "100%", maxWidth: "340px", opacity: 0.55, pointerEvents: "none" },
+  mockCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "10px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "4px", textAlign: "left" },
+  mockCardTag: { fontSize: "10px", color: "#555", textTransform: "uppercase", letterSpacing: "1px" },
+  mockCardTitle: { fontSize: "14px", fontWeight: "600", color: "#ccc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+
+  // Install overlay
+  overlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.88)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: "24px", boxSizing: "border-box" },
+  overlayCard: { background: "#1a1a1a", border: "1px solid #333", borderRadius: "20px", padding: "28px 24px", display: "flex", flexDirection: "column", gap: "14px", width: "100%", maxWidth: "360px", textAlign: "center" },
+  overlayTitle: { fontSize: "22px", fontWeight: "700", margin: 0, color: "#fff" },
+  overlayBody: { fontSize: "14px", color: "#888", margin: 0, lineHeight: 1.5 },
+  overlaySteps: { display: "flex", flexDirection: "column", gap: "6px", textAlign: "left", background: "#111", borderRadius: "12px", padding: "14px 16px" },
+  overlayStep: { fontSize: "14px", color: "#ccc", margin: 0, lineHeight: 1.6 },
+  overlayNote: { fontSize: "12px", color: "#555", margin: "4px 0 0", lineHeight: 1.5 },
+  overlaySkip: { background: "none", border: "none", color: "#555", fontSize: "13px", cursor: "pointer", padding: "4px" },
+
+  // Progress pill (Save tab, saves 1–4)
+  progressPill: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", padding: "10px 14px", background: "rgba(251,191,36,0.07)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: "12px" },
+  progressDotsRow: { display: "flex", alignItems: "center", gap: "6px" },
+  dotFilled: { display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", background: "#fbbf24", flexShrink: 0 },
+  dotEmpty: { display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", background: "#2a2a2a", border: "1px solid #444", flexShrink: 0 },
+  dotFilledSmall: { display: "inline-block", width: "7px", height: "7px", borderRadius: "50%", background: "#fbbf24", flexShrink: 0 },
+  dotEmptySmall: { display: "inline-block", width: "7px", height: "7px", borderRadius: "50%", background: "#2a2a2a", border: "1px solid #444", flexShrink: 0 },
+  progressLabel: { fontSize: "12px", color: "#888", marginLeft: "2px" },
+
+  // First-save bottom sheet
+  bottomSheet: { position: "fixed", bottom: 0, left: 0, right: 0, background: "#1a1a1a", border: "1px solid #333", borderTopLeftRadius: "20px", borderTopRightRadius: "20px", padding: "16px 24px 36px", display: "flex", flexDirection: "column", gap: "12px", zIndex: 50, animation: "slideUp 0.3s ease-out" },
+  bottomSheetHandle: { width: "36px", height: "4px", background: "#444", borderRadius: "2px", alignSelf: "center", marginBottom: "4px" },
+  bottomSheetTitle: { fontSize: "20px", fontWeight: "700", margin: 0, color: "#fff" },
+  bottomSheetBody: { fontSize: "14px", color: "#888", margin: 0, lineHeight: 1.5 },
+
+  // Search nudge toast
+  nudgeToast: { position: "fixed", top: "16px", left: "16px", right: "16px", background: "#1e1e1e", border: "1px solid #333", borderRadius: "14px", padding: "12px 14px", display: "flex", alignItems: "center", gap: "10px", zIndex: 50, animation: "slideDown 0.3s ease-out", boxShadow: "0 4px 24px rgba(0,0,0,0.6)" },
+  nudgeText: { fontSize: "14px", color: "#ccc", flex: 1 },
+  nudgeCta: { background: "#fff", border: "none", color: "#000", borderRadius: "8px", padding: "6px 12px", fontSize: "13px", fontWeight: "600", cursor: "pointer", flexShrink: 0 },
+  nudgeDismiss: { background: "none", border: "none", color: "#555", fontSize: "18px", cursor: "pointer", padding: "0 4px", lineHeight: 1, flexShrink: 0 },
+
+  // Milestone receipt row
+  milestoneRow: { display: "flex", flexDirection: "column", gap: "6px", paddingTop: "10px", borderTop: "1px solid #2a2a2a" },
+  milestoneText: { fontSize: "12px", color: "#fbbf24", margin: 0 },
+  milestoneHeadline: { fontSize: "14px", fontWeight: "700", color: "#fff", margin: 0 },
+  milestoneSub: { fontSize: "12px", color: "#888", margin: 0 },
 }

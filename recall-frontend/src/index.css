@@ -56,6 +56,16 @@
 }
 .shimmer { animation: shimmer 1.4s ease-in-out infinite; }
 
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+@keyframes slideDown {
+  from { transform: translateY(-120%); }
+  to { transform: translateY(0); }
+}
+
 body {
   margin: 0;
 }
