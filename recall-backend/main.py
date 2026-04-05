@@ -37,6 +37,13 @@ class UpdateTitleRequest(BaseModel):
     title: str
     token: str
 
+class UpdateTagRequest(BaseModel):
+    tag: str
+    token: str
+
+class DeleteRequest(BaseModel):
+    token: str
+
 def get_user_id(token: str):
     user = supabase.auth.get_user(token)
     return user.user.id
@@ -238,6 +245,15 @@ async def save_url(req: SaveRequest):
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+    existing = supabase.table("saves") \
+        .select("id, title, tag, created_at") \
+        .eq("user_id", user_id).eq("url", req.url) \
+        .limit(1).execute()
+    if existing.data:
+        row = existing.data[0]
+        return {"duplicate": True, "id": row["id"], "title": row["title"],
+                "tag": row["tag"], "created_at": row["created_at"]}
+
     is_tweet = "x.com" in req.url or "twitter.com" in req.url
     is_instagram = "instagram.com" in req.url
 
@@ -380,6 +396,29 @@ async def search(req: SearchRequest):
         results.append(row)
 
     return {"results": results}
+
+@app.patch("/save/{save_id}/tag")
+async def update_tag(save_id: str, req: UpdateTagRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    valid_tags = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
+    if req.tag not in valid_tags:
+        raise HTTPException(status_code=400, detail="Invalid tag")
+    supabase.table("saves").update({"tag": req.tag}) \
+        .eq("id", save_id).eq("user_id", user_id).execute()
+    return {"success": True}
+
+@app.delete("/save/{save_id}")
+async def delete_save(save_id: str, req: DeleteRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    supabase.table("saves").delete() \
+        .eq("id", save_id).eq("user_id", user_id).execute()
+    return {"success": True}
 
 @app.patch("/save/{save_id}/title")
 async def update_title(save_id: str, req: UpdateTitleRequest):

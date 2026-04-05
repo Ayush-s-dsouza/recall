@@ -8,6 +8,9 @@ const supabase = createClient(
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL
 
+const VALID_TAGS = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
+const LOADING_STEPS = ["Fetching...", "Reading...", "Analyzing...", "Almost there..."]
+
 function getSourceLabel(url) {
   if (!url) return "Page"
   if (url.includes("twitter.com") || url.includes("x.com")) return "X (Twitter)"
@@ -38,6 +41,17 @@ export default function App() {
   const [editingTitle, setEditingTitle] = useState(false)
   const [draftTitle, setDraftTitle] = useState("")
   const [todaySaves, setTodaySaves] = useState([])
+  const [viaShareSheet, setViaShareSheet] = useState(false)
+  const [isFreshReceipt, setIsFreshReceipt] = useState(false)
+  const [loadingStep, setLoadingStep] = useState(0)
+  const [editingTag, setEditingTag] = useState(false)
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+
+  useEffect(() => {
+    if (!loading) { setLoadingStep(0); return }
+    const id = setInterval(() => setLoadingStep(s => Math.min(s + 1, 3)), 800)
+    return () => clearInterval(id)
+  }, [loading])
 
   function playSuccessChime() {
     try {
@@ -82,10 +96,11 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const sharedUrl = params.get("url") || params.get("text")
-    const viaShareSheet = !!(sharedUrl && sharedUrl.startsWith("http"))
-    if (viaShareSheet) {
+    const isViaShareSheet = !!(sharedUrl && sharedUrl.startsWith("http"))
+    if (isViaShareSheet) {
       sessionStorage.setItem("pendingUrl", sharedUrl)
       setView("save")
+      setViaShareSheet(true)
     }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
@@ -105,7 +120,7 @@ export default function App() {
         handleSave(pending)
       }
     })
-    if (!viaShareSheet) {
+    if (!isViaShareSheet) {
       checkClipboard()
     }
   }, [])
@@ -145,6 +160,30 @@ export default function App() {
     navigator.vibrate?.([50])
   }
 
+  const updateSaveTag = async (newTag) => {
+    const token = await getToken()
+    await fetch(`${BACKEND}/save/${saveReceipt.id}/tag`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag: newTag, token })
+    })
+    setSaveReceipt(r => ({ ...r, tag: newTag }))
+    setTodaySaves(prev => prev.map(s => s.id === saveReceipt.id ? { ...s, tag: newTag } : s))
+    setEditingTag(false)
+  }
+
+  const deleteSave = async (id) => {
+    setConfirmDeleteId(null)
+    const token = await getToken()
+    await fetch(`${BACKEND}/save/${id}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token })
+    })
+    setTodaySaves(prev => prev.filter(s => s.id !== id))
+    if (saveReceipt?.id === id) setSaveReceipt(null)
+  }
+
   const handleSave = async (url) => {
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
       setMessage("Links only, please!")
@@ -154,8 +193,10 @@ export default function App() {
     setLoading(true)
     setMessage("")
     setIsError(false)
-    setSaveReceipt(null)
+    setIsFreshReceipt(false)
+    setSaveReceipt({ url, optimistic: true })
     setEditingTitle(false)
+    setEditingTag(false)
     try {
       const token = await getToken()
       const res = await fetch(`${BACKEND}/save`, {
@@ -165,12 +206,19 @@ export default function App() {
       })
       if (!res.ok) throw new Error()
       const data = await res.json()
-      setUrlInput("")
-      setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url })
-      fetchTodaySaves()
-      playSuccessChime()
-      navigator.vibrate?.([50])
+      if (data.duplicate) {
+        setSaveReceipt({ ...data, url, duplicate: true })
+      } else {
+        setUrlInput("")
+        setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet: viaShareSheet })
+        fetchTodaySaves()
+        playSuccessChime()
+        navigator.vibrate?.([50])
+        setIsFreshReceipt(true)
+        setTimeout(() => setIsFreshReceipt(false), 1500)
+      }
     } catch {
+      setSaveReceipt(null)
       setMessage(`Failed to save from ${getSourceLabel(url)}. Try again.`)
       setIsError(true)
     }
@@ -282,44 +330,96 @@ export default function App() {
             style={styles.button}
             disabled={loading}
           >
-            {loading ? "Saving..." : "Save"}
+            {loading ? LOADING_STEPS[loadingStep] : "Save"}
           </button>
 
           {saveReceipt && (
-            <div style={styles.receiptCard}>
-              <span style={styles.receiptTag}>{saveReceipt.tag}</span>
-              <div style={styles.receiptTitleRow}>
-                {editingTitle ? (
-                  <>
-                    <input
-                      style={styles.receiptTitleInput}
-                      value={draftTitle}
-                      onChange={e => setDraftTitle(e.target.value)}
-                      onKeyDown={e => { if (e.key === "Enter") updateSaveTitle(draftTitle) }}
-                      autoFocus
-                    />
-                    <button
-                      onMouseDown={e => e.preventDefault()}
-                      onClick={() => updateSaveTitle(draftTitle)}
-                      style={styles.confirmButton}
-                      title="Save name"
-                    >✓</button>
-                  </>
-                ) : (
-                  <>
+            <div style={{
+              ...styles.receiptCard,
+              border: saveReceipt.duplicate ? "1px solid rgba(251, 191, 36, 0.25)" : "1px solid #2a2a2a",
+              boxShadow: !saveReceipt.optimistic && !saveReceipt.duplicate && isFreshReceipt
+                ? "0 0 0 2px rgba(74, 222, 128, 0.3)"
+                : "none"
+            }}>
+              {saveReceipt.optimistic ? (
+                <>
+                  <span className="shimmer" style={styles.shimmerPill} />
+                  <div style={styles.receiptTitleRow}>
+                    <span className="shimmer" style={styles.shimmerTitle} />
+                  </div>
+                </>
+              ) : saveReceipt.duplicate ? (
+                <>
+                  <span style={styles.duplicateHeader}>Already in ReCall</span>
+                  <div style={styles.receiptTitleRow}>
                     <span style={styles.receiptTitle}>{saveReceipt.title}</span>
+                  </div>
+                  <div style={styles.receiptFooter}>
+                    <span style={styles.receiptUrl}>
+                      Saved on {new Date(saveReceipt.created_at).toLocaleDateString("en-US", { month: "long", day: "numeric" })}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {editingTag ? (
+                    <div style={styles.tagPicker}>
+                      {VALID_TAGS.map(t => (
+                        <button
+                          key={t}
+                          onClick={() => updateSaveTag(t)}
+                          style={t === saveReceipt.tag ? styles.tagPillActive : styles.tagPill}
+                        >{t}</button>
+                      ))}
+                    </div>
+                  ) : (
                     <button
-                      onClick={() => { setEditingTitle(true); setDraftTitle(saveReceipt.title) }}
-                      style={styles.editButton}
-                      title="Edit name"
-                    >✎</button>
-                  </>
-                )}
-              </div>
-              <div style={styles.receiptFooter}>
-                <span style={styles.receiptUrl}>{saveReceipt.url}</span>
-                <span style={styles.receiptSaved}>Saved ✓</span>
-              </div>
+                      onClick={() => { setEditingTag(true); setEditingTitle(false) }}
+                      style={styles.receiptTagButton}
+                    >
+                      <span style={styles.receiptTag}>{saveReceipt.tag}</span>
+                      <span style={{ fontSize: "10px", color: "#555" }}>▾</span>
+                    </button>
+                  )}
+                  <div style={styles.receiptTitleRow}>
+                    {editingTitle ? (
+                      <>
+                        <input
+                          style={styles.receiptTitleInput}
+                          value={draftTitle}
+                          onChange={e => setDraftTitle(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") updateSaveTitle(draftTitle) }}
+                          autoFocus
+                        />
+                        <button
+                          onMouseDown={e => e.preventDefault()}
+                          onClick={() => updateSaveTitle(draftTitle)}
+                          style={styles.confirmButton}
+                          title="Save name"
+                        >✓</button>
+                      </>
+                    ) : (
+                      <>
+                        <span style={styles.receiptTitle}>{saveReceipt.title}</span>
+                        <button
+                          onClick={() => { setEditingTitle(true); setEditingTag(false); setDraftTitle(saveReceipt.title) }}
+                          style={styles.editButton}
+                          title="Edit name"
+                        >✎</button>
+                      </>
+                    )}
+                  </div>
+                  <div style={styles.receiptFooter}>
+                    <span style={styles.receiptUrl}>{saveReceipt.url}</span>
+                    <span style={styles.receiptSaved}>Saved ✓</span>
+                  </div>
+                  {saveReceipt.fromShareSheet && (
+                    <button onClick={() => window.history.back()} style={styles.returnButton}>
+                      ← Return to {getSourceLabel(saveReceipt.url)}
+                    </button>
+                  )}
+                </>
+              )}
             </div>
           )}
 
@@ -331,9 +431,29 @@ export default function App() {
               <div style={styles.todayList}>
                 {todaySaves.map(s => (
                   <a key={s.id} href={s.url} target="_blank" rel="noreferrer" style={styles.todayCard}>
-                    <span style={styles.todayTag}>{s.tag}</span>
-                    <span style={styles.todayTitle}>{s.title}</span>
-                    <span style={styles.todaySource}>{getSourceLabel(s.url)}</span>
+                    {confirmDeleteId === s.id ? (
+                      <div style={styles.deleteConfirm} onClick={e => e.stopPropagation()}>
+                        <span style={styles.deleteConfirmText}>Remove from ReCall?</span>
+                        <button
+                          onClick={e => { e.preventDefault(); e.stopPropagation(); deleteSave(s.id) }}
+                          style={styles.deleteConfirmYes}
+                        >Delete</button>
+                        <button
+                          onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(null) }}
+                          style={styles.deleteConfirmNo}
+                        >Cancel</button>
+                      </div>
+                    ) : (
+                      <>
+                        <span style={styles.todayTag}>{s.tag}</span>
+                        <span style={styles.todayTitle}>{s.title}</span>
+                        <span style={styles.todaySource}>{getSourceLabel(s.url)}</span>
+                        <button
+                          onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(s.id) }}
+                          style={styles.deleteButton}
+                        >🗑</button>
+                      </>
+                    )}
                   </a>
                 ))}
               </div>
@@ -370,8 +490,12 @@ const styles = {
   cardScore: { fontSize: "12px", color: "#888" },
   success: { color: "#4ade80", fontSize: "14px", margin: 0 },
   error: { color: "#ef4444", fontSize: "14px", margin: 0 },
-  receiptCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px" },
+  receiptCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px", transition: "box-shadow 0.8s ease" },
+  receiptTagButton: { background: "none", border: "none", color: "#888", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: "4px", alignSelf: "flex-start" },
   receiptTag: { fontSize: "11px", color: "#888", textTransform: "uppercase", letterSpacing: "1px" },
+  tagPicker: { display: "flex", flexWrap: "wrap", gap: "6px" },
+  tagPill: { background: "none", border: "1px solid #333", color: "#888", borderRadius: "20px", padding: "4px 12px", fontSize: "12px", cursor: "pointer" },
+  tagPillActive: { background: "#fff", border: "1px solid #fff", color: "#000", borderRadius: "20px", padding: "4px 12px", fontSize: "12px", cursor: "pointer", fontWeight: "600" },
   receiptTitleRow: { display: "flex", alignItems: "center", gap: "8px" },
   receiptTitle: { fontSize: "15px", fontWeight: "600", flex: 1, lineHeight: 1.4 },
   receiptTitleInput: { flex: 1, background: "#222", border: "1px solid #555", borderRadius: "8px", color: "#fff", fontSize: "15px", fontWeight: "600", padding: "4px 8px", outline: "none" },
@@ -380,6 +504,10 @@ const styles = {
   receiptFooter: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" },
   receiptUrl: { fontSize: "12px", color: "#444", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 },
   receiptSaved: { fontSize: "13px", color: "#4ade80", fontWeight: "600", flexShrink: 0 },
+  duplicateHeader: { fontSize: "13px", color: "#fbbf24", fontWeight: "600" },
+  shimmerPill: { height: "14px", width: "48px", borderRadius: "4px", background: "#2a2a2a", display: "block" },
+  shimmerTitle: { height: "18px", width: "70%", borderRadius: "4px", background: "#2a2a2a", display: "block" },
+  returnButton: { background: "none", border: "1px solid #2a2a2a", color: "#666", borderRadius: "10px", padding: "10px 14px", fontSize: "14px", cursor: "pointer", width: "100%", textAlign: "left", boxSizing: "border-box" },
   todaySection: { marginTop: "4px", display: "flex", flexDirection: "column", gap: "8px" },
   todayHeader: { fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "1px", margin: 0 },
   todayList: { display: "flex", flexDirection: "column", gap: "6px", maxHeight: "320px", overflowY: "auto" },
@@ -387,4 +515,9 @@ const styles = {
   todayTag: { fontSize: "10px", color: "#555", textTransform: "uppercase", letterSpacing: "0.5px", flexShrink: 0 },
   todayTitle: { fontSize: "13px", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   todaySource: { fontSize: "11px", color: "#444", flexShrink: 0 },
+  deleteButton: { background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "14px", padding: "0 0 0 8px", flexShrink: 0 },
+  deleteConfirm: { display: "flex", alignItems: "center", gap: "8px", width: "100%" },
+  deleteConfirmText: { fontSize: "12px", color: "#888", flex: 1 },
+  deleteConfirmYes: { background: "#ef4444", border: "none", color: "#fff", borderRadius: "6px", padding: "4px 10px", fontSize: "12px", fontWeight: "600", cursor: "pointer", flexShrink: 0 },
+  deleteConfirmNo: { background: "none", border: "1px solid #333", color: "#888", borderRadius: "6px", padding: "4px 10px", fontSize: "12px", cursor: "pointer", flexShrink: 0 },
 }
