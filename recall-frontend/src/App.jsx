@@ -160,7 +160,7 @@ export default function App() {
     today.setHours(0, 0, 0, 0)
     const { data } = await supabase
       .from("saves")
-      .select("id, url, title, tag")
+      .select("id, url, title, tag, content_type")
       .gte("created_at", today.toISOString())
       .order("created_at", { ascending: false })
       .limit(20)
@@ -356,6 +356,16 @@ export default function App() {
       })
       if (!res.ok) throw new Error()
       const data = await res.json()
+      if (data.media) {
+        setSaveReceipt({ media: true, content_type: data.content_type, label: data.label, title: data.title, tag: data.tag, id: data.id, url })
+        setLoading(false)
+        return
+      }
+      if (data.thin_content) {
+        setSaveReceipt({ thin_content: true, url })
+        setLoading(false)
+        return
+      }
       if (data.duplicate) {
         setSaveReceipt({ ...data, url, duplicate: true })
       } else {
@@ -651,7 +661,28 @@ export default function App() {
             {loading ? LOADING_STEPS[loadingStep] : "Save"}
           </button>
 
-          {saveReceipt && (
+          {saveReceipt?.media && (
+            <div style={{ background: "#1a1a1a", border: "1px solid #333", borderRadius: 12, padding: "16px 18px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span>{saveReceipt.content_type === "video" ? "🎥" : "📷"}</span>
+                <span style={{ color: "#aaa", fontSize: 13, fontWeight: 600 }}>Saved to library</span>
+              </div>
+              <p style={{ color: "#fff", fontSize: 14, margin: "0 0 6px" }}>{saveReceipt.title}</p>
+              <p style={{ color: "#888", fontSize: 12, margin: 0 }}>
+                Saved — {saveReceipt.label.toLowerCase()} aren't searchable yet, but the link is in your library.
+              </p>
+            </div>
+          )}
+
+          {saveReceipt?.thin_content && (
+            <div style={{ background: "#1a1a1a", border: "1px solid #333", borderRadius: 12, padding: "16px 18px" }}>
+              <p style={{ color: "#aaa", fontSize: 14, margin: 0 }}>
+                Couldn't extract enough content from this link — it may require a login, or be mostly video or images.
+              </p>
+            </div>
+          )}
+
+          {saveReceipt && !saveReceipt.media && !saveReceipt.thin_content && (
             <div style={{
               ...styles.receiptCard,
               border: saveReceipt.duplicate ? "1px solid rgba(251, 191, 36, 0.25)" : "1px solid #2a2a2a",
@@ -756,7 +787,7 @@ export default function App() {
             </div>
           )}
 
-          {saveReceipt?.fromShareSheet && !saveReceipt.optimistic && !saveReceipt.duplicate && (
+          {saveReceipt?.fromShareSheet && !saveReceipt.media && !saveReceipt.thin_content && !saveReceipt.optimistic && !saveReceipt.duplicate && (
             <a
               href={getAppScheme(saveReceipt.url) ?? undefined}
               onClick={e => {
@@ -794,7 +825,13 @@ export default function App() {
                       </div>
                     ) : (
                       <>
-                        <span style={styles.todayTag}>{s.tag}</span>
+                        {s.content_type === "video" ? (
+                          <span style={{ ...styles.todayTag, color: "#888", background: "#2a2a2a" }}>🎥 Video</span>
+                        ) : s.content_type === "image" ? (
+                          <span style={{ ...styles.todayTag, color: "#888", background: "#2a2a2a" }}>📷 Image</span>
+                        ) : (
+                          <span style={styles.todayTag}>{s.tag}</span>
+                        )}
                         <span style={styles.todayTitle}>{s.title}</span>
                         <span style={styles.todaySource}>{getSourceLabel(s.url)}</span>
                         <button

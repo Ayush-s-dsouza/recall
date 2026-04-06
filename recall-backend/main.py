@@ -47,6 +47,16 @@ class DeleteRequest(BaseModel):
 class SuggestionsRequest(BaseModel):
     token: str
 
+MEDIA_URLS = [
+    ("youtube.com/watch",    "video", "YouTube videos"),
+    ("youtube.com/shorts/",  "video", "YouTube Shorts"),
+    ("youtu.be/",            "video", "YouTube videos"),
+    ("tiktok.com/",          "video", "TikTok videos"),
+    ("instagram.com/reel/",  "video", "Instagram Reels"),
+    ("instagram.com/p/",     "image", "Instagram posts"),
+]
+QUALITY_THRESHOLD = 100  # chars — below this, content is too thin to be useful
+
 def get_user_id(token: str):
     user = supabase.auth.get_user(token)
     return user.user.id
@@ -278,6 +288,31 @@ async def save_url(req: SaveRequest):
         return {"duplicate": True, "id": row["id"], "title": row["title"],
                 "tag": row["tag"], "created_at": row["created_at"]}
 
+    # --- Media URL detection: lightweight save, skip full Gemini pipeline ---
+    for pattern, ctype, label in MEDIA_URLS:
+        if pattern in req.url:
+            try:
+                async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+                    r = await client.get(req.url, follow_redirects=True)
+                    og = extract_og_tags(r.text[:5000])
+                    raw_title = og.get("og:title") or req.url
+            except:
+                raw_title = req.url
+            embedding = get_embedding(raw_title)
+            _, tag = extract_save_metadata(raw_title, "", "")
+            result = supabase.table("saves").insert({
+                "user_id": user_id,
+                "url": req.url,
+                "title": raw_title,
+                "content_text": "",
+                "embedding": embedding,
+                "tag": tag,
+                "content_type": ctype
+            }).execute()
+            inserted_id = result.data[0]["id"]
+            return {"success": True, "media": True, "content_type": ctype,
+                    "label": label, "title": raw_title, "tag": tag, "id": inserted_id}
+
     is_tweet = "x.com" in req.url or "twitter.com" in req.url
     is_instagram = "instagram.com" in req.url
 
@@ -352,6 +387,10 @@ async def save_url(req: SaveRequest):
         if extra_context:
             clean_text = (clean_text + "\n\n" + extra_context)[:5000]
 
+        # Quality gate: if there's not enough content to be useful, don't save
+        if len((clean_text + extra_context).strip()) < QUALITY_THRESHOLD:
+            return {"thin_content": True, "url": req.url}
+
     title, tag = extract_save_metadata(title, clean_text, extra_context)
     embedding = get_embedding(f"{title} {clean_text}")
 
@@ -361,7 +400,8 @@ async def save_url(req: SaveRequest):
         "title": title,
         "content_text": clean_text,
         "embedding": embedding,
-        "tag": tag
+        "tag": tag,
+        "content_type": "article"
     }).execute()
     inserted_id = result.data[0]["id"]
 
@@ -382,11 +422,12 @@ async def search(req: SearchRequest):
         "match_count": 20
     }).execute()
 
-    # Full-text search over content + title
+    # Full-text search over content + title — exclude media saves
     try:
         fts_result = supabase.table("saves") \
             .select("id, url, title, tag, created_at, content_text") \
             .eq("user_id", user_id) \
+            .eq("content_type", "article") \
             .filter("content_text", "fts", req.query) \
             .limit(20) \
             .execute()
@@ -399,7 +440,10 @@ async def search(req: SearchRequest):
     scores = {}
     metadata = {}
 
-    for rank, row in enumerate(semantic_result.data):
+    # Post-filter semantic results to exclude media saves
+    semantic_rows = [r for r in semantic_result.data if r.get("content_type", "article") == "article"]
+
+    for rank, row in enumerate(semantic_rows):
         rid = row["id"]
         scores[rid] = scores.get(rid, 0) + 1 / (K + rank + 1)
         metadata[rid] = row
