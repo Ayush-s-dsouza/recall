@@ -82,9 +82,7 @@ export default function App() {
   const [selectedTag, setSelectedTag] = useState(null)
   const [suggestedChips, setSuggestedChips] = useState(null)
   const [onboardingStep, setOnboardingStep] = useState(null)
-  const [first5Count, setFirst5Count] = useState(() =>
-    parseInt(localStorage.getItem('recall_first5_count') || '0')
-  )
+  const [first5Count, setFirst5Count] = useState(5)
   const [firstSaveSheetOpen, setFirstSaveSheetOpen] = useState(false)
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
@@ -142,6 +140,13 @@ export default function App() {
     }
   }
 
+  const fetchSaveCount = async () => {
+    const { count } = await supabase
+      .from("saves")
+      .select("*", { count: "exact", head: true })
+    if (count !== null) setFirst5Count(Math.min(count, 5))
+  }
+
   const fetchTodaySaves = async () => {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
@@ -179,6 +184,7 @@ export default function App() {
       if (session?.user) {
         fetchTodaySaves()
         fetchSuggestions()
+        fetchSaveCount()
         // Restore last search session
         const savedQuery = sessionStorage.getItem("recall_last_query")
         const savedResults = sessionStorage.getItem("recall_last_results")
@@ -210,6 +216,7 @@ export default function App() {
       if (session?.user) {
         fetchTodaySaves()
         fetchSuggestions()
+        fetchSaveCount()
         if (!localStorage.getItem('recall_onboarded')) {
           const isStandalone = window.matchMedia('(display-mode: standalone)').matches
           if (isStandalone || localStorage.getItem('recall_onboarding_install')) {
@@ -345,16 +352,12 @@ export default function App() {
         setSaveReceipt({ ...data, url, duplicate: true })
       } else {
         setUrlInput("")
-        const storedCount = parseInt(localStorage.getItem('recall_first5_count') || '0')
-        const newCount = storedCount < 5 ? storedCount + 1 : storedCount
-        if (storedCount < 5) {
-          localStorage.setItem('recall_first5_count', String(newCount))
-          setFirst5Count(newCount)
-        }
-        setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet, milestoneCount: storedCount < 5 ? newCount : null })
+        const newCount = first5Count < 5 ? first5Count + 1 : first5Count
+        if (first5Count < 5) setFirst5Count(newCount)
+        setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet, milestoneCount: first5Count < 5 ? newCount : null })
         fetchTodaySaves()
         playSuccessChime()
-        if (newCount === 5 && storedCount < 5) {
+        if (newCount === 5 && first5Count < 5) {
           setTimeout(() => playSuccessChime(), 200)
           navigator.vibrate?.([50, 80, 50, 80, 100])
           setIsFreshReceipt(true)
@@ -362,9 +365,10 @@ export default function App() {
         } else {
           navigator.vibrate?.([50])
           setIsFreshReceipt(true)
-          setTimeout(() => setIsFreshReceipt(false), storedCount >= 2 ? 2000 : 1500)
+          setTimeout(() => setIsFreshReceipt(false), first5Count >= 2 ? 2000 : 1500)
         }
         if (onboardingStep === 'firstSave') {
+          setFirstSaveSheetOpen(false)
           setTimeout(() => advanceOnboarding('firstSave'), 600)
         }
       }
