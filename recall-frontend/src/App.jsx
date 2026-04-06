@@ -144,7 +144,15 @@ export default function App() {
     const { count } = await supabase
       .from("saves")
       .select("*", { count: "exact", head: true })
-    if (count !== null) setFirst5Count(Math.min(count, 5))
+    if (count !== null) {
+      const capped = Math.min(count, 5)
+      setFirst5Count(capped)
+      if (capped >= 5) {
+        setFirstSaveSheetOpen(false)
+        setOnboardingStep(prev => prev === 'firstSave' ? 'done' : prev)
+        localStorage.setItem('recall_onboarded', 'true')
+      }
+    }
   }
 
   const fetchTodaySaves = async () => {
@@ -801,10 +809,12 @@ export default function App() {
             </div>
           )}
 
-          {onboardingStep === 'firstSave' && firstSaveSheetOpen && (
+          {onboardingStep === 'firstSave' && firstSaveSheetOpen && first5Count < 5 && (
             <div style={styles.bottomSheet}>
               <div style={styles.bottomSheetHandle} />
-              <p style={styles.bottomSheetTitle}>Save your first link</p>
+              <p style={styles.bottomSheetTitle}>
+                {first5Count === 0 ? "Save your first link" : `${5 - first5Count} more to go`}
+              </p>
               <p style={styles.bottomSheetBody}>
                 5 saves and ReCall moves to the top of your Share Sheet — permanently.
               </p>
