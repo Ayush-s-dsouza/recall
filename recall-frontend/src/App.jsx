@@ -14,7 +14,7 @@ const LOADING_STEPS = ["Fetching...", "Reading...", "Analyzing...", "Almost ther
 function getAppScheme(url) {
   if (!url) return null
   try {
-    const { host, pathname } = new URL(url)
+    const { host, pathname, search } = new URL(url)
     const pkg =
       url.includes("twitter.com") || url.includes("x.com") ? "com.twitter.android" :
       url.includes("instagram.com") ? "com.instagram.android" :
@@ -24,7 +24,7 @@ function getAppScheme(url) {
       url.includes("substack.com") ? "com.substack.app" :
       null
     if (!pkg) return null
-    return `intent://${host}${pathname}#Intent;scheme=https;package=${pkg};end`
+    return `intent://${host}${pathname}${search}#Intent;scheme=https;package=${pkg};end`
   } catch {
     return null
   }
