@@ -696,9 +696,6 @@ export default function App() {
                   </>
                 )}
               </div>
-              <p style={{ color: "#888", fontSize: 12, margin: "8px 0 0" }}>
-                Saved — {saveReceipt.label.toLowerCase()} aren't searchable yet, but the link is in your library.
-              </p>
             </div>
           )}
 
@@ -854,9 +851,9 @@ export default function App() {
                     ) : (
                       <>
                         {s.content_type === "video" ? (
-                          <span style={{ ...styles.todayTag, color: "#888", background: "#2a2a2a" }}>🎥 Video</span>
+                          <span style={{ ...styles.todayTag, color: "#666" }}>🎥 Video</span>
                         ) : s.content_type === "image" ? (
-                          <span style={{ ...styles.todayTag, color: "#888", background: "#2a2a2a" }}>📷 Image</span>
+                          <span style={{ ...styles.todayTag, color: "#666" }}>📷 Image</span>
                         ) : (
                           <span style={styles.todayTag}>{s.tag}</span>
                         )}
