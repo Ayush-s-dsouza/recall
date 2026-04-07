@@ -357,7 +357,8 @@ export default function App() {
       if (!res.ok) throw new Error()
       const data = await res.json()
       if (data.media) {
-        setSaveReceipt({ media: true, content_type: data.content_type, label: data.label, title: data.title, tag: data.tag, id: data.id, url })
+        setSaveReceipt({ media: true, content_type: data.content_type, label: data.label, title: data.title, tag: data.tag, id: data.id, url, fromShareSheet })
+        fetchTodaySaves()
         setLoading(false)
         return
       }
@@ -667,8 +668,35 @@ export default function App() {
                 <span>{saveReceipt.content_type === "video" ? "🎥" : "📷"}</span>
                 <span style={{ color: "#aaa", fontSize: 13, fontWeight: 600 }}>Saved to library</span>
               </div>
-              <p style={{ color: "#fff", fontSize: 14, margin: "0 0 6px" }}>{saveReceipt.title}</p>
-              <p style={{ color: "#888", fontSize: 12, margin: 0 }}>
+              <div style={styles.receiptTitleRow}>
+                {editingTitle ? (
+                  <>
+                    <input
+                      style={styles.receiptTitleInput}
+                      value={draftTitle}
+                      onChange={e => setDraftTitle(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") updateSaveTitle(draftTitle) }}
+                      autoFocus
+                    />
+                    <button
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={() => updateSaveTitle(draftTitle)}
+                      style={styles.confirmButton}
+                      title="Save name"
+                    >✓</button>
+                  </>
+                ) : (
+                  <>
+                    <span style={styles.receiptTitle}>{saveReceipt.title}</span>
+                    <button
+                      onClick={() => { setEditingTitle(true); setDraftTitle(saveReceipt.title) }}
+                      style={styles.editButton}
+                      title="Edit name"
+                    >✎</button>
+                  </>
+                )}
+              </div>
+              <p style={{ color: "#888", fontSize: 12, margin: "8px 0 0" }}>
                 Saved — {saveReceipt.label.toLowerCase()} aren't searchable yet, but the link is in your library.
               </p>
             </div>
@@ -787,7 +815,7 @@ export default function App() {
             </div>
           )}
 
-          {saveReceipt?.fromShareSheet && !saveReceipt.media && !saveReceipt.thin_content && !saveReceipt.optimistic && !saveReceipt.duplicate && (
+          {saveReceipt?.fromShareSheet && !saveReceipt.thin_content && !saveReceipt.optimistic && !saveReceipt.duplicate && (
             <a
               href={getAppScheme(saveReceipt.url) ?? undefined}
               onClick={e => {

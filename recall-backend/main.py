@@ -253,6 +253,22 @@ async def fetch_instagram(url: str):
         print(f"[instagram] embed fetch failed: {e}", flush=True)
         return "", "", ""
 
+async def fetch_youtube(url: str):
+    """Use YouTube's oEmbed API to get video title and channel name without auth."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.get(
+                "https://www.youtube.com/oembed",
+                params={"url": url, "format": "json"},
+                follow_redirects=True
+            )
+            data = res.json()
+            title = data.get("title", "")
+            author = data.get("author_name", "")
+            return title, author
+    except:
+        return "", ""
+
 async def fetch_tweet(url: str):
     """Use Twitter's free oEmbed API to get tweet text and author without auth."""
     try:
@@ -292,25 +308,36 @@ async def save_url(req: SaveRequest):
     # --- Media URL detection: lightweight save, skip full Gemini pipeline ---
     for pattern, ctype, label in MEDIA_URLS:
         if pattern in req.url:
-            try:
-                async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-                    r = await client.get(req.url, follow_redirects=True)
-                    og = extract_og_tags(r.text[:5000])
-                    raw_title = og.get("og:title") or req.url
-            except:
-                raw_title = req.url
+            if "youtube.com" in req.url or "youtu.be" in req.url:
+                yt_title, yt_author = await fetch_youtube(req.url)
+                if yt_title:
+                    raw_title = f"{yt_title} · {yt_author}" if yt_author else yt_title
+                else:
+                    raw_title = req.url
+            else:
+                try:
+                    async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+                        r = await client.get(req.url, follow_redirects=True)
+                        og = extract_og_tags(r.text[:5000])
+                        raw_title = og.get("og:title") or req.url
+                except:
+                    raw_title = req.url
             embedding = get_embedding(raw_title)
             _, tag = extract_save_metadata(raw_title, "", "")
-            result = supabase.table("saves").insert({
-                "user_id": user_id,
-                "url": req.url,
-                "title": raw_title,
-                "content_text": "",
-                "embedding": embedding,
-                "tag": tag,
-                "content_type": ctype
-            }).execute()
-            inserted_id = result.data[0]["id"]
+            try:
+                result = supabase.table("saves").insert({
+                    "user_id": user_id,
+                    "url": req.url,
+                    "title": raw_title,
+                    "content_text": "",
+                    "embedding": embedding,
+                    "tag": tag,
+                    "content_type": ctype
+                }).execute()
+                inserted_id = result.data[0]["id"]
+            except Exception as e:
+                print(f"[media save] DB insert failed: {e}", flush=True)
+                raise HTTPException(status_code=500, detail="DB insert failed — content_type column may be missing")
             return {"success": True, "media": True, "content_type": ctype,
                     "label": label, "title": raw_title, "tag": tag, "id": inserted_id}
 
