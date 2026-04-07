@@ -186,6 +186,7 @@ export default function App() {
     if (isViaShareSheet) {
       sessionStorage.setItem("pendingUrl", sharedUrl)
       setView("save")
+      window.history.replaceState({}, '', '/')
     }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
