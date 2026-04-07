@@ -58,7 +58,7 @@ export default function App() {
   const [results, setResults] = useState([])
   const [saves, setSaves] = useState([])
   const [loading, setLoading] = useState(false)
-  const [view, setView] = useState("search")
+  const [view, setView] = useState(() => sessionStorage.getItem("recall_view") || "search")
   const [message, setMessage] = useState("")
   const [isError, setIsError] = useState(false)
   const [selectedSource, setSelectedSource] = useState(null)
@@ -72,6 +72,8 @@ export default function App() {
   const [loadingStep, setLoadingStep] = useState(0)
   const [editingTag, setEditingTag] = useState(false)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
+  const [libraryFilters, setLibraryFilters] = useState({ tags: [], sources: [] })
   const [hasSearched, setHasSearched] = useState(false)
   const [displayCount, setDisplayCount] = useState(5)
   const [recentSearches, setRecentSearches] = useState(() => {
@@ -87,6 +89,8 @@ export default function App() {
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
   const isIOS = /iPhone|iPad/i.test(navigator.userAgent)
+
+  useEffect(() => { sessionStorage.setItem("recall_view", view) }, [view])
 
   useEffect(() => {
     if (!loading) { setLoadingStep(0); return }
@@ -167,6 +171,35 @@ export default function App() {
     if (data) setTodaySaves(data)
   }
 
+  const fetchLibraryFilters = async () => {
+    const { data } = await supabase.from("saves").select("tag, url")
+    if (!data?.length) return
+    const tags = [...new Set(data.map(r => r.tag).filter(Boolean))].sort()
+    const sources = [...new Set(data.map(r => getSourceLabel(r.url)).filter(s => s && s !== "Page"))].sort()
+    setLibraryFilters({ tags, sources })
+  }
+
+  const browseByFilter = async (tag, source) => {
+    setLoading(true)
+    setHasSearched(true)
+    let q = supabase
+      .from("saves")
+      .select("id, url, title, tag, created_at, content_text")
+      .order("created_at", { ascending: false })
+      .limit(100)
+    if (tag) q = q.eq("tag", tag)
+    const { data } = await q
+    let rows = data || []
+    if (source) rows = rows.filter(r => getSourceLabel(r.url) === source)
+    setResults(rows.map(r => {
+      const content = (r.content_text || "").trim()
+      const excerpt = content.length > 220 ? content.slice(0, 220).replace(/\s\S*$/, "") + "…" : content
+      const { content_text, ...rest } = r
+      return { ...rest, excerpt }
+    }))
+    setLoading(false)
+  }
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     function extractSharedUrl(p) {
@@ -192,6 +225,7 @@ export default function App() {
       setUser(session?.user ?? null)
       if (session?.user) {
         fetchTodaySaves()
+        fetchLibraryFilters()
         fetchSuggestions()
         fetchSaveCount()
         // Restore last search session
@@ -224,6 +258,7 @@ export default function App() {
       setUser(session?.user ?? null)
       if (session?.user) {
         fetchTodaySaves()
+        fetchLibraryFilters()
         fetchSuggestions()
         fetchSaveCount()
         if (!localStorage.getItem('recall_onboarded')) {
@@ -325,6 +360,7 @@ export default function App() {
 
   const deleteSave = async (id) => {
     setConfirmDeleteId(null)
+    setDeletingId(id)
     const token = await getToken()
     await fetch(`${BACKEND}/save/${id}`, {
       method: "DELETE",
@@ -333,6 +369,7 @@ export default function App() {
     })
     setTodaySaves(prev => prev.filter(s => s.id !== id))
     if (saveReceipt?.id === id) setSaveReceipt(null)
+    setDeletingId(null)
   }
 
   const handleSave = async (url, fromShareSheet = false) => {
@@ -360,6 +397,7 @@ export default function App() {
       if (data.media) {
         setSaveReceipt({ media: true, content_type: data.content_type, label: data.label, title: data.title, tag: data.tag, id: data.id, url, fromShareSheet })
         fetchTodaySaves()
+        fetchLibraryFilters()
         setLoading(false)
         return
       }
@@ -376,6 +414,7 @@ export default function App() {
         if (first5Count < 5) setFirst5Count(newCount)
         setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet, milestoneCount: first5Count < 5 ? newCount : null })
         fetchTodaySaves()
+        fetchLibraryFilters()
         playSuccessChime()
         if (newCount === 5 && first5Count < 5) {
           setTimeout(() => playSuccessChime(), 200)
@@ -564,10 +603,48 @@ export default function App() {
             </div>
           )}
 
-          {/* Filters + result cards + show more */}
+          {/* Filter dropdowns — always visible when library has variety */}
+          {!loading && (libraryFilters.sources.length > 1 || libraryFilters.tags.length > 1) && (
+            <div style={styles.filterRow}>
+              {libraryFilters.sources.length > 1 && (
+                <div style={styles.filterDropdownWrapper}>
+                  <select
+                    style={styles.filterDropdown}
+                    value={selectedSource || ""}
+                    onChange={e => {
+                      const newSource = e.target.value || null
+                      setSelectedSource(newSource)
+                      setDisplayCount(5)
+                      if (!query.trim()) browseByFilter(selectedTag, newSource)
+                    }}
+                  >
+                    <option value="">All sources</option>
+                    {libraryFilters.sources.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+              )}
+              {libraryFilters.tags.length > 1 && (
+                <div style={styles.filterDropdownWrapper}>
+                  <select
+                    style={styles.filterDropdown}
+                    value={selectedTag || ""}
+                    onChange={e => {
+                      const newTag = e.target.value || null
+                      setSelectedTag(newTag)
+                      setDisplayCount(5)
+                      if (!query.trim()) browseByFilter(newTag, selectedSource)
+                    }}
+                  >
+                    <option value="">All tags</option>
+                    {libraryFilters.tags.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Result cards + show more */}
           {results.length > 0 && !loading && (() => {
-            const sources = [...new Set(results.map(r => getSourceLabel(r.url)))]
-            const tags = [...new Set(results.map(r => r.tag).filter(Boolean))]
             const filtered = results.filter(r =>
               (!selectedSource || getSourceLabel(r.url) === selectedSource) &&
               (!selectedTag || r.tag === selectedTag)
@@ -575,36 +652,6 @@ export default function App() {
             const visible = filtered.slice(0, displayCount)
             return (
               <>
-                {/* Dropdowns row — only show if there's something to filter */}
-                {(sources.length > 1 || tags.length > 1) && (
-                  <div style={styles.filterRow}>
-                    {sources.length > 1 && (
-                      <div style={styles.filterDropdownWrapper}>
-                        <select
-                          style={styles.filterDropdown}
-                          value={selectedSource || ""}
-                          onChange={e => { setSelectedSource(e.target.value || null); setDisplayCount(5) }}
-                        >
-                          <option value="">All sources</option>
-                          {sources.map(s => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                      </div>
-                    )}
-                    {tags.length > 1 && (
-                      <div style={styles.filterDropdownWrapper}>
-                        <select
-                          style={styles.filterDropdown}
-                          value={selectedTag || ""}
-                          onChange={e => { setSelectedTag(e.target.value || null); setDisplayCount(5) }}
-                        >
-                          <option value="">All tags</option>
-                          {tags.map(t => <option key={t} value={t}>{t}</option>)}
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                )}
-
                 <div style={styles.results}>
                   {visible.map(r => (
                     <a key={r.id} href={r.url} target="_blank" rel="noreferrer" style={styles.card}>
@@ -837,7 +884,9 @@ export default function App() {
               <div style={styles.todayList}>
                 {todaySaves.map(s => (
                   <a key={s.id} href={s.url} target="_blank" rel="noreferrer" style={styles.todayCard}>
-                    {confirmDeleteId === s.id ? (
+                    {deletingId === s.id ? (
+                      <span style={{ color: "#888", fontSize: 13, padding: "4px 0" }}>Removing…</span>
+                    ) : confirmDeleteId === s.id ? (
                       <div style={styles.deleteConfirm} onClick={e => e.stopPropagation()}>
                         <span style={styles.deleteConfirmText}>Remove from ReCall?</span>
                         <button
