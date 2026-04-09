@@ -541,17 +541,17 @@ export default function App() {
               <h2 style={styles.legalTitle}>Privacy Policy</h2>
               <p style={styles.legalMeta}>Last updated: April 2026</p>
               <h3 style={styles.legalH3}>What we collect</h3>
-              <p style={styles.legalP}>When you save a URL, we store: the URL itself, the text content extracted from the page (up to 5,000 characters), an AI-generated title, a category tag, and a mathematical embedding (a 768-number vector) used to enable semantic search. We do not store passwords — authentication is handled by Google via Supabase Auth.</p>
-              <h3 style={styles.legalH3}>Why we collect it</h3>
-              <p style={styles.legalP}>All data is used exclusively to power ReCall's save and search features. Embeddings are used to find semantically similar content when you search. No data is used for advertising or sold to third parties.</p>
+              <p style={styles.legalP}>When you save a link, we store the URL, an AI-generated title, a category, and just enough about the page to make search work. We do not store your password — sign-in is handled by Google.</p>
+              <h3 style={styles.legalH3}>How we use it</h3>
+              <p style={styles.legalP}>Everything we store exists solely to power your saves and search. Nothing is used for advertising, and nothing is sold or shared with third parties. Ever.</p>
               <h3 style={styles.legalH3}>Who can see your data</h3>
-              <p style={styles.legalP}>Only you. Your saves are protected by Supabase Row Level Security — database policies enforce that each user can only read and write their own rows. We do not share your saved content with other users or third parties.</p>
+              <p style={styles.legalP}>Only you. Your saves are private by design — no other user can access or search your content. We don't share it with anyone.</p>
               <h3 style={styles.legalH3}>Third-party services</h3>
-              <p style={styles.legalP}>We use Google (OAuth sign-in), Supabase (database and auth), Google Gemini (AI title generation and embeddings), PostHog (anonymous product analytics), and Sentry (error monitoring). PostHog receives your Supabase user ID (not your name or email) and event names only. Sentry receives anonymised error traces.</p>
+              <p style={styles.legalP}>ReCall uses a small set of trusted services to function: Google for sign-in, cloud infrastructure for secure storage, AI to generate titles and power search, and lightweight analytics and error monitoring to keep the app running well. None of these services receive your saved content for their own purposes.</p>
               <h3 style={styles.legalH3}>Deleting your data</h3>
-              <p style={styles.legalP}>You can delete your account and all associated data at any time from the app settings (⚙ icon in the header). This permanently removes all your saves and your account record.</p>
+              <p style={styles.legalP}>You're in control. Delete your account and everything in it at any time from the app settings (⚙ in the header). It's immediate and permanent.</p>
               <h3 style={styles.legalH3}>Contact</h3>
-              <p style={styles.legalP}>Questions? Email the developer at the address on the GitHub profile linked from this project.</p>
+              <p style={styles.legalP}>Questions? Reach the developer through the GitHub profile linked from this project.</p>
             </>
           ) : (
             <>
