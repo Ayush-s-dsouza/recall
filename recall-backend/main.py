@@ -1,29 +1,76 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import os
+import socket
+import ipaddress
+from urllib.parse import urlparse
 import httpx
+import sentry_sdk
 from supabase import create_client
 from google import genai
 from google.genai import types
 
 load_dotenv()
 
+sentry_sdk.init(dsn=os.getenv("SENTRY_DSN", ""), traces_sample_rate=0.05)
+
 import sys
 sys.stdout.reconfigure(line_buffering=True)
 
 app = FastAPI()
 
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:4173").split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
+
+# --- SSRF protection ---
+_PRIVATE_RANGES = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+]
+
+def is_safe_url(url: str) -> bool:
+    """Return True if the URL resolves to a public IP (not private/internal)."""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        for info in socket.getaddrinfo(hostname, None):
+            ip = ipaddress.ip_address(info[4][0])
+            if any(ip in net for net in _PRIVATE_RANGES):
+                return False
+        return True
+    except Exception:
+        return False
+
+def validate_url(url: str):
+    """Raise 400 if URL is not safe to fetch."""
+    if not is_safe_url(url):
+        raise HTTPException(status_code=400, detail="Invalid URL")
 
 
 class SaveRequest(BaseModel):
@@ -46,6 +93,9 @@ class DeleteRequest(BaseModel):
     token: str
 
 class SuggestionsRequest(BaseModel):
+    token: str
+
+class DeleteAccountRequest(BaseModel):
     token: str
 
 MEDIA_URLS = [
@@ -144,6 +194,8 @@ def extract_og_tags(html: str) -> dict:
 
 async def analyze_image(image_url: str) -> str:
     """Use Gemini vision to describe image content — used when page text is sparse."""
+    if not is_safe_url(image_url):
+        return ""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
@@ -290,11 +342,14 @@ async def fetch_tweet(url: str):
         return "", ""
 
 @app.post("/save")
-async def save_url(req: SaveRequest):
+@limiter.limit("10/minute")
+async def save_url(req: SaveRequest, request: Request):
     try:
         user_id = get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+    validate_url(req.url)
 
     existing = supabase.table("saves") \
         .select("id, title, tag, created_at") \
@@ -436,7 +491,8 @@ async def save_url(req: SaveRequest):
     return {"success": True, "title": title, "tag": tag, "id": inserted_id}
 
 @app.post("/search")
-async def search(req: SearchRequest):
+@limiter.limit("30/minute")
+async def search(req: SearchRequest, request: Request):
     try:
         user_id = get_user_id(req.token)
     except:
@@ -578,6 +634,16 @@ async def get_suggestions(req: SuggestionsRequest):
         chips.append(fallbacks[len(chips) % len(fallbacks)])
 
     return {"chips": chips[:3], "has_saves": True}
+
+@app.delete("/account")
+async def delete_account(req: DeleteAccountRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    supabase.table("saves").delete().eq("user_id", user_id).execute()
+    supabase.auth.admin.delete_user(user_id)
+    return {"success": True}
 
 @app.get("/")
 async def root():

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { createClient } from "@supabase/supabase-js"
+import posthog from 'posthog-js'
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -58,7 +59,17 @@ export default function App() {
   const [results, setResults] = useState([])
   const [saves, setSaves] = useState([])
   const [loading, setLoading] = useState(false)
-  const [view, setView] = useState(() => sessionStorage.getItem("recall_view") || "search")
+  const [view, setView] = useState(() => {
+    const path = window.location.pathname
+    if (path === '/privacy' || path === '/terms') return 'legal'
+    return sessionStorage.getItem("recall_view") || "search"
+  })
+  const [legalSection, setLegalSection] = useState(() =>
+    window.location.pathname === '/terms' ? 'terms' : 'privacy'
+  )
+  const [showSettings, setShowSettings] = useState(false)
+  const [deletingAccount, setDeletingAccount] = useState(false)
+  const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false)
   const [message, setMessage] = useState("")
   const [isError, setIsError] = useState(false)
   const [selectedSource, setSelectedSource] = useState(null)
@@ -220,10 +231,12 @@ export default function App() {
       sessionStorage.setItem("pendingUrl", sharedUrl)
       setView("save")
       window.history.replaceState({}, '', '/')
+      posthog.capture('share_sheet_triggered')
     }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
       if (session?.user) {
+        posthog.identify(session.user.id)
         fetchTodaySaves()
         fetchLibraryFilters()
         fetchSuggestions()
@@ -257,6 +270,7 @@ export default function App() {
     supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
       if (session?.user) {
+        posthog.identify(session.user.id)
         fetchTodaySaves()
         fetchLibraryFilters()
         fetchSuggestions()
@@ -304,6 +318,31 @@ export default function App() {
     setResults([])
     setQuery("")
     setSelectedTag(null)
+    posthog.reset()
+  }
+
+  const deleteAccount = async () => {
+    setDeletingAccount(true)
+    try {
+      const token = await getToken()
+      await fetch(`${BACKEND}/account`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token })
+      })
+      posthog.capture('account_deleted')
+      posthog.reset()
+      await supabase.auth.signOut()
+      setUser(null)
+      setShowSettings(false)
+      setConfirmDeleteAccount(false)
+      localStorage.clear()
+      sessionStorage.clear()
+    } catch {
+      setDeletingAccount(false)
+      setConfirmDeleteAccount(false)
+    }
+    setDeletingAccount(false)
   }
 
   const advanceOnboarding = (step) => {
@@ -344,6 +383,7 @@ export default function App() {
     setEditingTitle(false)
     playSuccessChime()
     navigator.vibrate?.([50])
+    posthog.capture('title_edited')
   }
 
   const updateSaveTag = async (newTag) => {
@@ -356,6 +396,7 @@ export default function App() {
     setSaveReceipt(r => ({ ...r, tag: newTag }))
     setTodaySaves(prev => prev.map(s => s.id === saveReceipt.id ? { ...s, tag: newTag } : s))
     setEditingTag(false)
+    posthog.capture('tag_edited')
   }
 
   const deleteSave = async (id) => {
@@ -369,6 +410,7 @@ export default function App() {
     })
     setTodaySaves(prev => prev.filter(s => s.id !== id))
     if (saveReceipt?.id === id) setSaveReceipt(null)
+    posthog.capture('save_deleted')
     setDeletingId(null)
   }
 
@@ -398,6 +440,7 @@ export default function App() {
         setSaveReceipt({ media: true, content_type: data.content_type, label: data.label, title: data.title, tag: data.tag, id: data.id, url, fromShareSheet })
         fetchTodaySaves()
         fetchLibraryFilters()
+        posthog.capture('url_saved', { tag: data.tag, type: data.content_type })
         setLoading(false)
         return
       }
@@ -415,6 +458,7 @@ export default function App() {
         setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet, milestoneCount: first5Count < 5 ? newCount : null })
         fetchTodaySaves()
         fetchLibraryFilters()
+        posthog.capture('url_saved', { tag: data.tag })
         playSuccessChime()
         if (newCount === 5 && first5Count < 5) {
           setTimeout(() => playSuccessChime(), 200)
@@ -462,12 +506,71 @@ export default function App() {
       })
       const data = await res.json()
       setResults(data.results)
+      posthog.capture('search_performed', { result_count: data.results.length })
       sessionStorage.setItem("recall_last_query", q)
       sessionStorage.setItem("recall_last_results", JSON.stringify(data.results))
     } catch {
       setResults([])
     }
     setLoading(false)
+  }
+
+  if (view === 'legal') {
+    return (
+      <div style={styles.container}>
+        <div style={{ display: "flex", alignItems: "center", padding: "20px 0 16px" }}>
+          <button
+            onClick={() => { setView('search'); window.history.pushState({}, '', '/') }}
+            style={styles.backButton}
+          >← Back</button>
+          <div style={{ display: "flex", gap: "12px", marginLeft: "auto" }}>
+            <button
+              onClick={() => setLegalSection('privacy')}
+              style={legalSection === 'privacy' ? styles.tabActive : styles.tab}
+            >Privacy</button>
+            <button
+              onClick={() => setLegalSection('terms')}
+              style={legalSection === 'terms' ? styles.tabActive : styles.tab}
+            >Terms</button>
+          </div>
+        </div>
+        <div style={styles.legalContent}>
+          {legalSection === 'privacy' ? (
+            <>
+              <h2 style={styles.legalTitle}>Privacy Policy</h2>
+              <p style={styles.legalMeta}>Last updated: April 2026</p>
+              <h3 style={styles.legalH3}>What we collect</h3>
+              <p style={styles.legalP}>When you save a URL, we store: the URL itself, the text content extracted from the page (up to 5,000 characters), an AI-generated title, a category tag, and a mathematical embedding (a 768-number vector) used to enable semantic search. We do not store passwords — authentication is handled by Google via Supabase Auth.</p>
+              <h3 style={styles.legalH3}>Why we collect it</h3>
+              <p style={styles.legalP}>All data is used exclusively to power ReCall's save and search features. Embeddings are used to find semantically similar content when you search. No data is used for advertising or sold to third parties.</p>
+              <h3 style={styles.legalH3}>Who can see your data</h3>
+              <p style={styles.legalP}>Only you. Your saves are protected by Supabase Row Level Security — database policies enforce that each user can only read and write their own rows. We do not share your saved content with other users or third parties.</p>
+              <h3 style={styles.legalH3}>Third-party services</h3>
+              <p style={styles.legalP}>We use Google (OAuth sign-in), Supabase (database and auth), Google Gemini (AI title generation and embeddings), PostHog (anonymous product analytics), and Sentry (error monitoring). PostHog receives your Supabase user ID (not your name or email) and event names only. Sentry receives anonymised error traces.</p>
+              <h3 style={styles.legalH3}>Deleting your data</h3>
+              <p style={styles.legalP}>You can delete your account and all associated data at any time from the app settings (⚙ icon in the header). This permanently removes all your saves and your account record.</p>
+              <h3 style={styles.legalH3}>Contact</h3>
+              <p style={styles.legalP}>Questions? Email the developer at the address on the GitHub profile linked from this project.</p>
+            </>
+          ) : (
+            <>
+              <h2 style={styles.legalTitle}>Terms of Service</h2>
+              <p style={styles.legalMeta}>Last updated: April 2026</p>
+              <h3 style={styles.legalH3}>Use of the service</h3>
+              <p style={styles.legalP}>ReCall is a personal bookmark and search tool. You may use it to save and search public web content for your own personal, non-commercial use. You are responsible for the URLs you save and for ensuring you have the right to access the content at those URLs.</p>
+              <h3 style={styles.legalH3}>Acceptable use</h3>
+              <p style={styles.legalP}>Do not use ReCall to scrape, harvest, or systematically archive content in violation of a site's terms of service. Do not attempt to circumvent rate limits or access other users' data. Do not use the service to store illegal content.</p>
+              <h3 style={styles.legalH3}>Availability</h3>
+              <p style={styles.legalP}>ReCall is provided as-is, as a portfolio project. We make no guarantees of uptime, data retention, or continued availability. We reserve the right to shut down or modify the service at any time.</p>
+              <h3 style={styles.legalH3}>Liability</h3>
+              <p style={styles.legalP}>ReCall is not liable for any loss of data, service interruptions, or damages arising from your use of the service. Use it at your own risk.</p>
+              <h3 style={styles.legalH3}>Changes</h3>
+              <p style={styles.legalP}>These terms may be updated at any time. Continued use of the service constitutes acceptance of the updated terms.</p>
+            </>
+          )}
+        </div>
+      </div>
+    )
   }
 
   if (!user) {
@@ -492,6 +595,11 @@ export default function App() {
           <button onClick={signIn} style={styles.button}>
             Sign in with Google
           </button>
+          <div style={styles.legalFooter}>
+            <button onClick={() => { setLegalSection('privacy'); setView('legal') }} style={styles.legalFooterLink}>Privacy Policy</button>
+            <span style={{ color: "#333" }}>·</span>
+            <button onClick={() => { setLegalSection('terms'); setView('legal') }} style={styles.legalFooterLink}>Terms</button>
+          </div>
         </div>
       </div>
     )
@@ -501,8 +609,34 @@ export default function App() {
     <div style={styles.container}>
       <div style={styles.header}>
         <h1 style={styles.logoSmall}>ReCall</h1>
-        <button onClick={signOut} style={styles.signOut}>Sign out</button>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <button onClick={() => { setShowSettings(s => !s); setConfirmDeleteAccount(false) }} style={styles.signOut} title="Settings">⚙</button>
+          <button onClick={signOut} style={styles.signOut}>Sign out</button>
+        </div>
       </div>
+
+      {showSettings && (
+        <div style={styles.settingsPanel}>
+          <div style={styles.settingsLinks}>
+            <button onClick={() => { setLegalSection('privacy'); setView('legal'); setShowSettings(false) }} style={styles.settingsLink}>Privacy Policy</button>
+            <button onClick={() => { setLegalSection('terms'); setView('legal'); setShowSettings(false) }} style={styles.settingsLink}>Terms of Service</button>
+          </div>
+          <div style={styles.settingsDivider} />
+          {!confirmDeleteAccount ? (
+            <button onClick={() => setConfirmDeleteAccount(true)} style={styles.deleteAccountButton}>Delete account</button>
+          ) : (
+            <div style={styles.deleteAccountConfirm}>
+              <p style={styles.deleteAccountWarning}>This permanently deletes all your saves. Cannot be undone.</p>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button onClick={deleteAccount} disabled={deletingAccount} style={styles.deleteAccountYes}>
+                  {deletingAccount ? "Deleting…" : "Yes, delete"}
+                </button>
+                <button onClick={() => setConfirmDeleteAccount(false)} style={styles.deleteAccountNo}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={styles.tabs}>
         <button onClick={() => { setView("search") }} style={view === "search" ? styles.tabActive : styles.tab}>Search</button>
@@ -991,6 +1125,12 @@ export default function App() {
           <button style={styles.nudgeDismiss} onClick={() => advanceOnboarding('firstSearch')}>✕</button>
         </div>
       )}
+
+      <div style={styles.legalFooter}>
+        <button onClick={() => { setLegalSection('privacy'); setView('legal') }} style={styles.legalFooterLink}>Privacy Policy</button>
+        <span style={{ color: "#333" }}>·</span>
+        <button onClick={() => { setLegalSection('terms'); setView('legal') }} style={styles.legalFooterLink}>Terms</button>
+      </div>
     </div>
   )
 }
@@ -1145,4 +1285,27 @@ const styles = {
   milestoneText: { fontSize: "12px", color: "#fbbf24", margin: 0 },
   milestoneHeadline: { fontSize: "14px", fontWeight: "700", color: "#fff", margin: 0 },
   milestoneSub: { fontSize: "12px", color: "#888", margin: 0 },
+
+  // Settings panel
+  settingsPanel: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "14px 16px", display: "flex", flexDirection: "column", gap: "10px", marginBottom: "4px" },
+  settingsLinks: { display: "flex", gap: "8px", flexWrap: "wrap" },
+  settingsLink: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "20px", cursor: "pointer", fontSize: "13px" },
+  settingsDivider: { height: "1px", background: "#2a2a2a" },
+  deleteAccountButton: { background: "none", border: "1px solid #ef4444", color: "#ef4444", padding: "7px 16px", borderRadius: "8px", cursor: "pointer", fontSize: "13px", alignSelf: "flex-start" },
+  deleteAccountConfirm: { display: "flex", flexDirection: "column", gap: "10px" },
+  deleteAccountWarning: { fontSize: "13px", color: "#aaa", margin: 0, lineHeight: 1.4 },
+  deleteAccountYes: { background: "#ef4444", border: "none", color: "#fff", borderRadius: "8px", padding: "7px 16px", fontSize: "13px", fontWeight: "600", cursor: "pointer", flexShrink: 0 },
+  deleteAccountNo: { background: "none", border: "1px solid #333", color: "#888", borderRadius: "8px", padding: "7px 14px", fontSize: "13px", cursor: "pointer", flexShrink: 0 },
+
+  // Legal view
+  legalContent: { display: "flex", flexDirection: "column", gap: "0", paddingBottom: "40px" },
+  legalTitle: { fontSize: "24px", fontWeight: "700", color: "#fff", margin: "0 0 4px", letterSpacing: "-0.5px" },
+  legalMeta: { fontSize: "12px", color: "#555", margin: "0 0 20px" },
+  legalH3: { fontSize: "14px", fontWeight: "600", color: "#ccc", margin: "20px 0 6px" },
+  legalP: { fontSize: "14px", color: "#888", lineHeight: 1.6, margin: 0 },
+  backButton: { background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "14px", padding: "4px 0" },
+
+  // Legal footer
+  legalFooter: { display: "flex", justifyContent: "center", alignItems: "center", gap: "8px", padding: "24px 0 16px", marginTop: "8px" },
+  legalFooterLink: { background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "12px", padding: 0 },
 }

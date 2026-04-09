@@ -4,3 +4,5 @@ python-dotenv
 supabase
 google-genai
 httpx
+slowapi
+sentry-sdk[fastapi]
