@@ -32,6 +32,9 @@ ReCall is a PWA (Progressive Web App) for semantic search over saved internet co
 | Auth | Supabase Auth with Google OAuth |
 | Embeddings | Gemini `gemini-embedding-001` (768 dims, via direct REST — NOT the SDK) |
 | AI tagging | Gemini `gemini-2.5-flash` (via `google-genai` SDK) |
+| Analytics | PostHog (`posthog-js` — frontend only) |
+| Error monitoring | Sentry (`@sentry/react` frontend, `sentry-sdk[fastapi]` backend) |
+| Rate limiting | slowapi (per-IP, on `/save` and `/search`) |
 | Frontend deploy | Vercel |
 | Backend deploy | Railway (Nixpacks builder) |
 
@@ -76,9 +79,11 @@ ReCall/
 VITE_SUPABASE_URL=https://ompfoouatzknuidnccsz.supabase.co
 VITE_SUPABASE_ANON_KEY=<anon key — safe for client>
 VITE_BACKEND_URL=http://127.0.0.1:8000          # local dev; set to Railway URL in Vercel dashboard
+VITE_SENTRY_DSN=<Sentry frontend DSN — safe for client>
+VITE_POSTHOG_KEY=<PostHog project API key — safe for client>
 ```
 
-**On Vercel**, set `VITE_BACKEND_URL` to `https://recall-production-9941.up.railway.app` via the Vercel environment variable dashboard — do NOT hardcode it.
+**On Vercel**, set `VITE_BACKEND_URL` to `https://recall-production-9941.up.railway.app` via the Vercel environment variable dashboard — do NOT hardcode it. `VITE_SENTRY_DSN` and `VITE_POSTHOG_KEY` are also set in Vercel dashboard. Both are public-safe by design.
 
 ### Backend — `recall-backend/.env`
 
@@ -86,9 +91,11 @@ VITE_BACKEND_URL=http://127.0.0.1:8000          # local dev; set to Railway URL 
 SUPABASE_URL=https://ompfoouatzknuidnccsz.supabase.co
 SUPABASE_SERVICE_KEY=<service role key — NEVER expose to client>
 GEMINI_API_KEY=<Gemini API key>
+SENTRY_DSN=<Sentry backend DSN>
+CORS_ORIGINS=https://recall-iota-six.vercel.app,http://localhost:5173
 ```
 
-**On Railway**, these are set as environment variables in the Railway dashboard.
+**On Railway**, these are set as environment variables in the Railway dashboard. `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes.
 
 ---
 
@@ -102,6 +109,7 @@ GEMINI_API_KEY=<Gemini API key>
 | `PATCH` | `/save/{id}/title` | Update a save's display title |
 | `PATCH` | `/save/{id}/tag` | Update a save's category tag |
 | `DELETE` | `/save/{id}` | Delete a save |
+| `DELETE` | `/account` | Delete all user saves + auth account |
 | `GET` | `/` | Health check |
 
 All mutating endpoints verify the Supabase JWT and enforce `user_id` ownership before touching any row.
@@ -309,6 +317,8 @@ Returns rows ordered by `embedding <=> query_embedding` (cosine distance), filte
   - `VITE_SUPABASE_URL`
   - `VITE_SUPABASE_ANON_KEY`
   - `VITE_BACKEND_URL=https://recall-production-9941.up.railway.app`
+  - `VITE_SENTRY_DSN`
+  - `VITE_POSTHOG_KEY`
 
 ### Backend — Railway
 
@@ -319,6 +329,8 @@ Returns rows ordered by `embedding <=> query_embedding` (cosine distance), filte
   - `SUPABASE_URL`
   - `SUPABASE_SERVICE_KEY`
   - `GEMINI_API_KEY`
+  - `SENTRY_DSN`
+  - `CORS_ORIGINS`
 
 ---
 
@@ -443,6 +455,13 @@ A lightning bolt / cursor-shaped path:
 - **Search — session persistence** — last query + results restored on tab switch / reload within same browser session
 - **Search — zero-results CTA** — "Save a page about this →" switches to Save tab
 - **Search — shimmer loading bar** — neutral 4px bar, no skeleton cards
+- **Security — CORS lockdown** — backend only accepts requests from `CORS_ORIGINS` env var (prod: Vercel domain only)
+- **Security — SSRF protection** — `validate_url()` blocks private/internal IPs before any fetch; guards both user-supplied URLs and `og:image` URLs
+- **Security — rate limiting** — slowapi, 10/min on `/save`, 30/min on `/search`, per IP
+- **Observability — Sentry** — error monitoring on both frontend (`@sentry/react`) and backend (`sentry-sdk[fastapi]`); DSN via env vars, silently skips if not set
+- **Observability — PostHog** — product analytics on frontend; tracks `url_saved`, `search_performed`, `tag_edited`, `title_edited`, `save_deleted`, `share_sheet_triggered`, `account_deleted`; identifies users by Supabase UID; resets on sign-out
+- **Account deletion** — `DELETE /account` endpoint wipes all saves + deletes auth user; frontend settings panel (⚙ in header) with confirmation step
+- **Privacy Policy + Terms of Service** — inline legal view at `/privacy` and `/terms`; footer links on all views; content is factual and minimal
 
 ### Not Yet Built
 - Offline support / service worker caching
@@ -450,4 +469,6 @@ A lightning bolt / cursor-shaped path:
 - iOS Share Sheet (not supported by PWA spec yet)
 - Browser extension for desktop saving
 - Bulk import / export
-- Analytics or usage tracking
+- Gemini API budget alert (Google Cloud Console — manual task)
+- Uptime monitoring / Railway cold start keep-warm (UptimeRobot — manual task)
+- Google OAuth app verification (required for >100 users — needs live privacy policy URL first)
