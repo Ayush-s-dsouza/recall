@@ -1004,6 +1004,7 @@ export default function App() {
                   window.history.back()
                 }
               }}
+              className="return-button-pulse"
               style={styles.returnButton}
             >
               ← Return to {getSourceLabel(saveReceipt.url)}
@@ -1178,7 +1179,7 @@ const styles = {
   duplicateHeader: { fontSize: "13px", color: "#fbbf24", fontWeight: "600" },
   shimmerPill: { height: "14px", width: "48px", borderRadius: "4px", background: "#2a2a2a", display: "block" },
   shimmerTitle: { height: "18px", width: "70%", borderRadius: "4px", background: "#2a2a2a", display: "block" },
-  returnButton: { display: "block", background: "rgba(168, 85, 247, 0.08)", border: "1px solid rgba(168, 85, 247, 0.35)", color: "#c084fc", borderRadius: "12px", padding: "13px 14px", fontSize: "14px", fontWeight: "500", cursor: "pointer", width: "100%", textAlign: "center", boxSizing: "border-box", textDecoration: "none" },
+  returnButton: { display: "block", background: "none", border: "1px solid rgba(255,255,255,0.25)", color: "#fff", borderRadius: "12px", padding: "13px 14px", fontSize: "14px", fontWeight: "500", cursor: "pointer", width: "100%", textAlign: "center", boxSizing: "border-box", textDecoration: "none" },
   todaySection: { marginTop: "4px", display: "flex", flexDirection: "column", gap: "8px" },
   todayHeader: { fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "1px", margin: 0 },
   todayList: { display: "flex", flexDirection: "column", gap: "6px", maxHeight: "320px", overflowY: "auto" },
