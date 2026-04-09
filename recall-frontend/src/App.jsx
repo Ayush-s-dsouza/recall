@@ -97,6 +97,7 @@ export default function App() {
   const [onboardingStep, setOnboardingStep] = useState(null)
   const [first5Count, setFirst5Count] = useState(5)
   const [firstSaveSheetOpen, setFirstSaveSheetOpen] = useState(false)
+  const [authLoading, setAuthLoading] = useState(true)
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
   const isIOS = /iPhone|iPad/i.test(navigator.userAgent)
@@ -105,7 +106,7 @@ export default function App() {
 
   useEffect(() => {
     if (!loading) { setLoadingStep(0); return }
-    const id = setInterval(() => setLoadingStep(s => Math.min(s + 1, 3)), 800)
+    const id = setInterval(() => setLoadingStep(s => Math.min(s + 1, 3)), 1050)
     return () => clearInterval(id)
   }, [loading])
 
@@ -235,6 +236,7 @@ export default function App() {
     }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
+      setAuthLoading(false)
       if (session?.user) {
         posthog.identify(session.user.id)
         fetchTodaySaves()
@@ -292,9 +294,6 @@ export default function App() {
         handleSave(pending, isViaShareSheet)
       }
     })
-    if (!isViaShareSheet) {
-      checkClipboard()
-    }
   }, [])
 
   const signIn = async () => {
@@ -515,6 +514,8 @@ export default function App() {
     setLoading(false)
   }
 
+  if (authLoading) return null
+
   if (view === 'legal') {
     return (
       <div style={styles.container}>
@@ -640,7 +641,7 @@ export default function App() {
 
       <div style={styles.tabs}>
         <button onClick={() => { setView("search") }} style={view === "search" ? styles.tabActive : styles.tab}>Search</button>
-        <button onClick={() => { setView("save"); checkClipboard() }} style={view === "save" ? styles.tabActive : styles.tab}>Save</button>
+        <button onClick={() => { setView("save") }} style={view === "save" ? styles.tabActive : styles.tab}>Save</button>
       </div>
 
       {view === "search" && (
@@ -1177,7 +1178,7 @@ const styles = {
   duplicateHeader: { fontSize: "13px", color: "#fbbf24", fontWeight: "600" },
   shimmerPill: { height: "14px", width: "48px", borderRadius: "4px", background: "#2a2a2a", display: "block" },
   shimmerTitle: { height: "18px", width: "70%", borderRadius: "4px", background: "#2a2a2a", display: "block" },
-  returnButton: { display: "block", background: "none", border: "1px solid #333", color: "#aaa", borderRadius: "12px", padding: "13px 14px", fontSize: "14px", cursor: "pointer", width: "100%", textAlign: "center", boxSizing: "border-box", textDecoration: "none" },
+  returnButton: { display: "block", background: "rgba(168, 85, 247, 0.08)", border: "1px solid rgba(168, 85, 247, 0.35)", color: "#c084fc", borderRadius: "12px", padding: "13px 14px", fontSize: "14px", fontWeight: "500", cursor: "pointer", width: "100%", textAlign: "center", boxSizing: "border-box", textDecoration: "none" },
   todaySection: { marginTop: "4px", display: "flex", flexDirection: "column", gap: "8px" },
   todayHeader: { fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "1px", margin: 0 },
   todayList: { display: "flex", flexDirection: "column", gap: "6px", maxHeight: "320px", overflowY: "auto" },
