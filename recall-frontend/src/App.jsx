@@ -104,6 +104,25 @@ export default function App() {
   const [first5Count, setFirst5Count] = useState(5)
   const [firstSaveSheetOpen, setFirstSaveSheetOpen] = useState(false)
   const [authLoading, setAuthLoading] = useState(true)
+
+  // Ask mode (wiki Q&A)
+  const [askMode, setAskMode] = useState(false)
+  const [synthesis, setSynthesis] = useState(null)
+  const [synthesisSources, setSynthesisSources] = useState([])
+  const [askLoading, setAskLoading] = useState(false)
+  const [savingInsight, setSavingInsight] = useState(false)
+  const [insightSaved, setInsightSaved] = useState(false)
+
+  // Related saves (shown on receipt)
+  const [relatedSaves, setRelatedSaves] = useState([])
+
+  // Library tab
+  const [libraryData, setLibraryData] = useState(null)
+  const [libraryLoading, setLibraryLoading] = useState(false)
+  const [savedInsights, setSavedInsights] = useState([])
+  const [insightsLoading, setInsightsLoading] = useState(false)
+  const [deletingInsightId, setDeletingInsightId] = useState(null)
+
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
   const isIOS = /iPhone|iPad/i.test(navigator.userAgent)
@@ -465,9 +484,11 @@ export default function App() {
         setSaveReceipt({ ...data, url, duplicate: true })
       } else {
         setUrlInput("")
+        setRelatedSaves([])
         const newCount = first5Count < 5 ? first5Count + 1 : first5Count
         if (first5Count < 5) setFirst5Count(newCount)
         setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet, milestoneCount: first5Count < 5 ? newCount : null })
+        if (data.related_ids?.length) fetchRelatedSaves(data.related_ids)
         fetchTodaySaves()
         fetchLibraryFilters()
         posthog.capture('url_saved', { tag: data.tag })
@@ -525,6 +546,118 @@ export default function App() {
       setResults([])
     }
     setLoading(false)
+  }
+
+  const handleAsk = async (overrideQuery) => {
+    const q = (overrideQuery ?? query).trim()
+    if (!q) return
+    setAskLoading(true)
+    setSynthesis(null)
+    setSynthesisSources([])
+    setInsightSaved(false)
+    setRecentSearches(prev => {
+      const updated = [q, ...prev.filter(s => s !== q)].slice(0, 5)
+      localStorage.setItem("recall_recent_searches", JSON.stringify(updated))
+      return updated
+    })
+    try {
+      const token = await getToken()
+      const res = await fetch(`${BACKEND}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: q, token })
+      })
+      const data = await res.json()
+      if (data.insufficient) {
+        setSynthesis("__insufficient__")
+      } else {
+        setSynthesis(data.synthesis)
+        setSynthesisSources(data.sources || [])
+      }
+      posthog.capture('ask_performed', { result: data.insufficient ? 'insufficient' : 'success' })
+    } catch {
+      setSynthesis(null)
+    }
+    setAskLoading(false)
+  }
+
+  const saveInsight = async () => {
+    if (!synthesis || synthesis === "__insufficient__" || insightSaved) return
+    setSavingInsight(true)
+    try {
+      const token = await getToken()
+      await fetch(`${BACKEND}/wiki`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: query,
+          synthesis,
+          source_ids: synthesisSources.map(s => s.id),
+          token
+        })
+      })
+      setInsightSaved(true)
+      posthog.capture('insight_saved')
+    } catch {}
+    setSavingInsight(false)
+  }
+
+  const fetchLibraryData = async () => {
+    setLibraryLoading(true)
+    try {
+      const token = await getToken()
+      const res = await fetch(`${BACKEND}/library`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token })
+      })
+      const data = await res.json()
+      setLibraryData(data.library || [])
+    } catch {
+      setLibraryData([])
+    }
+    setLibraryLoading(false)
+  }
+
+  const fetchSavedInsights = async () => {
+    setInsightsLoading(true)
+    try {
+      const token = await getToken()
+      const res = await fetch(`${BACKEND}/wiki/list`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token })
+      })
+      const data = await res.json()
+      setSavedInsights(data.insights || [])
+    } catch {
+      setSavedInsights([])
+    }
+    setInsightsLoading(false)
+  }
+
+  const deleteInsight = async (id) => {
+    setDeletingInsightId(id)
+    try {
+      const token = await getToken()
+      await fetch(`${BACKEND}/wiki/${id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token })
+      })
+      setSavedInsights(prev => prev.filter(i => i.id !== id))
+      posthog.capture('insight_deleted')
+    } catch {}
+    setDeletingInsightId(null)
+  }
+
+  const fetchRelatedSaves = async (ids) => {
+    if (!ids?.length) return
+    const { data } = await supabase
+      .from("saves")
+      .select("id, title, url, tag")
+      .in("id", ids)
+    if (data) setRelatedSaves(data)
   }
 
   if (authLoading) return null
@@ -655,6 +788,11 @@ export default function App() {
       <div style={styles.tabs}>
         <button onClick={() => { setView("search") }} style={view === "search" ? styles.tabActive : styles.tab}>Search</button>
         <button onClick={() => { setView("save") }} style={view === "save" ? styles.tabActive : styles.tab}>Save</button>
+        <button onClick={() => {
+          setView("library")
+          if (!libraryData) fetchLibraryData()
+          if (!savedInsights.length) fetchSavedInsights()
+        }} style={view === "library" ? styles.tabActive : styles.tab}>Library</button>
       </div>
 
       {view === "search" && (
@@ -665,19 +803,30 @@ export default function App() {
             <input
               ref={searchInputRef}
               style={styles.searchBarInput}
-              placeholder="What are you looking for?"
+              placeholder={askMode ? "Ask anything about your saves…" : "What are you looking for?"}
               value={query}
               onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleSearch()}
+              onKeyDown={e => { if (e.key === "Enter") askMode ? handleAsk() : handleSearch() }}
               onFocus={() => setSearchInputFocused(true)}
               onBlur={() => setTimeout(() => setSearchInputFocused(false), 150)}
             />
             <button
-              onClick={() => handleSearch()}
+              onClick={() => askMode ? handleAsk() : handleSearch()}
               style={styles.searchBarButton}
-              disabled={loading}
-              aria-label="Search"
-            >🔍</button>
+              disabled={loading || askLoading}
+              aria-label={askMode ? "Ask" : "Search"}
+            >{askMode ? "✦" : "🔍"}</button>
+          </div>
+          {/* Ask / Search mode toggle */}
+          <div style={styles.modeToggle}>
+            <button
+              onClick={() => { setAskMode(false); setSynthesis(null) }}
+              style={!askMode ? styles.modeToggleActive : styles.modeToggleInactive}
+            >Search</button>
+            <button
+              onClick={() => { setAskMode(true); setResults([]) }}
+              style={askMode ? styles.modeToggleActive : styles.modeToggleInactive}
+            >✦ Ask</button>
           </div>
 
           {/* Recent searches — shown when input focused + query empty */}
@@ -709,8 +858,43 @@ export default function App() {
           )}
 
           {/* Shimmer loading bar */}
-          {loading && (
+          {(loading || askLoading) && (
             <span className="shimmer" style={styles.searchShimmerBar} />
+          )}
+
+          {/* Synthesis card (Ask mode) */}
+          {askMode && synthesis && synthesis !== "__insufficient__" && (
+            <div style={styles.synthesisCard}>
+              <div style={styles.synthesisHeader}>
+                <span style={styles.synthesisLabel}>✦ Based on your saves</span>
+                <button
+                  onClick={saveInsight}
+                  disabled={savingInsight || insightSaved}
+                  style={insightSaved ? styles.insightSavedBtn : styles.saveInsightBtn}
+                >{insightSaved ? "Saved ✓" : savingInsight ? "Saving…" : "Pin insight"}</button>
+              </div>
+              <p style={styles.synthesisText}>{synthesis}</p>
+              {synthesisSources.length > 0 && (
+                <div style={styles.synthesisSources}>
+                  <span style={styles.synthesisSourcesLabel}>Sources</span>
+                  <div style={styles.synthesisSourceChips}>
+                    {synthesisSources.map(s => (
+                      <a key={s.id} href={s.url} target="_blank" rel="noreferrer" style={styles.synthesisSourceChip}>
+                        {s.title}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Insufficient sources message */}
+          {askMode && synthesis === "__insufficient__" && (
+            <div style={styles.synthesisInsufficient}>
+              <p style={{ margin: 0, color: "#888", fontSize: 14 }}>Not enough saved articles on this topic to synthesize an answer. Try saving more content first.</p>
+              <button style={styles.zeroResultsCta} onClick={() => setView("save")}>Save a page about this →</button>
+            </div>
           )}
 
           {/* Empty state — personalised chips or new-user nudge */}
@@ -983,6 +1167,18 @@ export default function App() {
                     <span style={styles.receiptUrl}>{saveReceipt.url}</span>
                     <span style={styles.receiptSaved}>Saved ✓</span>
                   </div>
+                  {relatedSaves.length > 0 && (
+                    <div style={styles.relatedSavesSection}>
+                      <span style={styles.relatedSavesLabel}>📎 Similar saves</span>
+                      {relatedSaves.slice(0, 2).map(r => (
+                        <button
+                          key={r.id}
+                          onClick={() => { setView("search"); setQuery(r.title); handleSearch(r.title) }}
+                          style={styles.relatedSaveChip}
+                        >{r.title}</button>
+                      ))}
+                    </div>
+                  )}
                   {saveReceipt.milestoneCount && (
                     <div style={styles.milestoneRow}>
                       {saveReceipt.milestoneCount === 5 ? (
@@ -1091,6 +1287,85 @@ export default function App() {
               >I'll paste a link</button>
             </div>
           )}
+        </div>
+      )}
+
+      {view === "library" && (
+        <div style={styles.section}>
+          {/* Topic summaries */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <p style={styles.todayHeader}>Your knowledge</p>
+            <button onClick={fetchLibraryData} disabled={libraryLoading} style={styles.refreshBtn}>
+              {libraryLoading ? "…" : "↻"}
+            </button>
+          </div>
+
+          {libraryLoading && <span className="shimmer" style={styles.searchShimmerBar} />}
+
+          {!libraryLoading && libraryData !== null && libraryData.length === 0 && (
+            <div style={styles.emptyState}>
+              <p style={styles.emptyStateHint}>No articles saved yet.</p>
+              <button style={styles.emptyStateCta} onClick={() => setView("save")}>Save your first link →</button>
+            </div>
+          )}
+
+          {!libraryLoading && libraryData?.length > 0 && (
+            <div style={styles.libraryGrid}>
+              {libraryData.map(item => (
+                <button
+                  key={item.tag}
+                  onClick={() => { setView("search"); setAskMode(false); browseByFilter(item.tag, null) }}
+                  style={styles.libraryCard}
+                >
+                  <div style={styles.libraryCardHeader}>
+                    <span style={styles.libraryCardTag}>{item.tag}</span>
+                    <span style={styles.libraryCardCount}>{item.count}</span>
+                  </div>
+                  {item.summary && <p style={styles.libraryCardSummary}>{item.summary}</p>}
+                  {item.recent_titles?.length > 0 && (
+                    <div style={styles.libraryCardTitles}>
+                      {item.recent_titles.map((t, i) => (
+                        <span key={i} style={styles.libraryCardTitleChip}>{t}</span>
+                      ))}
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Saved insights */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
+            <p style={styles.todayHeader}>Saved insights</p>
+            <button onClick={fetchSavedInsights} disabled={insightsLoading} style={styles.refreshBtn}>
+              {insightsLoading ? "…" : "↻"}
+            </button>
+          </div>
+
+          {insightsLoading && <span className="shimmer" style={styles.searchShimmerBar} />}
+
+          {!insightsLoading && savedInsights.length === 0 && (
+            <p style={{ fontSize: 13, color: "#555", margin: 0 }}>
+              No pinned insights yet. Use ✦ Ask mode to synthesize your saves, then pin the answer.
+            </p>
+          )}
+
+          {savedInsights.map(insight => (
+            <div key={insight.id} style={styles.insightCard}>
+              <div style={styles.insightCardHeader}>
+                <span style={styles.insightQuery}>✦ {insight.query}</span>
+                <button
+                  onClick={() => deleteInsight(insight.id)}
+                  disabled={deletingInsightId === insight.id}
+                  style={styles.deleteButton}
+                >{deletingInsightId === insight.id ? "…" : "🗑"}</button>
+              </div>
+              <p style={styles.insightSynthesis}>
+                {insight.synthesis.length > 300 ? insight.synthesis.slice(0, 300) + "…" : insight.synthesis}
+              </p>
+              <span style={styles.insightDate}>{formatDate(insight.created_at)}</span>
+            </div>
+          ))}
         </div>
       )}
 
@@ -1323,4 +1598,45 @@ const styles = {
   // Legal footer
   legalFooter: { display: "flex", justifyContent: "center", alignItems: "center", gap: "8px", padding: "24px 0 16px", marginTop: "8px" },
   legalFooterLink: { background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "12px", padding: 0 },
+
+  // Ask / Search mode toggle
+  modeToggle: { display: "flex", gap: "4px", background: "#111", borderRadius: "20px", padding: "3px", alignSelf: "flex-start" },
+  modeToggleActive: { background: "#fff", color: "#000", border: "none", borderRadius: "16px", padding: "5px 14px", fontSize: "13px", fontWeight: "600", cursor: "pointer" },
+  modeToggleInactive: { background: "none", color: "#555", border: "none", borderRadius: "16px", padding: "5px 14px", fontSize: "13px", cursor: "pointer" },
+
+  // Synthesis card
+  synthesisCard: { background: "#141420", border: "1px solid #2a2a40", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "12px" },
+  synthesisHeader: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  synthesisLabel: { fontSize: "11px", color: "#7c6fcd", textTransform: "uppercase", letterSpacing: "1px", fontWeight: "600" },
+  saveInsightBtn: { background: "none", border: "1px solid #2a2a40", color: "#7c6fcd", borderRadius: "8px", padding: "4px 10px", fontSize: "12px", cursor: "pointer" },
+  insightSavedBtn: { background: "none", border: "1px solid #333", color: "#555", borderRadius: "8px", padding: "4px 10px", fontSize: "12px", cursor: "default" },
+  synthesisText: { fontSize: "14px", color: "#ccc", lineHeight: 1.65, margin: 0, whiteSpace: "pre-wrap" },
+  synthesisSources: { display: "flex", flexDirection: "column", gap: "6px", paddingTop: "8px", borderTop: "1px solid #1e1e30" },
+  synthesisSourcesLabel: { fontSize: "10px", color: "#555", textTransform: "uppercase", letterSpacing: "1px" },
+  synthesisSourceChips: { display: "flex", flexWrap: "wrap", gap: "6px" },
+  synthesisSourceChip: { background: "#1a1a2a", border: "1px solid #2a2a40", color: "#888", borderRadius: "6px", padding: "3px 8px", fontSize: "12px", textDecoration: "none", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "180px" },
+  synthesisInsufficient: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px" },
+
+  // Related saves on receipt
+  relatedSavesSection: { display: "flex", flexDirection: "column", gap: "6px", paddingTop: "10px", borderTop: "1px solid #2a2a2a" },
+  relatedSavesLabel: { fontSize: "11px", color: "#555" },
+  relatedSaveChip: { background: "none", border: "1px solid #2a2a2a", color: "#888", borderRadius: "8px", padding: "6px 10px", fontSize: "12px", cursor: "pointer", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+
+  // Library tab
+  libraryGrid: { display: "flex", flexDirection: "column", gap: "10px" },
+  libraryCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "14px 16px", display: "flex", flexDirection: "column", gap: "8px", cursor: "pointer", textAlign: "left", width: "100%", boxSizing: "border-box" },
+  libraryCardHeader: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  libraryCardTag: { fontSize: "13px", fontWeight: "600", color: "#ccc" },
+  libraryCardCount: { fontSize: "12px", color: "#555", background: "#222", borderRadius: "10px", padding: "2px 8px" },
+  libraryCardSummary: { fontSize: "13px", color: "#888", margin: 0, lineHeight: 1.5 },
+  libraryCardTitles: { display: "flex", flexDirection: "column", gap: "3px" },
+  libraryCardTitleChip: { fontSize: "12px", color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  refreshBtn: { background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: "16px", padding: "2px 6px" },
+
+  // Saved insights
+  insightCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "14px 16px", display: "flex", flexDirection: "column", gap: "8px" },
+  insightCardHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" },
+  insightQuery: { fontSize: "13px", fontWeight: "600", color: "#7c6fcd", flex: 1 },
+  insightSynthesis: { fontSize: "13px", color: "#888", margin: 0, lineHeight: 1.5 },
+  insightDate: { fontSize: "11px", color: "#444" },
 }

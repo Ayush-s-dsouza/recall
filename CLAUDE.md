@@ -465,10 +465,33 @@ A lightning bolt / cursor-shaped path:
 
 ### Not Yet Built
 - Offline support / service worker caching
-- Browse / view all saves (no full library view — only today + search)
 - iOS Share Sheet (not supported by PWA spec yet)
 - Browser extension for desktop saving
 - Bulk import / export
 - Gemini API budget alert (Google Cloud Console — manual task)
 - Uptime monitoring / Railway cold start keep-warm (UptimeRobot — manual task)
 - Google OAuth app verification (required for >100 users — needs live privacy policy URL first)
+- **Personal knowledge base / LLM Wiki layer** — planned, not yet built:
+  - Jina Reader (`r.jina.ai`) as primary article fetch (replaces plain httpx GET; handles JS-rendered pages + "read more" content)
+  - `POST /ask` — synthesized Q&A over user's saves (Gemini-2.5-flash over top 8 semantic results)
+  - Auto related saves — cosine similarity computed on each save, stored as `related_ids uuid[]` on the `saves` table; shown in receipt card
+  - `GET /library` — per-tag AI summaries of user's knowledge clusters
+  - `wiki_pages` table — persistent saved insights (pinned synthesis results); shown in Library tab
+  - New `find_related_saves` Supabase RPC (pgvector `<=>` similarity, excludes self + media saves)
+
+---
+
+## Deferred Decisions
+
+Things we've discussed and consciously set aside for later — bring these up when the conditions are right.
+
+### Groq as Gemini synthesis alternative
+
+**When to raise this:** If Gemini API usage is running high or costs are a concern.
+
+**Context (discussed April 2026):** The new `/ask` and `/library` endpoints add Gemini-2.5-flash calls for synthesis. At portfolio scale this stays in the free tier (1500 req/day), but if usage grows, Groq is a strong free alternative:
+- **Groq free tier:** 14,400 requests/day with Llama 3.3 70B — fast, generous limits
+- **Use case:** Replace Gemini-2.5-flash for synthesis tasks only (`/ask`, `/library` summaries, metadata extraction)
+- **Keep Gemini for:** `gemini-embedding-001` — no comparable free alternative for 768-dim embeddings
+- **Integration:** Groq has an OpenAI-compatible API; swap is a 10-line change in main.py
+- **SDK:** `pip install groq`; endpoint is `https://api.groq.com/openai/v1`

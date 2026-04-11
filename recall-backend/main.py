@@ -10,7 +10,9 @@ import socket
 import ipaddress
 from urllib.parse import urlparse
 import httpx
+import asyncio
 import sentry_sdk
+from collections import defaultdict
 from supabase import create_client
 from google import genai
 from google.genai import types
@@ -96,6 +98,22 @@ class SuggestionsRequest(BaseModel):
     token: str
 
 class DeleteAccountRequest(BaseModel):
+    token: str
+
+class AskRequest(BaseModel):
+    query: str
+    token: str
+
+class LibraryRequest(BaseModel):
+    token: str
+
+class SaveWikiRequest(BaseModel):
+    query: str
+    synthesis: str
+    source_ids: list[str]
+    token: str
+
+class WikiTokenRequest(BaseModel):
     token: str
 
 MEDIA_URLS = [
@@ -341,6 +359,42 @@ async def fetch_tweet(url: str):
     except:
         return "", ""
 
+async def fetch_with_jina(url: str) -> tuple[str, str]:
+    """Fetch clean article content via Jina Reader (handles JS rendering, 'read more', etc).
+    Returns (clean_text, title). Falls back to ("", "") on failure."""
+    try:
+        async with httpx.AsyncClient(timeout=15, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)",
+            "X-Return-Format": "text",
+        }) as client:
+            res = await client.get(f"https://r.jina.ai/{url}", follow_redirects=True)
+            if res.status_code != 200 or len(res.text) < 150:
+                return "", ""
+            text = res.text
+            # Extract title from Jina's output header (first few lines)
+            title = ""
+            content_start = 0
+            for line in text.split('\n')[:8]:
+                if line.startswith("Title:"):
+                    title = line[6:].strip()
+                elif line.startswith("Markdown Content:") or line.startswith("URL Source:"):
+                    idx = text.find(line)
+                    content_start = idx + len(line)
+                    break
+            content = text[content_start:].strip() if content_start else text
+            return content[:5000], title
+    except Exception:
+        return "", ""
+
+async def fetch_og_html(url: str) -> str:
+    """Quick fetch of raw page HTML for OG tag + title extraction."""
+    try:
+        async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+            r = await client.get(url, follow_redirects=True)
+            return r.text[:10000]
+    except Exception:
+        return ""
+
 @app.post("/save")
 @limiter.limit("10/minute")
 async def save_url(req: SaveRequest, request: Request):
@@ -415,44 +469,47 @@ async def save_url(req: SaveRequest, request: Request):
                 extra_context = f"Image: {image_description}"
                 clean_text = (clean_text + "\n\n" + extra_context).strip()
     else:
-        try:
-            async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-                response = await client.get(req.url, follow_redirects=True)
-                content_text = response.text[:10000]
-        except:
-            content_text = ""
-
-        from html.parser import HTMLParser
-        class TextExtractor(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.text = []
-                self.in_script = False
-            def handle_starttag(self, tag, attrs):
-                if tag in ['script', 'style']:
-                    self.in_script = True
-            def handle_endtag(self, tag):
-                if tag in ['script', 'style']:
-                    self.in_script = False
-            def handle_data(self, data):
-                if not self.in_script:
-                    self.text.append(data.strip())
-
-        parser = TextExtractor()
-        parser.feed(content_text)
-        clean_text = " ".join(t for t in parser.text if t)[:5000]
+        # Run Jina Reader and raw OG fetch concurrently for speed
+        (jina_text, jina_title), raw_html = await asyncio.gather(
+            fetch_with_jina(req.url),
+            fetch_og_html(req.url)
+        )
 
         import re
-        title_match = re.search(r'<title>(.*?)</title>', content_text, re.IGNORECASE)
-        title = title_match.group(1) if title_match else req.url
-
-        # Extract Open Graph / meta tags — available even on JS-heavy sites
-        og = extract_og_tags(content_text)
+        title_match = re.search(r'<title>(.*?)</title>', raw_html, re.IGNORECASE)
+        html_title = title_match.group(1) if title_match else ""
+        og = extract_og_tags(raw_html)
         og_title = og.get("og:title", "")
         og_description = og.get("og:description", "") or og.get("description", "")
         og_image = og.get("og:image", "")
 
-        # Prefer og:title over <title> when the latter is generic
+        if jina_text:
+            # Jina succeeded — use its clean rendered content
+            clean_text = jina_text
+            title = jina_title or og_title or html_title or req.url
+        else:
+            # Jina failed — fall back to HTML parse of raw page
+            from html.parser import HTMLParser
+            class TextExtractor(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self.text = []
+                    self.in_script = False
+                def handle_starttag(self, tag, attrs):
+                    if tag in ['script', 'style']:
+                        self.in_script = True
+                def handle_endtag(self, tag):
+                    if tag in ['script', 'style']:
+                        self.in_script = False
+                def handle_data(self, data):
+                    if not self.in_script:
+                        self.text.append(data.strip())
+            parser = TextExtractor()
+            parser.feed(raw_html)
+            clean_text = " ".join(t for t in parser.text if t)[:5000]
+            title = og_title or html_title or req.url
+
+        # Prefer og:title when current title is generic
         if og_title and (not title or title == req.url):
             title = og_title
 
@@ -466,11 +523,9 @@ async def save_url(req: SaveRequest, request: Request):
                 extra_parts.append(f"Image: {image_description}")
         extra_context = "\n".join(extra_parts)
 
-        # Append extra context to stored text so full-text search also benefits
         if extra_context:
             clean_text = (clean_text + "\n\n" + extra_context)[:5000]
 
-        # Quality gate: if there's not enough content to be useful, don't save
         if len((clean_text + extra_context).strip()) < QUALITY_THRESHOLD:
             return {"thin_content": True, "url": req.url}
 
@@ -488,7 +543,23 @@ async def save_url(req: SaveRequest, request: Request):
     }).execute()
     inserted_id = result.data[0]["id"]
 
-    return {"success": True, "title": title, "tag": tag, "id": inserted_id}
+    # Find semantically related saves and store cross-references (best-effort)
+    related_ids = []
+    try:
+        related_result = supabase.rpc("find_related_saves", {
+            "save_embedding": embedding,
+            "exclude_id": inserted_id,
+            "match_user_id": user_id,
+            "match_count": 3
+        }).execute()
+        related_ids = [r["id"] for r in (related_result.data or [])]
+        if related_ids:
+            supabase.table("saves").update({"related_ids": related_ids}) \
+                .eq("id", inserted_id).execute()
+    except Exception:
+        pass  # Silently skip if RPC/column not yet set up in Supabase
+
+    return {"success": True, "title": title, "tag": tag, "id": inserted_id, "related_ids": related_ids}
 
 @app.post("/search")
 @limiter.limit("30/minute")
@@ -644,6 +715,144 @@ async def delete_account(req: DeleteAccountRequest):
     supabase.table("saves").delete().eq("user_id", user_id).execute()
     supabase.auth.admin.delete_user(user_id)
     return {"success": True}
+
+@app.post("/ask")
+@limiter.limit("20/minute")
+async def ask_recall(req: AskRequest, request: Request):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    query_embedding = get_embedding(req.query)
+    semantic_result = supabase.rpc("match_saves", {
+        "query_embedding": query_embedding,
+        "match_user_id": user_id,
+        "match_count": 8
+    }).execute()
+
+    article_saves = [
+        r for r in (semantic_result.data or [])
+        if r.get("content_type", "article") == "article" and r.get("content_text")
+    ]
+
+    if len(article_saves) < 2:
+        return {"synthesis": None, "sources": [], "insufficient": True}
+
+    context_parts = []
+    for row in article_saves[:8]:
+        title = row.get("title", "Unknown")
+        content = (row.get("content_text") or "")[:600].strip()
+        context_parts.append(f"[{title}]\n{content}")
+    context = "\n\n---\n\n".join(context_parts)
+
+    try:
+        gemini = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        prompt = f"""You are a personal knowledge assistant synthesizing information from articles the user has saved to their library. Answer their question in 2-3 concise paragraphs using ONLY what is in the provided articles. Cite sources inline using the article title in square brackets like [Article Title]. If the articles don't contain enough information to answer well, say so briefly.
+
+Articles from the user's library:
+{context}
+
+Question: {req.query}"""
+        response = gemini.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        synthesis = response.text.strip()
+    except Exception:
+        raise HTTPException(status_code=500, detail="Synthesis failed")
+
+    sources = [
+        {"id": r["id"], "title": r.get("title", ""), "url": r.get("url", ""), "tag": r.get("tag", "")}
+        for r in article_saves[:8]
+    ]
+
+    return {"synthesis": synthesis, "sources": sources, "insufficient": False}
+
+
+@app.post("/library")
+@limiter.limit("10/hour")
+async def get_library(req: LibraryRequest, request: Request):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    result = supabase.table("saves") \
+        .select("id, title, tag, content_text, created_at") \
+        .eq("user_id", user_id) \
+        .eq("content_type", "article") \
+        .order("created_at", desc=True) \
+        .execute()
+
+    if not result.data:
+        return {"library": []}
+
+    tag_groups = defaultdict(list)
+    for row in result.data:
+        tag_groups[row.get("tag") or "Other"].append(row)
+
+    gemini = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    library = []
+
+    for tag, saves in sorted(tag_groups.items(), key=lambda x: -len(x[1])):
+        count = len(saves)
+        recent_titles = [s["title"] for s in saves[:3]]
+        summary = ""
+        if count >= 3:
+            titles_sample = "\n".join(f"- {s['title']}" for s in saves[:10])
+            try:
+                prompt = f"""In 1-2 sentences, summarize the key themes across these {count} saved articles under the "{tag}" category. Be specific about recurring topics, not generic.
+
+Titles:
+{titles_sample}
+
+Write only the summary, nothing else."""
+                response = gemini.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                summary = response.text.strip()
+            except Exception:
+                summary = ""
+        library.append({"tag": tag, "count": count, "summary": summary, "recent_titles": recent_titles})
+
+    return {"library": library}
+
+
+@app.post("/wiki")
+async def save_wiki_insight(req: SaveWikiRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    result = supabase.table("wiki_pages").insert({
+        "user_id": user_id,
+        "query": req.query,
+        "synthesis": req.synthesis,
+        "source_ids": req.source_ids
+    }).execute()
+    return {"success": True, "id": result.data[0]["id"]}
+
+
+@app.post("/wiki/list")
+async def list_wiki_insights(req: WikiTokenRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    result = supabase.table("wiki_pages") \
+        .select("id, query, synthesis, source_ids, created_at") \
+        .eq("user_id", user_id) \
+        .order("created_at", desc=True) \
+        .execute()
+    return {"insights": result.data or []}
+
+
+@app.delete("/wiki/{wiki_id}")
+async def delete_wiki_insight(wiki_id: str, req: WikiTokenRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    supabase.table("wiki_pages").delete() \
+        .eq("id", wiki_id).eq("user_id", user_id).execute()
+    return {"success": True}
+
 
 @app.get("/")
 async def root():
