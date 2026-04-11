@@ -123,6 +123,13 @@ export default function App() {
   const [insightsLoading, setInsightsLoading] = useState(false)
   const [deletingInsightId, setDeletingInsightId] = useState(null)
 
+  // Ask step messaging + insufficient detail
+  const [askStep, setAskStep] = useState("")
+  const [insufficientData, setInsufficientData] = useState(null)
+
+  // Total save count for multi-stage milestone track
+  const [totalSaveCount, setTotalSaveCount] = useState(0)
+
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
   const isIOS = /iPhone|iPad/i.test(navigator.userAgent)
@@ -134,6 +141,15 @@ export default function App() {
     const id = setInterval(() => setLoadingStep(s => Math.min(s + 1, 3)), 1050)
     return () => clearInterval(id)
   }, [loading])
+
+  useEffect(() => {
+    if (!askLoading) { setAskStep(""); return }
+    const steps = ["Searching your saves…", "Reading articles…", "Synthesizing your answer…"]
+    setAskStep(steps[0])
+    const t1 = setTimeout(() => setAskStep(steps[1]), 1400)
+    const t2 = setTimeout(() => setAskStep(steps[2]), 3200)
+    return () => { clearTimeout(t1); clearTimeout(t2) }
+  }, [askLoading])
 
   function playSuccessChime() {
     try {
@@ -186,6 +202,7 @@ export default function App() {
       .from("saves")
       .select("*", { count: "exact", head: true })
     if (count !== null) {
+      setTotalSaveCount(count)
       const capped = Math.min(count, 5)
       setFirst5Count(capped)
       if (capped >= 5) {
@@ -440,6 +457,10 @@ export default function App() {
       body: JSON.stringify({ token })
     })
     setTodaySaves(prev => prev.filter(s => s.id !== id))
+    setResults(prev => prev.filter(s => s.id !== id))
+    setSynthesisSources(prev => prev.filter(s => s.id !== id))
+    setRelatedSaves(prev => prev.filter(s => s.id !== id))
+    setTotalSaveCount(prev => Math.max(0, prev - 1))
     if (saveReceipt?.id === id) setSaveReceipt(null)
     posthog.capture('save_deleted')
     setDeletingId(null)
@@ -485,6 +506,7 @@ export default function App() {
       } else {
         setUrlInput("")
         setRelatedSaves([])
+        setTotalSaveCount(prev => prev + 1)
         const newCount = first5Count < 5 ? first5Count + 1 : first5Count
         if (first5Count < 5) setFirst5Count(newCount)
         setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet, milestoneCount: first5Count < 5 ? newCount : null })
@@ -554,6 +576,7 @@ export default function App() {
     setAskLoading(true)
     setSynthesis(null)
     setSynthesisSources([])
+    setInsufficientData(null)
     setInsightSaved(false)
     setRecentSearches(prev => {
       const updated = [q, ...prev.filter(s => s !== q)].slice(0, 5)
@@ -570,6 +593,7 @@ export default function App() {
       const data = await res.json()
       if (data.insufficient) {
         setSynthesis("__insufficient__")
+        setInsufficientData({ relevant_count: data.relevant_count ?? 0 })
       } else {
         setSynthesis(data.synthesis)
         setSynthesisSources(data.sources || [])
@@ -658,6 +682,42 @@ export default function App() {
       .select("id, title, url, tag")
       .in("id", ids)
     if (data) setRelatedSaves(data)
+  }
+
+  const handleExport = async () => {
+    const { data } = await supabase
+      .from("saves")
+      .select("id, title, url, tag, content_text, created_at")
+      .order("tag", { ascending: true })
+      .order("created_at", { ascending: false })
+    if (!data?.length) return
+
+    const byTag = {}
+    for (const s of data) {
+      const tag = s.tag || "Other"
+      if (!byTag[tag]) byTag[tag] = []
+      byTag[tag].push(s)
+    }
+    const totalWords = data.reduce((sum, s) => sum + (s.content_text?.split(/\s+/).length || 0), 0)
+    const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+
+    let md = `# ReCall Knowledge Base\n*Exported ${dateStr} · ${data.length} saves · ~${totalWords.toLocaleString()} words*\n\n`
+    md += `> Original saved content only. AI-generated insights are kept separate.\n\n---\n\n`
+    for (const [tag, saves] of Object.entries(byTag)) {
+      md += `## ${tag} (${saves.length})\n\n`
+      for (const s of saves) {
+        md += `### ${s.title || s.url}\n**URL:** ${s.url}  \n**Saved:** ${new Date(s.created_at).toLocaleDateString()}\n\n`
+        if (s.content_text) md += `${s.content_text}\n\n`
+        md += `---\n\n`
+      }
+    }
+
+    const blob = new Blob([md], { type: "text/markdown" })
+    const link = document.createElement("a")
+    link.href = URL.createObjectURL(blob)
+    link.download = `recall-${new Date().toISOString().slice(0, 10)}.md`
+    link.click()
+    URL.revokeObjectURL(link.href)
   }
 
   if (authLoading) return null
@@ -859,7 +919,10 @@ export default function App() {
 
           {/* Shimmer loading bar */}
           {(loading || askLoading) && (
-            <span className="shimmer" style={styles.searchShimmerBar} />
+            <>
+              <span className="shimmer" style={styles.searchShimmerBar} />
+              {askLoading && askStep && <p style={styles.askStepText}>{askStep}</p>}
+            </>
           )}
 
           {/* Synthesis card (Ask mode) */}
@@ -892,7 +955,11 @@ export default function App() {
           {/* Insufficient sources message */}
           {askMode && synthesis === "__insufficient__" && (
             <div style={styles.synthesisInsufficient}>
-              <p style={{ margin: 0, color: "#888", fontSize: 14 }}>Not enough saved articles on this topic to synthesize an answer. Try saving more content first.</p>
+              <p style={{ margin: 0, color: "#888", fontSize: 14 }}>
+                {insufficientData?.relevant_count === 0
+                  ? "Nothing focused on this topic yet."
+                  : `Only ${insufficientData?.relevant_count} closely-matched save${insufficientData?.relevant_count === 1 ? "" : "s"} on this — save ${3 - (insufficientData?.relevant_count ?? 0)} more focused articles to unlock synthesis.`}
+              </p>
               <button style={styles.zeroResultsCta} onClick={() => setView("save")}>Save a page about this →</button>
             </div>
           )}
@@ -986,15 +1053,30 @@ export default function App() {
               <>
                 <div style={styles.results}>
                   {visible.map(r => (
-                    <a key={r.id} href={r.url} target="_blank" rel="noreferrer" style={styles.card}>
-                      <div style={styles.cardMeta}>
-                        <span style={styles.cardTag}>{r.tag}</span>
-                        {r.created_at && <span style={styles.cardDate}>{formatDate(r.created_at)}</span>}
-                      </div>
-                      <div style={styles.cardTitle}>{r.title || getSourceLabel(r.url)}</div>
-                      {r.excerpt && <div style={styles.cardExcerpt}>{r.excerpt}</div>}
-                      <div style={styles.cardSource}>{getSourceLabel(r.url)}</div>
-                    </a>
+                    <div key={r.id} style={styles.card}>
+                      {confirmDeleteId === r.id ? (
+                        <div style={styles.deleteConfirm}>
+                          <span style={styles.deleteConfirmText}>Remove from ReCall?</span>
+                          <button style={styles.deleteConfirmYes} onClick={() => deleteSave(r.id)}>
+                            {deletingId === r.id ? "Removing…" : "Delete"}
+                          </button>
+                          <button style={styles.deleteConfirmNo} onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                        </div>
+                      ) : (
+                        <>
+                          <div style={styles.cardMeta}>
+                            <span style={styles.cardTag}>{r.tag}</span>
+                            {r.created_at && <span style={styles.cardDate}>{formatDate(r.created_at)}</span>}
+                            <button style={styles.cardTrashBtn} onClick={() => setConfirmDeleteId(r.id)}>🗑</button>
+                          </div>
+                          <a href={r.url} target="_blank" rel="noreferrer" style={styles.cardTitleLink}>
+                            <div style={styles.cardTitle}>{r.title || getSourceLabel(r.url)}</div>
+                            {r.excerpt && <div style={styles.cardExcerpt}>{r.excerpt}</div>}
+                            <div style={styles.cardSource}>{getSourceLabel(r.url)}</div>
+                          </a>
+                        </>
+                      )}
+                    </div>
                   ))}
                 </div>
 
@@ -1015,14 +1097,32 @@ export default function App() {
 
       {view === "save" && (
         <div style={styles.section}>
-          {first5Count > 0 && first5Count < 5 && (
-            <div style={styles.progressPill}>
-              <span style={{ fontSize: "12px", color: "#fbbf24" }}>⚡ {first5Count} of 5 saves · ReCall is climbing your Share Sheet</span>
-              <div style={styles.progressDotsRow}>
-                {[1,2,3,4,5].map(i => (
-                  <span key={i} style={i <= first5Count ? styles.dotFilledSmall : styles.dotEmptySmall} />
-                ))}
-              </div>
+          {totalSaveCount < 30 && (
+            <div style={totalSaveCount <= 5 ? styles.progressPill : totalSaveCount <= 15 ? styles.progressPillPurple : styles.progressPillGreen}>
+              {totalSaveCount <= 5 ? (
+                <>
+                  <span style={{ fontSize: "12px", color: "#fbbf24" }}>⚡ {totalSaveCount} of 5 saves · ReCall is climbing your Share Sheet</span>
+                  <div style={styles.progressDotsRow}>
+                    {[1,2,3,4,5].map(i => (
+                      <span key={i} style={i <= totalSaveCount ? styles.dotFilledSmall : styles.dotEmptySmall} />
+                    ))}
+                  </div>
+                </>
+              ) : totalSaveCount <= 15 ? (
+                <>
+                  <span style={{ fontSize: "12px", color: "#a78bfa" }}>✦ {totalSaveCount} of 15 saves · Ask is learning your interests</span>
+                  <div style={styles.progressBar}>
+                    <div style={{ ...styles.progressFill, width: `${(totalSaveCount / 15) * 100}%` }} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span style={{ fontSize: "12px", color: "#34d399" }}>◈ {totalSaveCount} of 30 saves · Your Library is taking shape</span>
+                  <div style={styles.progressBar}>
+                    <div style={{ ...styles.progressFill, width: `${(totalSaveCount / 30) * 100}%`, background: "#34d399" }} />
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -1290,7 +1390,10 @@ export default function App() {
         </div>
       )}
 
-      {view === "library" && (
+      {view === "library" && (() => {
+        const totalSaves = libraryData ? libraryData.reduce((sum, t) => sum + t.count, 0) : 0
+        const estimatedWords = libraryData ? libraryData.reduce((sum, t) => sum + (t.word_count || 0), 0) : 0
+        return (
         <div style={styles.section}>
           {/* Topic summaries */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1299,6 +1402,18 @@ export default function App() {
               {libraryLoading ? "…" : "↻"}
             </button>
           </div>
+
+          {/* Knowledge base stats + export */}
+          {libraryData && libraryData.length > 0 && (
+            <div style={styles.kbStats}>
+              <span style={styles.kbStat}><strong>{totalSaves}</strong> saves</span>
+              <span style={styles.kbStatDot}>·</span>
+              <span style={styles.kbStat}>~<strong>{estimatedWords.toLocaleString()}</strong> words</span>
+              <span style={styles.kbStatDot}>·</span>
+              <span style={styles.kbStat}><strong>{libraryData.length}</strong> topics</span>
+              <button style={styles.exportButton} onClick={handleExport}>↓ Export .md</button>
+            </div>
+          )}
 
           {libraryLoading && <span className="shimmer" style={styles.searchShimmerBar} />}
 
@@ -1312,24 +1427,36 @@ export default function App() {
           {!libraryLoading && libraryData?.length > 0 && (
             <div style={styles.libraryGrid}>
               {libraryData.map(item => (
-                <button
-                  key={item.tag}
-                  onClick={() => { setView("search"); setAskMode(false); browseByFilter(item.tag, null) }}
-                  style={styles.libraryCard}
-                >
-                  <div style={styles.libraryCardHeader}>
-                    <span style={styles.libraryCardTag}>{item.tag}</span>
-                    <span style={styles.libraryCardCount}>{item.count}</span>
-                  </div>
-                  {item.summary && <p style={styles.libraryCardSummary}>{item.summary}</p>}
-                  {item.recent_titles?.length > 0 && (
-                    <div style={styles.libraryCardTitles}>
-                      {item.recent_titles.map((t, i) => (
-                        <span key={i} style={styles.libraryCardTitleChip}>{t}</span>
+                <div key={item.tag} style={styles.libraryCard}>
+                  <button
+                    onClick={() => { setView("search"); setAskMode(false); browseByFilter(item.tag, null) }}
+                    style={styles.libraryCardInner}
+                  >
+                    <div style={styles.libraryCardHeader}>
+                      <span style={styles.libraryCardTag}>{item.tag}</span>
+                      <span style={styles.libraryCardCount}>{item.count}</span>
+                    </div>
+                    {item.summary && <p style={styles.libraryCardSummary}>{item.summary}</p>}
+                    {item.recent_titles?.length > 0 && (
+                      <div style={styles.libraryCardTitles}>
+                        {item.recent_titles.map((t, i) => (
+                          <span key={i} style={styles.libraryCardTitleChip}>{t}</span>
+                        ))}
+                      </div>
+                    )}
+                  </button>
+                  {item.sub_topics?.length > 0 && (
+                    <div style={styles.subTopicChips}>
+                      {item.sub_topics.map(st => (
+                        <button
+                          key={st.label}
+                          style={styles.subTopicChip}
+                          onClick={() => { setView("search"); setQuery(st.label); handleSearch(st.label) }}
+                        >{st.label} · {st.count}</button>
                       ))}
                     </div>
                   )}
-                </button>
+                </div>
               ))}
             </div>
           )}
@@ -1367,7 +1494,8 @@ export default function App() {
             </div>
           ))}
         </div>
-      )}
+        )
+      })()}
 
       {/* Install onboarding overlay */}
       {onboardingStep === 'install' && (
@@ -1549,8 +1677,12 @@ const styles = {
   overlayNote: { fontSize: "12px", color: "#555", margin: "4px 0 0", lineHeight: 1.5 },
   overlaySkip: { background: "none", border: "none", color: "#555", fontSize: "13px", cursor: "pointer", padding: "4px" },
 
-  // Progress pill (Save tab, saves 1–4)
+  // Progress pill (Save tab, multi-stage milestone track)
   progressPill: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", padding: "10px 14px", background: "rgba(251,191,36,0.07)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: "12px" },
+  progressPillPurple: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", padding: "10px 14px", background: "rgba(167,139,250,0.07)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "12px" },
+  progressPillGreen: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", padding: "10px 14px", background: "rgba(52,211,153,0.07)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: "12px" },
+  progressBar: { width: "100%", height: "3px", background: "#222", borderRadius: "2px", overflow: "hidden" },
+  progressFill: { height: "100%", background: "#a78bfa", borderRadius: "2px", transition: "width 0.4s ease" },
   progressDotsRow: { display: "flex", alignItems: "center", gap: "6px" },
   dotFilled: { display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", background: "#fbbf24", flexShrink: 0 },
   dotEmpty: { display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", background: "#2a2a2a", border: "1px solid #444", flexShrink: 0 },
@@ -1624,7 +1756,8 @@ const styles = {
 
   // Library tab
   libraryGrid: { display: "flex", flexDirection: "column", gap: "10px" },
-  libraryCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "14px 16px", display: "flex", flexDirection: "column", gap: "8px", cursor: "pointer", textAlign: "left", width: "100%", boxSizing: "border-box" },
+  libraryCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "14px 16px", display: "flex", flexDirection: "column", gap: "8px", width: "100%", boxSizing: "border-box" },
+  libraryCardInner: { background: "none", border: "none", cursor: "pointer", textAlign: "left", width: "100%", padding: 0, display: "flex", flexDirection: "column", gap: "8px", color: "inherit" },
   libraryCardHeader: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   libraryCardTag: { fontSize: "13px", fontWeight: "600", color: "#ccc" },
   libraryCardCount: { fontSize: "12px", color: "#555", background: "#222", borderRadius: "10px", padding: "2px 8px" },
@@ -1632,6 +1765,19 @@ const styles = {
   libraryCardTitles: { display: "flex", flexDirection: "column", gap: "3px" },
   libraryCardTitleChip: { fontSize: "12px", color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   refreshBtn: { background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: "16px", padding: "2px 6px" },
+  // KB stats row
+  kbStats: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px", marginBottom: "4px" },
+  kbStat: { fontSize: "13px", color: "#666" },
+  kbStatDot: { fontSize: "13px", color: "#444" },
+  exportButton: { background: "none", border: "1px solid #333", color: "#888", borderRadius: "8px", padding: "4px 10px", fontSize: "12px", cursor: "pointer", marginLeft: "auto" },
+  // Sub-topic chips
+  subTopicChips: { display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "2px" },
+  subTopicChip: { background: "none", border: "1px solid #2a2a2a", color: "#666", borderRadius: "12px", padding: "3px 10px", fontSize: "11px", cursor: "pointer" },
+  // Ask step text
+  askStepText: { color: "#666", fontSize: "13px", textAlign: "center", margin: "2px 0 0" },
+  // Search card trash button + title link
+  cardTrashBtn: { background: "none", border: "none", cursor: "pointer", color: "#444", fontSize: "14px", padding: "2px 4px", marginLeft: "auto", lineHeight: 1, flexShrink: 0 },
+  cardTitleLink: { display: "block", textDecoration: "none", color: "inherit" },
 
   // Saved insights
   insightCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "14px 16px", display: "flex", flexDirection: "column", gap: "8px" },

@@ -8,6 +8,7 @@ from slowapi.errors import RateLimitExceeded
 import os
 import socket
 import ipaddress
+import json
 from urllib.parse import urlparse
 import httpx
 import asyncio
@@ -125,6 +126,7 @@ MEDIA_URLS = [
     ("instagram.com/p/",     "image", "Instagram posts"),
 ]
 QUALITY_THRESHOLD = 100  # chars — below this, content is too thin to be useful
+ASK_MIN_RELEVANCE = 0.5  # cosine similarity floor for /ask context — filters weakly-related saves
 
 def get_user_id(token: str):
     user = supabase.auth.get_user(token)
@@ -651,6 +653,14 @@ async def delete_save(save_id: str, req: DeleteRequest):
         raise HTTPException(status_code=401, detail="Invalid token")
     supabase.table("saves").delete() \
         .eq("id", save_id).eq("user_id", user_id).execute()
+    # Best-effort: remove this save_id from related_ids arrays + wiki_pages source_ids
+    try:
+        supabase.rpc("cleanup_deleted_save", {
+            "deleted_save_id": save_id,
+            "owner_user_id": user_id
+        }).execute()
+    except Exception:
+        pass
     return {"success": True}
 
 @app.patch("/save/{save_id}/title")
@@ -731,13 +741,19 @@ async def ask_recall(req: AskRequest, request: Request):
         "match_count": 8
     }).execute()
 
+    # Filter to articles with sufficient semantic relevance.
+    # similarity comes from match_saves RPC if it returns that column (requires SQL update).
+    # Default 1.0 means "assume relevant" when column absent — preserves behaviour before SQL migration.
     article_saves = [
         r for r in (semantic_result.data or [])
-        if r.get("content_type", "article") == "article" and r.get("content_text")
+        if r.get("content_type", "article") == "article"
+        and r.get("content_text")
+        and r.get("similarity", 1.0) >= ASK_MIN_RELEVANCE
     ]
 
-    if len(article_saves) < 2:
-        return {"synthesis": None, "sources": [], "insufficient": True}
+    relevant_count = len(article_saves)
+    if relevant_count < 3:
+        return {"synthesis": None, "sources": [], "insufficient": True, "relevant_count": relevant_count}
 
     context_parts = []
     for row in article_saves[:8]:
@@ -795,7 +811,10 @@ async def get_library(req: LibraryRequest, request: Request):
     for tag, saves in sorted(tag_groups.items(), key=lambda x: -len(x[1])):
         count = len(saves)
         recent_titles = [s["title"] for s in saves[:3]]
+        word_count = sum(len((s.get("content_text") or "").split()) for s in saves)
         summary = ""
+        sub_topics = []
+
         if count >= 3:
             titles_sample = "\n".join(f"- {s['title']}" for s in saves[:10])
             try:
@@ -809,7 +828,38 @@ Write only the summary, nothing else."""
                 summary = response.text.strip()
             except Exception:
                 summary = ""
-        library.append({"tag": tag, "count": count, "summary": summary, "recent_titles": recent_titles})
+
+        if count >= 5:
+            indexed_titles = "\n".join(f"{i}: {s['title']}" for i, s in enumerate(saves[:20]))
+            try:
+                sub_prompt = f"""These {min(count, 20)} articles are saved under "{tag}".
+Identify 2-4 specific micro-topic clusters (2-5 words each, concrete not generic).
+Assign each article index to exactly one cluster.
+
+Articles:
+{indexed_titles}
+
+Return JSON only, no markdown fences:
+{{"sub_topics": [{{"label": "AI & Language Models", "indices": [0, 3, 7]}}, ...]}}"""
+                sub_response = gemini.models.generate_content(model="gemini-2.5-flash", contents=sub_prompt)
+                raw = sub_response.text.strip().strip("```json").strip("```").strip()
+                parsed = json.loads(raw)
+                sub_topics = [
+                    {"label": st["label"], "count": len(st.get("indices", []))}
+                    for st in parsed.get("sub_topics", [])
+                    if st.get("label") and st.get("indices")
+                ]
+            except Exception:
+                sub_topics = []
+
+        library.append({
+            "tag": tag,
+            "count": count,
+            "summary": summary,
+            "recent_titles": recent_titles,
+            "word_count": word_count,
+            "sub_topics": sub_topics,
+        })
 
     return {"library": library}
 
