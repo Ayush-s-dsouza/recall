@@ -77,14 +77,18 @@ export default function App() {
   const [saveReceipt, setSaveReceipt] = useState(null)
   const [editingTitle, setEditingTitle] = useState(false)
   const [draftTitle, setDraftTitle] = useState("")
-  const [todaySaves, setTodaySaves] = useState([])
+  const [todaySaves, setTodaySaves] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem("recall_today_saves") || "[]") } catch { return [] }
+  })
 
   const [isFreshReceipt, setIsFreshReceipt] = useState(false)
   const [loadingStep, setLoadingStep] = useState(0)
   const [editingTag, setEditingTag] = useState(false)
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [deletingId, setDeletingId] = useState(null)
-  const [libraryFilters, setLibraryFilters] = useState({ tags: [], sources: [] })
+  const [libraryFilters, setLibraryFilters] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem("recall_library_filters") || '{"tags":[],"sources":[]}') } catch { return { tags: [], sources: [] } }
+  })
   const [hasSearched, setHasSearched] = useState(false)
   const [displayCount, setDisplayCount] = useState(5)
   const [recentSearches, setRecentSearches] = useState(() => {
@@ -93,7 +97,9 @@ export default function App() {
   })
   const [searchInputFocused, setSearchInputFocused] = useState(false)
   const [selectedTag, setSelectedTag] = useState(null)
-  const [suggestedChips, setSuggestedChips] = useState(null)
+  const [suggestedChips, setSuggestedChips] = useState(() => {
+    try { const c = sessionStorage.getItem("recall_suggestions"); return c ? JSON.parse(c) : null } catch { return null }
+  })
   const [onboardingStep, setOnboardingStep] = useState(null)
   const [first5Count, setFirst5Count] = useState(5)
   const [firstSaveSheetOpen, setFirstSaveSheetOpen] = useState(false)
@@ -180,7 +186,10 @@ export default function App() {
       .gte("created_at", today.toISOString())
       .order("created_at", { ascending: false })
       .limit(20)
-    if (data) setTodaySaves(data)
+    if (data) {
+      setTodaySaves(data)
+      sessionStorage.setItem("recall_today_saves", JSON.stringify(data))
+    }
   }
 
   const fetchLibraryFilters = async () => {
@@ -188,7 +197,9 @@ export default function App() {
     if (!data?.length) return
     const tags = [...new Set(data.map(r => r.tag).filter(Boolean))].sort()
     const sources = [...new Set(data.map(r => getSourceLabel(r.url)).filter(s => s && s !== "Page"))].sort()
-    setLibraryFilters({ tags, sources })
+    const filters = { tags, sources }
+    setLibraryFilters(filters)
+    sessionStorage.setItem("recall_library_filters", JSON.stringify(filters))
   }
 
   const browseByFilter = async (tag, source) => {
@@ -311,6 +322,8 @@ export default function App() {
     sessionStorage.removeItem("recall_last_query")
     sessionStorage.removeItem("recall_last_results")
     sessionStorage.removeItem("recall_suggestions")
+    sessionStorage.removeItem("recall_today_saves")
+    sessionStorage.removeItem("recall_library_filters")
     setRecentSearches([])
     setSuggestedChips(null)
     setHasSearched(false)
