@@ -116,12 +116,13 @@ export default function App() {
   // Related saves (shown on receipt)
   const [relatedSaves, setRelatedSaves] = useState([])
 
-  // Library tab
-  const [libraryData, setLibraryData] = useState(null)
-  const [libraryLoading, setLibraryLoading] = useState(false)
-  const [savedInsights, setSavedInsights] = useState([])
-  const [insightsLoading, setInsightsLoading] = useState(false)
-  const [deletingInsightId, setDeletingInsightId] = useState(null)
+  // Calendar (Library tab)
+  const [calendarSaves, setCalendarSaves] = useState({})
+  const [calendarLoading, setCalendarLoading] = useState(false)
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d
+  })
+  const [selectedCalendarDay, setSelectedCalendarDay] = useState(null)
 
   // Ask step messaging + insufficient detail
   const [askStep, setAskStep] = useState("")
@@ -135,6 +136,12 @@ export default function App() {
   const isIOS = /iPhone|iPad/i.test(navigator.userAgent)
 
   useEffect(() => { sessionStorage.setItem("recall_view", view) }, [view])
+
+  useEffect(() => {
+    if (view === "library" && user && Object.keys(calendarSaves).length === 0 && !calendarLoading) {
+      fetchCalendarSaves()
+    }
+  }, [view, user])
 
   useEffect(() => {
     if (!loading) { setLoadingStep(0); return }
@@ -626,53 +633,23 @@ export default function App() {
     setSavingInsight(false)
   }
 
-  const fetchLibraryData = async () => {
-    setLibraryLoading(true)
-    try {
-      const token = await getToken()
-      const res = await fetch(`${BACKEND}/library`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token })
+  const fetchCalendarSaves = async () => {
+    if (!user) return
+    setCalendarLoading(true)
+    const { data } = await supabase
+      .from("saves")
+      .select("id, url, title, tag, created_at")
+      .order("created_at", { ascending: false })
+    if (data) {
+      const grouped = {}
+      data.forEach(save => {
+        const key = new Date(save.created_at).toLocaleDateString("en-CA")
+        if (!grouped[key]) grouped[key] = []
+        grouped[key].push(save)
       })
-      const data = await res.json()
-      setLibraryData(data.library || [])
-    } catch {
-      setLibraryData([])
+      setCalendarSaves(grouped)
     }
-    setLibraryLoading(false)
-  }
-
-  const fetchSavedInsights = async () => {
-    setInsightsLoading(true)
-    try {
-      const token = await getToken()
-      const res = await fetch(`${BACKEND}/wiki/list`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token })
-      })
-      const data = await res.json()
-      setSavedInsights(data.insights || [])
-    } catch {
-      setSavedInsights([])
-    }
-    setInsightsLoading(false)
-  }
-
-  const deleteInsight = async (id) => {
-    setDeletingInsightId(id)
-    try {
-      const token = await getToken()
-      await fetch(`${BACKEND}/wiki/${id}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token })
-      })
-      setSavedInsights(prev => prev.filter(i => i.id !== id))
-      posthog.capture('insight_deleted')
-    } catch {}
-    setDeletingInsightId(null)
+    setCalendarLoading(false)
   }
 
   const fetchRelatedSaves = async (ids) => {
@@ -682,42 +659,6 @@ export default function App() {
       .select("id, title, url, tag")
       .in("id", ids)
     if (data) setRelatedSaves(data)
-  }
-
-  const handleExport = async () => {
-    const { data } = await supabase
-      .from("saves")
-      .select("id, title, url, tag, content_text, created_at")
-      .order("tag", { ascending: true })
-      .order("created_at", { ascending: false })
-    if (!data?.length) return
-
-    const byTag = {}
-    for (const s of data) {
-      const tag = s.tag || "Other"
-      if (!byTag[tag]) byTag[tag] = []
-      byTag[tag].push(s)
-    }
-    const totalWords = data.reduce((sum, s) => sum + (s.content_text?.split(/\s+/).length || 0), 0)
-    const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
-
-    let md = `# ReCall Knowledge Base\n*Exported ${dateStr} · ${data.length} saves · ~${totalWords.toLocaleString()} words*\n\n`
-    md += `> Original saved content only. AI-generated insights are kept separate.\n\n---\n\n`
-    for (const [tag, saves] of Object.entries(byTag)) {
-      md += `## ${tag} (${saves.length})\n\n`
-      for (const s of saves) {
-        md += `### ${s.title || s.url}\n**URL:** ${s.url}  \n**Saved:** ${new Date(s.created_at).toLocaleDateString()}\n\n`
-        if (s.content_text) md += `${s.content_text}\n\n`
-        md += `---\n\n`
-      }
-    }
-
-    const blob = new Blob([md], { type: "text/markdown" })
-    const link = document.createElement("a")
-    link.href = URL.createObjectURL(blob)
-    link.download = `recall-${new Date().toISOString().slice(0, 10)}.md`
-    link.click()
-    URL.revokeObjectURL(link.href)
   }
 
   if (authLoading) return null
@@ -848,11 +789,7 @@ export default function App() {
       <div style={styles.tabs}>
         <button onClick={() => { setView("search") }} style={view === "search" ? styles.tabActive : styles.tab}>Search</button>
         <button onClick={() => { setView("save") }} style={view === "save" ? styles.tabActive : styles.tab}>Save</button>
-        <button onClick={() => {
-          setView("library")
-          if (!libraryData) fetchLibraryData()
-          if (!savedInsights.length) fetchSavedInsights()
-        }} style={view === "library" ? styles.tabActive : styles.tab}>Library</button>
+        <button onClick={() => setView("library")} style={view === "library" ? styles.tabActive : styles.tab}>Library</button>
       </div>
 
       {view === "search" && (
@@ -1391,109 +1328,116 @@ export default function App() {
       )}
 
       {view === "library" && (() => {
-        const totalSaves = libraryData ? libraryData.reduce((sum, t) => sum + t.count, 0) : 0
-        const estimatedWords = libraryData ? libraryData.reduce((sum, t) => sum + (t.word_count || 0), 0) : 0
+        const TAG_COLORS = {
+          Tech: "#c084fc", Product: "#60a5fa", Business: "#34d399",
+          Finance: "#fbbf24", Health: "#f87171", Personal: "#a78bfa", Other: "#6b7280"
+        }
+        const year = calendarMonth.getFullYear()
+        const month = calendarMonth.getMonth()
+        const firstDay = new Date(year, month, 1).getDay()
+        const daysInMonth = new Date(year, month + 1, 0).getDate()
+        const todayKey = new Date().toLocaleDateString("en-CA")
+        const isCurrentMonth = year === new Date().getFullYear() && month === new Date().getMonth()
+        const monthName = calendarMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" })
+        const DAY_HEADERS = ["S", "M", "T", "W", "T", "F", "S"]
+
+        const cells = []
+        for (let i = 0; i < firstDay; i++) cells.push(null)
+        for (let d = 1; d <= daysInMonth; d++) cells.push(d)
+
+        const selectedDaySaves = selectedCalendarDay ? (calendarSaves[selectedCalendarDay] || []) : []
+        const hasAnySaves = Object.keys(calendarSaves).length > 0
+
         return (
-        <div style={styles.section}>
-          {/* Topic summaries */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <p style={styles.todayHeader}>Your knowledge</p>
-            <button onClick={fetchLibraryData} disabled={libraryLoading} style={styles.refreshBtn}>
-              {libraryLoading ? "…" : "↻"}
-            </button>
-          </div>
-
-          {/* Knowledge base stats + export */}
-          {libraryData && libraryData.length > 0 && (
-            <div style={styles.kbStats}>
-              <span style={styles.kbStat}><strong>{totalSaves}</strong> saves</span>
-              <span style={styles.kbStatDot}>·</span>
-              <span style={styles.kbStat}>~<strong>{estimatedWords.toLocaleString()}</strong> words</span>
-              <span style={styles.kbStatDot}>·</span>
-              <span style={styles.kbStat}><strong>{libraryData.length}</strong> topics</span>
-              <button style={styles.exportButton} onClick={handleExport}>↓ Export .md</button>
+          <div style={styles.section}>
+            {/* Month navigation */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <button
+                style={styles.calNavBtn}
+                onClick={() => { setCalendarMonth(new Date(year, month - 1, 1)); setSelectedCalendarDay(null) }}
+              >←</button>
+              <span style={{ fontWeight: 600, fontSize: 15, color: "#ccc" }}>{monthName}</span>
+              <button
+                style={{ ...styles.calNavBtn, opacity: isCurrentMonth ? 0.25 : 1, pointerEvents: isCurrentMonth ? "none" : "auto" }}
+                onClick={() => { setCalendarMonth(new Date(year, month + 1, 1)); setSelectedCalendarDay(null) }}
+              >→</button>
             </div>
-          )}
 
-          {libraryLoading && <span className="shimmer" style={styles.searchShimmerBar} />}
+            {calendarLoading && <span className="shimmer" style={styles.searchShimmerBar} />}
 
-          {!libraryLoading && libraryData !== null && libraryData.length === 0 && (
-            <div style={styles.emptyState}>
-              <p style={styles.emptyStateHint}>No articles saved yet.</p>
-              <button style={styles.emptyStateCta} onClick={() => setView("save")}>Save your first link →</button>
-            </div>
-          )}
+            {!calendarLoading && (
+              <>
+                {/* Day-of-week headers */}
+                <div style={styles.calGrid}>
+                  {DAY_HEADERS.map((h, i) => (
+                    <div key={i} style={styles.calDayHeader}>{h}</div>
+                  ))}
 
-          {!libraryLoading && libraryData?.length > 0 && (
-            <div style={styles.libraryGrid}>
-              {libraryData.map(item => (
-                <div key={item.tag} style={styles.libraryCard}>
-                  <button
-                    onClick={() => { setView("search"); setAskMode(false); browseByFilter(item.tag, null) }}
-                    style={styles.libraryCardInner}
-                  >
-                    <div style={styles.libraryCardHeader}>
-                      <span style={styles.libraryCardTag}>{item.tag}</span>
-                      <span style={styles.libraryCardCount}>{item.count}</span>
-                    </div>
-                    {item.summary && <p style={styles.libraryCardSummary}>{item.summary}</p>}
-                    {item.recent_titles?.length > 0 && (
-                      <div style={styles.libraryCardTitles}>
-                        {item.recent_titles.map((t, i) => (
-                          <span key={i} style={styles.libraryCardTitleChip}>{t}</span>
-                        ))}
+                  {/* Day cells */}
+                  {cells.map((day, i) => {
+                    if (!day) return <div key={`e-${i}`} />
+                    const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+                    const daySaves = calendarSaves[dateKey] || []
+                    const isToday = dateKey === todayKey
+                    const isSelected = dateKey === selectedCalendarDay
+                    const hasSaves = daySaves.length > 0
+
+                    return (
+                      <div
+                        key={day}
+                        onClick={() => hasSaves && setSelectedCalendarDay(isSelected ? null : dateKey)}
+                        style={{
+                          ...styles.calCell,
+                          ...(isToday ? styles.calCellToday : {}),
+                          ...(isSelected ? styles.calCellSelected : {}),
+                          ...(hasSaves ? { cursor: "pointer" } : {}),
+                        }}
+                      >
+                        <span style={{ ...styles.calDayNum, ...(isToday ? { color: "#fff", fontWeight: 700 } : {}) }}>{day}</span>
+                        {hasSaves && (
+                          <div style={styles.calDots}>
+                            {daySaves.slice(0, 3).map((s, idx) => (
+                              <span key={idx} style={{ ...styles.calDot, background: TAG_COLORS[s.tag] || "#6b7280" }} />
+                            ))}
+                            {daySaves.length > 3 && <span style={styles.calDotMore}>+{daySaves.length - 3}</span>}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </button>
-                  {item.sub_topics?.length > 0 && (
-                    <div style={styles.subTopicChips}>
-                      {item.sub_topics.map(st => (
-                        <button
-                          key={st.label}
-                          style={styles.subTopicChip}
-                          onClick={() => { setView("search"); setQuery(st.label); handleSearch(st.label) }}
-                        >{st.label} · {st.count}</button>
-                      ))}
-                    </div>
-                  )}
+                    )
+                  })}
                 </div>
-              ))}
-            </div>
-          )}
 
-          {/* Saved insights */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
-            <p style={styles.todayHeader}>Saved insights</p>
-            <button onClick={fetchSavedInsights} disabled={insightsLoading} style={styles.refreshBtn}>
-              {insightsLoading ? "…" : "↻"}
-            </button>
+                {/* Expanded day panel */}
+                {selectedCalendarDay && (
+                  <div style={styles.calDayPanel}>
+                    <div style={styles.calDayPanelHeader}>
+                      <span style={styles.calDayPanelTitle}>
+                        {new Date(selectedCalendarDay + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+                      </span>
+                      <span style={{ fontSize: 12, color: "#555" }}>{selectedDaySaves.length} {selectedDaySaves.length === 1 ? "save" : "saves"}</span>
+                    </div>
+                    {selectedDaySaves.map(save => (
+                      <a key={save.id} href={save.url} target="_blank" rel="noopener noreferrer" style={styles.calSaveCard}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ ...styles.tagPill, background: "#222", color: "#888", fontSize: 11, padding: "2px 8px" }}>{save.tag}</span>
+                          <span style={styles.calSaveTitle}>{save.title}</span>
+                        </div>
+                        <span style={styles.calSaveSource}>{getSourceLabel(save.url)}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
+
+                {/* Empty state */}
+                {!hasAnySaves && (
+                  <div style={styles.emptyState}>
+                    <p style={styles.emptyStateHint}>Nothing saved yet.</p>
+                    <button style={styles.emptyStateCta} onClick={() => setView("save")}>Save your first link →</button>
+                  </div>
+                )}
+              </>
+            )}
           </div>
-
-          {insightsLoading && <span className="shimmer" style={styles.searchShimmerBar} />}
-
-          {!insightsLoading && savedInsights.length === 0 && (
-            <p style={{ fontSize: 13, color: "#555", margin: 0 }}>
-              No pinned insights yet. Use ✦ Ask mode to synthesize your saves, then pin the answer.
-            </p>
-          )}
-
-          {savedInsights.map(insight => (
-            <div key={insight.id} style={styles.insightCard}>
-              <div style={styles.insightCardHeader}>
-                <span style={styles.insightQuery}>✦ {insight.query}</span>
-                <button
-                  onClick={() => deleteInsight(insight.id)}
-                  disabled={deletingInsightId === insight.id}
-                  style={styles.deleteButton}
-                >{deletingInsightId === insight.id ? "…" : "🗑"}</button>
-              </div>
-              <p style={styles.insightSynthesis}>
-                {insight.synthesis.length > 300 ? insight.synthesis.slice(0, 300) + "…" : insight.synthesis}
-              </p>
-              <span style={styles.insightDate}>{formatDate(insight.created_at)}</span>
-            </div>
-          ))}
-        </div>
         )
       })()}
 
@@ -1754,35 +1698,27 @@ const styles = {
   relatedSavesLabel: { fontSize: "11px", color: "#555" },
   relatedSaveChip: { background: "none", border: "1px solid #2a2a2a", color: "#888", borderRadius: "8px", padding: "6px 10px", fontSize: "12px", cursor: "pointer", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
 
-  // Library tab
-  libraryGrid: { display: "flex", flexDirection: "column", gap: "10px" },
-  libraryCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "14px 16px", display: "flex", flexDirection: "column", gap: "8px", width: "100%", boxSizing: "border-box" },
-  libraryCardInner: { background: "none", border: "none", cursor: "pointer", textAlign: "left", width: "100%", padding: 0, display: "flex", flexDirection: "column", gap: "8px", color: "inherit" },
-  libraryCardHeader: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-  libraryCardTag: { fontSize: "13px", fontWeight: "600", color: "#ccc" },
-  libraryCardCount: { fontSize: "12px", color: "#555", background: "#222", borderRadius: "10px", padding: "2px 8px" },
-  libraryCardSummary: { fontSize: "13px", color: "#888", margin: 0, lineHeight: 1.5 },
-  libraryCardTitles: { display: "flex", flexDirection: "column", gap: "3px" },
-  libraryCardTitleChip: { fontSize: "12px", color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  refreshBtn: { background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: "16px", padding: "2px 6px" },
-  // KB stats row
-  kbStats: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px", marginBottom: "4px" },
-  kbStat: { fontSize: "13px", color: "#666" },
-  kbStatDot: { fontSize: "13px", color: "#444" },
-  exportButton: { background: "none", border: "1px solid #333", color: "#888", borderRadius: "8px", padding: "4px 10px", fontSize: "12px", cursor: "pointer", marginLeft: "auto" },
-  // Sub-topic chips
-  subTopicChips: { display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "2px" },
-  subTopicChip: { background: "none", border: "1px solid #2a2a2a", color: "#666", borderRadius: "12px", padding: "3px 10px", fontSize: "11px", cursor: "pointer" },
+  // Calendar (Library tab)
+  calNavBtn: { background: "none", border: "none", color: "#fff", fontSize: 20, cursor: "pointer", padding: "4px 12px", borderRadius: 6 },
+  calGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3, marginBottom: 12 },
+  calDayHeader: { textAlign: "center", fontSize: 11, color: "#555", fontWeight: 600, padding: "4px 0 8px" },
+  calCell: { borderRadius: 8, padding: "6px 4px 8px", minHeight: 54, display: "flex", flexDirection: "column", alignItems: "center", gap: 5, transition: "background 0.12s" },
+  calCellToday: { boxShadow: "inset 0 0 0 1.5px #fff" },
+  calCellSelected: { background: "#2a2a2a" },
+  calDayNum: { fontSize: 13, color: "#666" },
+  calDots: { display: "flex", gap: 2, flexWrap: "wrap", justifyContent: "center", alignItems: "center" },
+  calDot: { width: 5, height: 5, borderRadius: "50%", flexShrink: 0 },
+  calDotMore: { fontSize: 9, color: "#555", lineHeight: 1 },
+  calDayPanel: { background: "#1a1a1a", borderRadius: 12, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 0, marginTop: 4, border: "1px solid #222" },
+  calDayPanelHeader: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 },
+  calDayPanelTitle: { fontSize: 14, fontWeight: 600, color: "#fff" },
+  calSaveCard: { display: "flex", flexDirection: "column", gap: 4, padding: "12px 0", borderTop: "1px solid #1f1f1f", textDecoration: "none", color: "inherit" },
+  calSaveTitle: { fontSize: 13, fontWeight: 500, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
+  calSaveSource: { fontSize: 11, color: "#555" },
   // Ask step text
   askStepText: { color: "#666", fontSize: "13px", textAlign: "center", margin: "2px 0 0" },
   // Search card trash button + title link
   cardTrashBtn: { background: "none", border: "none", cursor: "pointer", color: "#444", fontSize: "14px", padding: "2px 4px", marginLeft: "auto", lineHeight: 1, flexShrink: 0 },
   cardTitleLink: { display: "block", textDecoration: "none", color: "inherit" },
 
-  // Saved insights
-  insightCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "14px 16px", display: "flex", flexDirection: "column", gap: "8px" },
-  insightCardHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" },
-  insightQuery: { fontSize: "13px", fontWeight: "600", color: "#7c6fcd", flex: 1 },
-  insightSynthesis: { fontSize: "13px", color: "#888", margin: 0, lineHeight: 1.5 },
-  insightDate: { fontSize: "11px", color: "#444" },
 }
