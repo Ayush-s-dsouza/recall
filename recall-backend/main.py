@@ -6,6 +6,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import os
+import re
 import socket
 import ipaddress
 import json
@@ -202,7 +203,6 @@ Respond with exactly three lines, nothing else."""
 
 def extract_og_tags(html: str) -> dict:
     """Extract Open Graph and meta description tags from raw HTML."""
-    import re
     result = {}
     for meta in re.finditer(r'<meta\s+([^>]+?)/?>', html, re.IGNORECASE | re.DOTALL):
         attrs_str = meta.group(1)
@@ -254,7 +254,6 @@ async def analyze_image(image_url: str) -> str:
 
 async def fetch_instagram(url: str):
     """Fetch Instagram post content via the embed endpoint (no auth required for public posts)."""
-    import re
     from html.parser import HTMLParser
 
     match = re.search(r'instagram\.com/(p|reel|tv)/([A-Za-z0-9_-]+)', url)
@@ -341,8 +340,8 @@ async def fetch_youtube(url: str):
     except:
         return "", ""
 
-async def fetch_tweet(url: str):
-    """Use Twitter's free oEmbed API to get tweet text and author without auth."""
+async def _fetch_tweet_oembed(url: str) -> tuple[str, str]:
+    """oEmbed gives reliable author name + basic tweet text as fallback."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             res = await client.get(
@@ -352,14 +351,21 @@ async def fetch_tweet(url: str):
             )
         data = res.json()
         author = data.get("author_name", "")
-        import re
-        # Strip HTML tags from the embed HTML to get plain tweet text
         raw_html = data.get("html", "")
         text = re.sub(r'<[^>]+>', ' ', raw_html)
         text = re.sub(r'\s+', ' ', text).strip()
         return text, author
-    except:
+    except Exception:
         return "", ""
+
+async def fetch_tweet(url: str):
+    """Jina Reader for richer content (quoted tweets, linked previews); oEmbed as author source + text fallback."""
+    (jina_text, _), (oembed_text, author) = await asyncio.gather(
+        fetch_with_jina(url),
+        _fetch_tweet_oembed(url)
+    )
+    content = jina_text if len(jina_text) > len(oembed_text) else oembed_text
+    return content, author
 
 async def fetch_with_jina(url: str) -> tuple[str, str]:
     """Fetch clean article content via Jina Reader (handles JS rendering, 'read more', etc).
@@ -454,6 +460,7 @@ async def save_url(req: SaveRequest, request: Request):
 
     is_tweet = "x.com" in req.url or "twitter.com" in req.url
     is_instagram = "instagram.com" in req.url
+    is_linkedin = "linkedin.com" in req.url
 
     extra_context = ""
 
@@ -470,6 +477,30 @@ async def save_url(req: SaveRequest, request: Request):
             if image_description:
                 extra_context = f"Image: {image_description}"
                 clean_text = (clean_text + "\n\n" + extra_context).strip()
+    elif is_linkedin:
+        (jina_text, jina_title), raw_html = await asyncio.gather(
+            fetch_with_jina(req.url),
+            fetch_og_html(req.url)
+        )
+        og = extract_og_tags(raw_html)
+        og_title = og.get("og:title", "")
+        og_description = og.get("og:description", "") or og.get("description", "")
+
+        # OG description is the post body (reliable); Jina adds depth for "See more" expansion
+        combined = og_description if og_description else ""
+        if jina_text and len(jina_text) > len(og_description):
+            combined = jina_text
+
+        # Strip LinkedIn UI boilerplate that Jina extracts
+        for noise in ["Like · Comment · Share", "Like Comment Share", "1st · ", "2nd · ",
+                      "3rd · ", "Connect", "Follow", "Message", "View all comments",
+                      "Load more comments", "Sign in to view", "Join now to see"]:
+            combined = combined.replace(noise, "")
+        clean_text = re.sub(r'\s{2,}', ' ', combined).strip()
+
+        title = og_title or jina_title or req.url
+        if len(clean_text.strip()) < QUALITY_THRESHOLD:
+            return {"thin_content": True, "url": req.url}
     else:
         # Run Jina Reader and raw OG fetch concurrently for speed
         (jina_text, jina_title), raw_html = await asyncio.gather(
@@ -477,7 +508,6 @@ async def save_url(req: SaveRequest, request: Request):
             fetch_og_html(req.url)
         )
 
-        import re
         title_match = re.search(r'<title>(.*?)</title>', raw_html, re.IGNORECASE)
         html_title = title_match.group(1) if title_match else ""
         og = extract_og_tags(raw_html)
@@ -563,6 +593,24 @@ async def save_url(req: SaveRequest, request: Request):
 
     return {"success": True, "title": title, "tag": tag, "id": inserted_id, "related_ids": related_ids}
 
+async def expand_search_query(query: str) -> str:
+    """Expand a short query with related synonyms/concepts to improve semantic recall."""
+    if len(query.split()) >= 6:
+        return query  # already specific enough — skip Gemini call
+    try:
+        client_g = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        response = client_g.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                "Rewrite this search query as a short phrase with 3-5 related synonyms "
+                "and concepts to improve semantic search. Return only the expanded query, no explanation.\n"
+                f"Query: {query}"
+            )
+        )
+        return response.text.strip()
+    except Exception:
+        return query
+
 @app.post("/search")
 @limiter.limit("30/minute")
 async def search(req: SearchRequest, request: Request):
@@ -571,8 +619,9 @@ async def search(req: SearchRequest, request: Request):
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    # Semantic search — get 20 candidates for RRF pool
-    query_embedding = get_embedding(req.query)
+    # Expand short queries before embedding to improve semantic recall; FTS uses original
+    q_expanded = await expand_search_query(req.query)
+    query_embedding = get_embedding(q_expanded)
     semantic_result = supabase.rpc("match_saves", {
         "query_embedding": query_embedding,
         "match_user_id": user_id,

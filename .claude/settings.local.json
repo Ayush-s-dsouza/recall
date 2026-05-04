@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Read(//c/Users/Ayush Samson D'souza/.claude/plans/**)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\Ayush Samson D'souza\\.claude\\projects\\c--Users-Ayush-Samson-D-souza-Desktop-ReCall\\memory"
     ]
   }
 }
