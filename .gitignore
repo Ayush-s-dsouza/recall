@@ -14,3 +14,6 @@ recall-frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code local settings (personal overrides — never commit)
+.claude/settings.local.json
