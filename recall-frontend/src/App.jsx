@@ -129,7 +129,7 @@ export default function App() {
   const [insufficientData, setInsufficientData] = useState(null)
 
   // Total save count for multi-stage milestone track
-  const [totalSaveCount, setTotalSaveCount] = useState(0)
+  const [totalSaveCount, setTotalSaveCount] = useState(null)
 
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
@@ -467,7 +467,7 @@ export default function App() {
     setResults(prev => prev.filter(s => s.id !== id))
     setSynthesisSources(prev => prev.filter(s => s.id !== id))
     setRelatedSaves(prev => prev.filter(s => s.id !== id))
-    setTotalSaveCount(prev => Math.max(0, prev - 1))
+    setTotalSaveCount(prev => Math.max(0, (prev ?? 0) - 1))
     if (saveReceipt?.id === id) setSaveReceipt(null)
     posthog.capture('save_deleted')
     setDeletingId(null)
@@ -513,7 +513,7 @@ export default function App() {
       } else {
         setUrlInput("")
         setRelatedSaves([])
-        setTotalSaveCount(prev => prev + 1)
+        setTotalSaveCount(prev => (prev ?? 0) + 1)
         const newCount = first5Count < 5 ? first5Count + 1 : first5Count
         if (first5Count < 5) setFirst5Count(newCount)
         setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet, milestoneCount: first5Count < 5 ? newCount : null })
@@ -1034,7 +1034,7 @@ export default function App() {
 
       {view === "save" && (
         <div style={styles.section}>
-          {totalSaveCount < 30 && (
+          {totalSaveCount !== null && totalSaveCount < 30 && (
             <div style={totalSaveCount <= 5 ? styles.progressPill : totalSaveCount <= 15 ? styles.progressPillPurple : styles.progressPillGreen}>
               {totalSaveCount <= 5 ? (
                 <>
