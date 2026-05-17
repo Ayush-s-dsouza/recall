@@ -698,7 +698,7 @@ export default function App() {
               <h3 style={styles.legalH3}>Deleting your data</h3>
               <p style={styles.legalP}>You're in control. Delete your account and everything in it at any time from the app settings (⚙ in the header). It's immediate and permanent.</p>
               <h3 style={styles.legalH3}>Contact</h3>
-              <p style={styles.legalP}>Questions? Reach the developer through the GitHub profile linked from this project.</p>
+              <p style={styles.legalP}>Questions? <a href="https://github.com/Ayush-s-dsouza" target="_blank" rel="noreferrer" style={{ color: "#888" }}>Reach the developer on GitHub.</a></p>
             </>
           ) : (
             <>
@@ -732,7 +732,7 @@ export default function App() {
             {[
               { tag: "TECH", title: "The science of deep work · Cal Newport" },
               { tag: "PRODUCT", title: "Why Apple is betting on spatial computing" },
-              { tag: "BUSINESS", title: "How to raise a seed round in 2024" },
+              { tag: "BUSINESS", title: "How to raise a seed round · First Round Capital" },
             ].map(c => (
               <div key={c.tag} style={styles.mockCard}>
                 <span style={styles.mockCardTag}>{c.tag}</span>
@@ -1511,15 +1511,9 @@ const styles = {
   input: { width: "100%", padding: "14px", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", color: "#fff", fontSize: "16px", boxSizing: "border-box" },
   button: { width: "100%", padding: "14px", background: "#fff", color: "#000", border: "none", borderRadius: "12px", fontSize: "16px", fontWeight: "600", cursor: "pointer" },
   signOut: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "8px", cursor: "pointer", fontSize: "13px" },
-  filters: { display: "flex", flexWrap: "wrap", gap: "8px" },
-  filter: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "20px", cursor: "pointer", fontSize: "13px" },
-  filterActive: { background: "#fff", border: "1px solid #fff", color: "#000", padding: "6px 14px", borderRadius: "20px", cursor: "pointer", fontSize: "13px", fontWeight: "600" },
   results: { display: "flex", flexDirection: "column", gap: "12px", marginTop: "8px" },
   card: { display: "block", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", padding: "16px", textDecoration: "none", color: "#fff", overflow: "hidden" },
   cardTag: { fontSize: "11px", color: "#888", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" },
-  cardTitle: { fontSize: "15px", fontWeight: "600", marginBottom: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  cardUrl: { fontSize: "12px", color: "#555", marginBottom: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  cardScore: { fontSize: "12px", color: "#888" },
   success: { color: "#4ade80", fontSize: "14px", margin: 0 },
   error: { color: "#ef4444", fontSize: "14px", margin: 0 },
   receiptCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px", transition: "box-shadow 0.8s ease" },
@@ -1580,7 +1574,6 @@ const styles = {
   zeroResultsMain: { fontSize: "15px", color: "#aaa", fontWeight: "600", margin: 0, textAlign: "center" },
   zeroResultsSub: { fontSize: "13px", color: "#555", margin: 0, textAlign: "center" },
 
-  // Updated card (cardTitle overrides the earlier definition; cardUrl/cardScore are now dead)
   cardMeta: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" },
   cardDate: { fontSize: "11px", color: "#555" },
   cardTitle: { fontSize: "15px", fontWeight: "600", marginBottom: "4px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
