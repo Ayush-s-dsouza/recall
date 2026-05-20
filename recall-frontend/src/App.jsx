@@ -327,6 +327,12 @@ export default function App() {
       setUser(session?.user ?? null)
       if (session?.user) {
         posthog.identify(session.user.id)
+        if (_event === 'SIGNED_IN') {
+          const createdAt = new Date(session.user.created_at).getTime()
+          if (Date.now() - createdAt < 30_000) {
+            posthog.capture('user_signed_up')
+          }
+        }
         fetchTodaySaves()
         fetchLibraryFilters()
         fetchSuggestions()
