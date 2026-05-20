@@ -17,6 +17,7 @@ if (import.meta.env.VITE_POSTHOG_KEY) {
     api_host: 'https://us.i.posthog.com',
     person_profiles: 'identified_only',
   })
+  posthog.register({ environment: import.meta.env.VITE_APP_ENV ?? 'production' })
 }
 
 createRoot(document.getElementById('root')).render(
