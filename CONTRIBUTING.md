@@ -5,7 +5,7 @@
 | Branch | Deploys to | URL |
 |---|---|---|
 | `main` | Production | https://recall-iota-six.vercel.app |
-| `staging` | Staging | https://staging-recall.vercel.app (see Vercel) |
+| `staging` | Staging | https://recall-git-staging-ayushsdsouza-1666s-projects.vercel.app |
 
 ## Day-to-day workflow
 
@@ -56,5 +56,5 @@ In the PostHog dashboard, add a filter `environment = production` to all insight
 ## Vercel setup reference
 
 See the Vercel project settings:
-- **Domains:** `staging-recall.vercel.app` is aliased to the `staging` Git branch
+- **Staging URL:** `recall-git-staging-ayushsdsouza-1666s-projects.vercel.app` (auto-assigned stable branch alias)
 - **Environment Variables → `VITE_APP_ENV`:** Preview environment only, value `staging`
