@@ -825,7 +825,14 @@ Question: {req.query}"""
         raise HTTPException(status_code=500, detail="Synthesis failed")
 
     sources = [
-        {"id": r["id"], "title": r.get("title", ""), "url": r.get("url", ""), "tag": r.get("tag", "")}
+        {
+            "id": r["id"],
+            "title": r.get("title", ""),
+            "url": r.get("url", ""),
+            "tag": r.get("tag", ""),
+            # exact slice fed to the LLM — used by groundcheck for faithfulness evaluation
+            "content_snippet": (r.get("content_text") or "")[:600].strip(),
+        }
         for r in article_saves[:8]
     ]
 
