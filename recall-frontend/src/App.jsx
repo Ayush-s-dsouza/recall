@@ -135,6 +135,7 @@ export default function App() {
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
   const isIOS = /iPhone|iPad/i.test(navigator.userAgent)
+  const isAndroid = /Android/i.test(navigator.userAgent)
 
   useEffect(() => { sessionStorage.setItem("recall_view", view) }, [view])
 
@@ -1039,7 +1040,11 @@ export default function App() {
             <div style={totalSaveCount <= 5 ? styles.progressPill : totalSaveCount <= 15 ? styles.progressPillPurple : styles.progressPillGreen}>
               {totalSaveCount <= 5 ? (
                 <>
-                  <span style={{ fontSize: "12px", color: "#fbbf24" }}>⚡ {totalSaveCount} of 5 saves · ReCall is climbing your Share Sheet</span>
+                  <span style={{ fontSize: "12px", color: "#fbbf24" }}>
+                    {isAndroid
+                      ? `⚡ ${totalSaveCount} of 5 saves · ReCall is climbing your Share Sheet`
+                      : `⚡ ${totalSaveCount} of 5 saves · Building your searchable library`}
+                  </span>
                   <div style={styles.progressDotsRow}>
                     {[1,2,3,4,5].map(i => (
                       <span key={i} style={i <= totalSaveCount ? styles.dotFilledSmall : styles.dotEmptySmall} />
@@ -1224,12 +1229,21 @@ export default function App() {
                           <div style={styles.progressDotsRow}>
                             {[1,2,3,4,5].map(i => <span key={i} style={styles.dotFilled} />)}
                           </div>
-                          <p style={styles.milestoneHeadline}>ReCall is at the top of your Share Sheet.</p>
-                          <p style={styles.milestoneSub}>You'll never have to hunt for it again.</p>
+                          {isAndroid ? (
+                            <>
+                              <p style={styles.milestoneHeadline}>ReCall is at the top of your Share Sheet.</p>
+                              <p style={styles.milestoneSub}>You'll never have to hunt for it again.</p>
+                            </>
+                          ) : (
+                            <>
+                              <p style={styles.milestoneHeadline}>Your library is taking shape.</p>
+                              <p style={styles.milestoneSub}>Search is personalizing to your saves.</p>
+                            </>
+                          )}
                         </>
                       ) : (
                         <p style={styles.milestoneText}>
-                          {saveReceipt.milestoneCount === 1 && "1/5 — 4 more to unlock the top of your Share Sheet"}
+                          {saveReceipt.milestoneCount === 1 && (isAndroid ? "1/5 — 4 more to unlock the top of your Share Sheet" : "1/5 — 4 more to personalize your search")}
                           {saveReceipt.milestoneCount === 2 && "2/5 — building momentum ⚡"}
                           {saveReceipt.milestoneCount === 3 && "Halfway! 3/5 — ReCall is climbing 🔥"}
                           {saveReceipt.milestoneCount === 4 && "4/5 — one more and you're set"}
