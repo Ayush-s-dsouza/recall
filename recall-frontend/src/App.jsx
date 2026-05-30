@@ -84,6 +84,8 @@ export default function App() {
   const [isFreshReceipt, setIsFreshReceipt] = useState(false)
   const [loadingStep, setLoadingStep] = useState(0)
   const [editingTag, setEditingTag] = useState(false)
+  const [editingTodayTitleId, setEditingTodayTitleId] = useState(null)
+  const [draftTodayTitle, setDraftTodayTitle] = useState("")
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [deletingId, setDeletingId] = useState(null)
   const [libraryFilters, setLibraryFilters] = useState(() => {
@@ -458,6 +460,26 @@ export default function App() {
     setTodaySaves(prev => prev.map(s => s.id === saveReceipt.id ? { ...s, tag: newTag } : s))
     setEditingTag(false)
     posthog.capture('tag_edited')
+  }
+
+  const updateTodayTitle = async (id, newTitle) => {
+    const currentTitle = todaySaves.find(s => s.id === id)?.title || ""
+    if (!newTitle.trim() || newTitle === currentTitle) {
+      setEditingTodayTitleId(null)
+      return
+    }
+    const token = await getToken()
+    await fetch(`${BACKEND}/save/${id}/title`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: newTitle, token })
+    })
+    setTodaySaves(prev => prev.map(s => s.id === id ? { ...s, title: newTitle } : s))
+    if (saveReceipt?.id === id) setSaveReceipt(r => ({ ...r, title: newTitle }))
+    setEditingTodayTitleId(null)
+    playSuccessChime()
+    navigator.vibrate?.([50])
+    posthog.capture('title_edited')
   }
 
   const deleteSave = async (id) => {
@@ -1271,39 +1293,61 @@ export default function App() {
               <p style={styles.todayHeader}>Today</p>
               <div style={styles.todayList}>
                 {todaySaves.map(s => (
-                  <a key={s.id} href={s.url} target="_blank" rel="noreferrer" style={styles.todayCard}>
-                    {deletingId === s.id ? (
-                      <span style={{ color: "#888", fontSize: 13, padding: "4px 0" }}>Removing…</span>
-                    ) : confirmDeleteId === s.id ? (
-                      <div style={styles.deleteConfirm} onClick={e => e.stopPropagation()}>
-                        <span style={styles.deleteConfirmText}>Remove from ReCall?</span>
-                        <button
-                          onClick={e => { e.preventDefault(); e.stopPropagation(); deleteSave(s.id) }}
-                          style={styles.deleteConfirmYes}
-                        >Delete</button>
-                        <button
-                          onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(null) }}
-                          style={styles.deleteConfirmNo}
-                        >Cancel</button>
-                      </div>
-                    ) : (
-                      <>
-                        {s.content_type === "video" ? (
-                          <span style={{ ...styles.todayTag, color: "#666" }}>🎥 Video</span>
-                        ) : s.content_type === "image" ? (
-                          <span style={{ ...styles.todayTag, color: "#666" }}>📷 Image</span>
-                        ) : (
-                          <span style={styles.todayTag}>{s.tag}</span>
-                        )}
-                        <span style={styles.todayTitle}>{s.title}</span>
-                        <span style={styles.todaySource}>{getSourceLabel(s.url)}</span>
-                        <button
-                          onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(s.id) }}
-                          style={styles.deleteButton}
-                        >🗑</button>
-                      </>
-                    )}
-                  </a>
+                  editingTodayTitleId === s.id ? (
+                    <div key={s.id} style={{ ...styles.todayCard, gap: "6px" }}>
+                      <input
+                        style={{ ...styles.receiptTitleInput, flex: 1, minWidth: 0, fontSize: "13px" }}
+                        value={draftTodayTitle}
+                        onChange={e => setDraftTodayTitle(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") updateTodayTitle(s.id, draftTodayTitle)
+                          if (e.key === "Escape") setEditingTodayTitleId(null)
+                        }}
+                        autoFocus
+                      />
+                      <button onClick={() => updateTodayTitle(s.id, draftTodayTitle)} style={styles.confirmButton}>✓</button>
+                      <button onClick={() => setEditingTodayTitleId(null)} style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "16px", padding: "0 2px" }}>✕</button>
+                    </div>
+                  ) : (
+                    <a key={s.id} href={s.url} target="_blank" rel="noreferrer" style={styles.todayCard}>
+                      {deletingId === s.id ? (
+                        <span style={{ color: "#888", fontSize: 13, padding: "4px 0" }}>Removing…</span>
+                      ) : confirmDeleteId === s.id ? (
+                        <div style={styles.deleteConfirm} onClick={e => e.stopPropagation()}>
+                          <span style={styles.deleteConfirmText}>Remove from ReCall?</span>
+                          <button
+                            onClick={e => { e.preventDefault(); e.stopPropagation(); deleteSave(s.id) }}
+                            style={styles.deleteConfirmYes}
+                          >Delete</button>
+                          <button
+                            onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(null) }}
+                            style={styles.deleteConfirmNo}
+                          >Cancel</button>
+                        </div>
+                      ) : (
+                        <>
+                          {s.content_type === "video" ? (
+                            <span style={{ ...styles.todayTag, color: "#666" }}>🎥 Video</span>
+                          ) : s.content_type === "image" ? (
+                            <span style={{ ...styles.todayTag, color: "#666" }}>📷 Image</span>
+                          ) : (
+                            <span style={styles.todayTag}>{s.tag}</span>
+                          )}
+                          <span style={styles.todayTitle}>{s.title}</span>
+                          <span style={styles.todaySource}>{getSourceLabel(s.url)}</span>
+                          <button
+                            onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTodayTitleId(s.id); setDraftTodayTitle(s.title) }}
+                            style={styles.editButton}
+                            title="Edit name"
+                          >✎</button>
+                          <button
+                            onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(s.id) }}
+                            style={styles.deleteButton}
+                          >🗑</button>
+                        </>
+                      )}
+                    </a>
+                  )
                 ))}
               </div>
             </div>
