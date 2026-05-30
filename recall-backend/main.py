@@ -43,6 +43,10 @@ app.add_middleware(
 
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
 
+# Module-level Gemini client — created once at startup, reused across all requests
+gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+_NO_THINKING = {"thinking_config": {"thinking_budget": 0}}
+
 # --- SSRF protection ---
 _PRIVATE_RANGES = [
     ipaddress.ip_network("127.0.0.0/8"),
@@ -155,22 +159,22 @@ def get_source_label(url: str) -> str:
         return "Page"
 
 def get_embedding(text: str):
-    import requests
     api_key = os.getenv("GEMINI_API_KEY")
-    response = requests.post(
+    response = httpx.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={api_key}",
         json={
             "model": "models/gemini-embedding-001",
             "content": {"parts": [{"text": text[:8000]}]},
             "outputDimensionality": 768
-        }
+        },
+        timeout=30.0
     )
     data = response.json()
     return data["embedding"]["values"]
 
 def extract_save_metadata(raw_title: str, content: str, extra_context: str = ""):
     try:
-        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        client = gemini_client
         context_block = content[:1500]
         if extra_context:
             context_block += f"\n\nAdditional context (post description / image content):\n{extra_context[:800]}"
@@ -235,7 +239,6 @@ async def analyze_image(image_url: str) -> str:
             # Force a safe mime type if CDN returns octet-stream
             if mime_type == "application/octet-stream":
                 mime_type = "image/jpeg"
-        gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[
@@ -248,7 +251,7 @@ async def analyze_image(image_url: str) -> str:
                     )
                 ])
             ],
-            config={"thinking_config": {"thinking_budget": 0}}
+            config=_NO_THINKING
         )
         return response.text.strip()
     except:
@@ -600,15 +603,14 @@ async def expand_search_query(query: str) -> str:
     if len(query.split()) >= 6:
         return query  # already specific enough — skip Gemini call
     try:
-        client_g = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-        response = client_g.models.generate_content(
+        response = gemini_client.models.generate_content(
             model="gemini-2.5-flash",
             contents=(
                 "Rewrite this search query as a short phrase with 3-5 related synonyms "
                 "and concepts to improve semantic search. Return only the expanded query, no explanation.\n"
                 f"Query: {query}"
             ),
-            config={"thinking_config": {"thinking_budget": 0}}
+            config=_NO_THINKING
         )
         return response.text.strip()
     except Exception:
@@ -815,17 +817,16 @@ async def ask_recall(req: AskRequest, request: Request):
     context = "\n\n---\n\n".join(context_parts)
 
     try:
-        gemini = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         prompt = f"""You are a personal knowledge assistant synthesizing information from articles the user has saved to their library. Answer their question in 2-3 concise paragraphs using ONLY what is in the provided articles. Cite sources inline using the article title in square brackets like [Article Title]. If the articles don't contain enough information to answer well, say so briefly.
 
 Articles from the user's library:
 {context}
 
 Question: {req.query}"""
-        response = gemini.models.generate_content(
+        response = gemini_client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
-            config={"thinking_config": {"thinking_budget": 0}}
+            config=_NO_THINKING
         )
         synthesis = response.text.strip()
     except Exception:
@@ -868,7 +869,6 @@ async def get_library(req: LibraryRequest, request: Request):
     for row in result.data:
         tag_groups[row.get("tag") or "Other"].append(row)
 
-    gemini = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     library = []
 
     for tag, saves in sorted(tag_groups.items(), key=lambda x: -len(x[1])):
@@ -887,10 +887,10 @@ Titles:
 {titles_sample}
 
 Write only the summary, nothing else."""
-                response = gemini.models.generate_content(
+                response = gemini_client.models.generate_content(
                     model="gemini-2.5-flash",
                     contents=prompt,
-                    config={"thinking_config": {"thinking_budget": 0}}
+                    config=_NO_THINKING
                 )
                 summary = response.text.strip()
             except Exception:
@@ -908,10 +908,10 @@ Articles:
 
 Return JSON only, no markdown fences:
 {{"sub_topics": [{{"label": "AI & Language Models", "indices": [0, 3, 7]}}, ...]}}"""
-                sub_response = gemini.models.generate_content(
+                sub_response = gemini_client.models.generate_content(
                     model="gemini-2.5-flash",
                     contents=sub_prompt,
-                    config={"thinking_config": {"thinking_budget": 0}}
+                    config=_NO_THINKING
                 )
                 raw = sub_response.text.strip().strip("```json").strip("```").strip()
                 parsed = json.loads(raw)

@@ -2,7 +2,7 @@ fastapi
 uvicorn
 python-dotenv
 supabase
-google-genai
+google-genai>=1.0.0,<2.0.0
 httpx
 slowapi
 sentry-sdk[fastapi]
