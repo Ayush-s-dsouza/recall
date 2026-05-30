@@ -614,7 +614,6 @@ export default function App() {
     setSynthesis(null)
     setSynthesisSources([])
     setInsufficientData(null)
-    setInsightSaved(false)
     setRecentSearches(prev => {
       const updated = [q, ...prev.filter(s => s !== q)].slice(0, 5)
       localStorage.setItem("recall_recent_searches", JSON.stringify(updated))
@@ -628,16 +627,20 @@ export default function App() {
         body: JSON.stringify({ query: q, token })
       })
       const data = await res.json()
-      if (data.insufficient) {
+      if (!res.ok) {
+        setSynthesis("__error__")
+        setInsufficientData({ message: data.detail || "Something went wrong — try again" })
+      } else if (data.insufficient) {
         setSynthesis("__insufficient__")
         setInsufficientData({ relevant_count: data.relevant_count ?? 0 })
       } else {
         setSynthesis(data.synthesis)
         setSynthesisSources(data.sources || [])
       }
-      posthog.capture('ask_performed', { result: data.insufficient ? 'insufficient' : 'success' })
+      posthog.capture('ask_performed', { result: data.insufficient ? 'insufficient' : (res.ok ? 'success' : 'error') })
     } catch {
-      setSynthesis(null)
+      setSynthesis("__error__")
+      setInsufficientData({ message: "Couldn't reach the server — check your connection" })
     }
     setAskLoading(false)
   }
@@ -902,6 +905,15 @@ export default function App() {
                   : `Only ${insufficientData?.relevant_count} closely-matched save${insufficientData?.relevant_count === 1 ? "" : "s"} on this — save ${3 - (insufficientData?.relevant_count ?? 0)} more focused articles to unlock synthesis.`}
               </p>
               <button style={styles.zeroResultsCta} onClick={() => setView("save")}>Save a page about this →</button>
+            </div>
+          )}
+
+          {/* Error message */}
+          {askMode && synthesis === "__error__" && (
+            <div style={styles.synthesisInsufficient}>
+              <p style={{ margin: 0, color: "#888", fontSize: 14 }}>
+                {insufficientData?.message || "Something went wrong — try again"}
+              </p>
             </div>
           )}
 
