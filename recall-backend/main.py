@@ -188,7 +188,8 @@ Content: {context_block}
 Respond with exactly three lines, nothing else."""
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=prompt
+            contents=prompt,
+            config={"thinking_config": {"thinking_budget": 0}}
         )
         lines = [l.strip() for l in response.text.strip().split('\n') if l.strip()]
         ai_title = lines[0] if lines else raw_title
@@ -246,7 +247,8 @@ async def analyze_image(image_url: str) -> str:
                         "people, brands, or key information shown."
                     )
                 ])
-            ]
+            ],
+            config={"thinking_config": {"thinking_budget": 0}}
         )
         return response.text.strip()
     except:
@@ -605,7 +607,8 @@ async def expand_search_query(query: str) -> str:
                 "Rewrite this search query as a short phrase with 3-5 related synonyms "
                 "and concepts to improve semantic search. Return only the expanded query, no explanation.\n"
                 f"Query: {query}"
-            )
+            ),
+            config={"thinking_config": {"thinking_budget": 0}}
         )
         return response.text.strip()
     except Exception:
@@ -819,7 +822,11 @@ Articles from the user's library:
 {context}
 
 Question: {req.query}"""
-        response = gemini.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        response = gemini.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config={"thinking_config": {"thinking_budget": 0}}
+        )
         synthesis = response.text.strip()
     except Exception:
         raise HTTPException(status_code=500, detail="Synthesis failed")
@@ -880,7 +887,11 @@ Titles:
 {titles_sample}
 
 Write only the summary, nothing else."""
-                response = gemini.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                response = gemini.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                    config={"thinking_config": {"thinking_budget": 0}}
+                )
                 summary = response.text.strip()
             except Exception:
                 summary = ""
@@ -897,7 +908,11 @@ Articles:
 
 Return JSON only, no markdown fences:
 {{"sub_topics": [{{"label": "AI & Language Models", "indices": [0, 3, 7]}}, ...]}}"""
-                sub_response = gemini.models.generate_content(model="gemini-2.5-flash", contents=sub_prompt)
+                sub_response = gemini.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=sub_prompt,
+                    config={"thinking_config": {"thinking_budget": 0}}
+                )
                 raw = sub_response.text.strip().strip("```json").strip("```").strip()
                 parsed = json.loads(raw)
                 sub_topics = [
