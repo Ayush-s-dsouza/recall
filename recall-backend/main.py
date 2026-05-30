@@ -11,6 +11,7 @@ import socket
 import ipaddress
 import json
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
 import httpx
 import asyncio
 import sentry_sdk
@@ -45,7 +46,16 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_
 
 # Module-level Gemini client — created once at startup, reused across all requests
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-_NO_THINKING = {"thinking_config": {"thinking_budget": 0}}
+_executor = ThreadPoolExecutor(max_workers=4)
+
+# Typed ThinkingConfig — disables thinking tokens for all generate_content calls.
+# Falls back to empty config on old SDK versions that predate ThinkingConfig.
+try:
+    _NO_THINKING = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_budget=0)
+    )
+except AttributeError:
+    _NO_THINKING = types.GenerateContentConfig()
 
 # --- SSRF protection ---
 _PRIVATE_RANGES = [
@@ -193,7 +203,7 @@ Respond with exactly three lines, nothing else."""
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
-            config={"thinking_config": {"thinking_budget": 0}}
+            config=_NO_THINKING
         )
         lines = [l.strip() for l in response.text.strip().split('\n') if l.strip()]
         ai_title = lines[0] if lines else raw_title
@@ -816,19 +826,29 @@ async def ask_recall(req: AskRequest, request: Request):
         context_parts.append(f"[{title}]\n{content}")
     context = "\n\n---\n\n".join(context_parts)
 
-    try:
-        prompt = f"""You are a personal knowledge assistant synthesizing information from articles the user has saved to their library. Answer their question in 2-3 concise paragraphs using ONLY what is in the provided articles. Cite sources inline using the article title in square brackets like [Article Title]. If the articles don't contain enough information to answer well, say so briefly.
+    prompt = f"""You are a personal knowledge assistant synthesizing information from articles the user has saved to their library. Answer their question in 2-3 concise paragraphs using ONLY what is in the provided articles. Cite sources inline using the article title in square brackets like [Article Title]. If the articles don't contain enough information to answer well, say so briefly.
 
 Articles from the user's library:
 {context}
 
 Question: {req.query}"""
-        response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=_NO_THINKING
+
+    try:
+        loop = asyncio.get_running_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                _executor,
+                lambda: gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                    config=_NO_THINKING
+                )
+            ),
+            timeout=25.0
         )
         synthesis = response.text.strip()
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Synthesis timed out — try a more focused question")
     except Exception:
         raise HTTPException(status_code=500, detail="Synthesis failed")
 
