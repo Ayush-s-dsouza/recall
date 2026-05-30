@@ -10,6 +10,7 @@ const supabase = createClient(
 const BACKEND = import.meta.env.VITE_BACKEND_URL
 
 const VALID_TAGS = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
+const SHARE_SHEET_VIDEO_URL = null // replace with YouTube URL when ready
 const LOADING_STEPS = ["Fetching...", "Reading...", "Analyzing...", "Almost there..."]
 
 function getAppScheme(url) {
@@ -136,6 +137,7 @@ export default function App() {
   const searchInputRef = useRef(null)
   const isIOS = /iPhone|iPad/i.test(navigator.userAgent)
   const isAndroid = /Android/i.test(navigator.userAgent)
+  const isDesktop = !isIOS && !isAndroid
 
   useEffect(() => { sessionStorage.setItem("recall_view", view) }, [view])
 
@@ -1482,33 +1484,54 @@ export default function App() {
       {onboardingStep === 'install' && (
         <div style={styles.overlay}>
           <div style={styles.overlayCard}>
-            <div style={{ fontSize: "36px", marginBottom: "4px" }}>📱</div>
-            <p style={styles.overlayTitle}>Get the full experience</p>
-            <p style={styles.overlayBody}>
-              ReCall's Share Sheet feature — saving from any app — needs the installed version.
-            </p>
-            <div style={styles.overlaySteps}>
-              {isIOS ? (
-                <>
+            {isIOS ? (
+              <>
+                <div style={{ fontSize: "32px", marginBottom: "4px" }}>📋</div>
+                <p style={styles.overlayTitle}>Saving on iPhone</p>
+                <p style={styles.overlayBody}>Your quickest option is already built in.</p>
+                <div style={styles.overlaySteps}>
+                  <p style={styles.overlayStep}>① Copy any link in Safari or any app</p>
+                  <p style={styles.overlayStep}>② Open ReCall — your link <strong>auto-fills</strong></p>
+                  <p style={styles.overlayStep}>③ Tap Save ✓</p>
+                </div>
+                <div style={styles.overlayDivider} />
+                <p style={{ ...styles.overlayNote, color: "#666", marginBottom: "6px" }}>Add to Home Screen for quick access:</p>
+                <div style={{ ...styles.overlaySteps, background: "transparent", padding: "0 4px" }}>
                   <p style={styles.overlayStep}>① Tap the <strong>Share</strong> icon in Safari</p>
-                  <p style={styles.overlayStep}>② Tap <strong>"Add to Home Screen"</strong></p>
-                  <p style={styles.overlayStep}>③ Tap <strong>"Add"</strong></p>
-                  <p style={styles.overlayNote}>Share Sheet isn't available on iOS — you can still paste links directly.</p>
-                </>
-              ) : (
-                <>
-                  <p style={styles.overlayStep}>① Tap <strong>⋮</strong> in Chrome</p>
-                  <p style={styles.overlayStep}>② Tap <strong>"Add to Home Screen"</strong></p>
-                  <p style={styles.overlayStep}>③ Tap <strong>"Add"</strong></p>
-                </>
-              )}
-            </div>
-            <button style={styles.button} onClick={() => advanceOnboarding('install')}>
-              Done, I've installed it
-            </button>
-            <button style={styles.overlaySkip} onClick={() => advanceOnboarding('install')}>
-              Skip for now
-            </button>
+                  <p style={styles.overlayStep}>② Tap <strong>"Add to Home Screen"</strong> → <strong>"Add"</strong></p>
+                </div>
+                <p style={styles.overlayNote}>iOS Shortcut (1-tap save from any app) — coming soon</p>
+                <button style={styles.button} onClick={() => advanceOnboarding('install')}>Got it</button>
+                <button style={styles.overlaySkip} onClick={() => advanceOnboarding('install')}>Skip for now</button>
+              </>
+            ) : isDesktop ? (
+              <>
+                <div style={{ fontSize: "32px", marginBottom: "4px" }}>✓</div>
+                <p style={styles.overlayTitle}>You're all set</p>
+                <p style={styles.overlayBody}>ReCall works right in your browser — no install needed.</p>
+                <div style={styles.overlaySteps}>
+                  <p style={styles.overlayStep}>📋 Paste any URL into the Save tab</p>
+                  <p style={styles.overlayStep}>🔍 Search your saves in plain English</p>
+                </div>
+                <p style={styles.overlayNote}>On Android, install the app to save from any app via Share Sheet.</p>
+                <button style={styles.button} onClick={() => advanceOnboarding('install')}>Got it</button>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: "32px", marginBottom: "4px" }}>📱</div>
+                <p style={styles.overlayTitle}>Get the full experience</p>
+                <p style={styles.overlayBody}>Install once, then save from any app with one tap.</p>
+                <div style={styles.overlaySteps}>
+                  <p style={styles.overlayStep}>① Tap <strong>⋮</strong> in Chrome → <strong>"Add to Home Screen"</strong></p>
+                  <p style={styles.overlayStep}>② Open any link → tap <strong>Share</strong> → choose <strong>ReCall</strong></p>
+                  {SHARE_SHEET_VIDEO_URL && (
+                    <a href={SHARE_SHEET_VIDEO_URL} target="_blank" rel="noreferrer" style={styles.overlayVideoLink}>Watch how →</a>
+                  )}
+                </div>
+                <button style={styles.button} onClick={() => advanceOnboarding('install')}>Done, I've installed it</button>
+                <button style={styles.overlaySkip} onClick={() => advanceOnboarding('install')}>Skip for now</button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -1650,6 +1673,8 @@ const styles = {
   overlayStep: { fontSize: "14px", color: "#ccc", margin: 0, lineHeight: 1.6 },
   overlayNote: { fontSize: "12px", color: "#555", margin: "4px 0 0", lineHeight: 1.5 },
   overlaySkip: { background: "none", border: "none", color: "#555", fontSize: "13px", cursor: "pointer", padding: "4px" },
+  overlayDivider: { height: "1px", background: "#2a2a2a", margin: "4px 0 10px" },
+  overlayVideoLink: { color: "#888", fontSize: "13px", textDecoration: "none", display: "block", textAlign: "center", marginTop: "8px" },
 
   // Progress pill (Save tab, multi-stage milestone track)
   progressPill: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", padding: "10px 14px", background: "rgba(251,191,36,0.07)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: "12px" },
