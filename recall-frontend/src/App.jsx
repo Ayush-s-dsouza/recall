@@ -112,8 +112,7 @@ export default function App() {
   const [synthesis, setSynthesis] = useState(null)
   const [synthesisSources, setSynthesisSources] = useState([])
   const [askLoading, setAskLoading] = useState(false)
-  const [savingInsight, setSavingInsight] = useState(false)
-  const [insightSaved, setInsightSaved] = useState(false)
+
 
   // Related saves (shown on receipt)
   const [relatedSaves, setRelatedSaves] = useState([])
@@ -640,27 +639,6 @@ export default function App() {
     setAskLoading(false)
   }
 
-  const saveInsight = async () => {
-    if (!synthesis || synthesis === "__insufficient__" || insightSaved) return
-    setSavingInsight(true)
-    try {
-      const token = await getToken()
-      await fetch(`${BACKEND}/wiki`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: query,
-          synthesis,
-          source_ids: synthesisSources.map(s => s.id),
-          token
-        })
-      })
-      setInsightSaved(true)
-      posthog.capture('insight_saved')
-    } catch {}
-    setSavingInsight(false)
-  }
-
   const fetchCalendarSaves = async () => {
     if (!user) return
     setCalendarLoading(true)
@@ -895,11 +873,6 @@ export default function App() {
             <div style={styles.synthesisCard}>
               <div style={styles.synthesisHeader}>
                 <span style={styles.synthesisLabel}>✦ Based on your saves</span>
-                <button
-                  onClick={saveInsight}
-                  disabled={savingInsight || insightSaved}
-                  style={insightSaved ? styles.insightSavedBtn : styles.saveInsightBtn}
-                >{insightSaved ? "Saved ✓" : savingInsight ? "Saving…" : "Pin insight"}</button>
               </div>
               <p style={styles.synthesisText}>{synthesis}</p>
               {synthesisSources.length > 0 && (
@@ -1727,8 +1700,6 @@ const styles = {
   synthesisCard: { background: "#141420", border: "1px solid #2a2a40", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "12px" },
   synthesisHeader: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   synthesisLabel: { fontSize: "11px", color: "#7c6fcd", textTransform: "uppercase", letterSpacing: "1px", fontWeight: "600" },
-  saveInsightBtn: { background: "none", border: "1px solid #2a2a40", color: "#7c6fcd", borderRadius: "8px", padding: "4px 10px", fontSize: "12px", cursor: "pointer" },
-  insightSavedBtn: { background: "none", border: "1px solid #333", color: "#555", borderRadius: "8px", padding: "4px 10px", fontSize: "12px", cursor: "default" },
   synthesisText: { fontSize: "14px", color: "#ccc", lineHeight: 1.65, margin: 0, whiteSpace: "pre-wrap" },
   synthesisSources: { display: "flex", flexDirection: "column", gap: "6px", paddingTop: "8px", borderTop: "1px solid #1e1e30" },
   synthesisSourcesLabel: { fontSize: "10px", color: "#555", textTransform: "uppercase", letterSpacing: "1px" },
