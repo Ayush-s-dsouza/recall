@@ -1361,7 +1361,7 @@ export default function App() {
                 {first5Count === 0 ? "Save your first link" : `${5 - first5Count} more to go`}
               </p>
               <p style={styles.bottomSheetBody}>
-                5 saves and ReCall moves to the top of your Share Sheet — permanently.
+                5 saves and ReCall moves to the top of your Share Sheet!
               </p>
               {isAndroid && (
                 <div style={styles.shareHowTo}>
