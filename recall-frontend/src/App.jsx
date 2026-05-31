@@ -1363,6 +1363,19 @@ export default function App() {
               <p style={styles.bottomSheetBody}>
                 5 saves and ReCall moves to the top of your Share Sheet — permanently.
               </p>
+              {isAndroid && (
+                <div style={styles.shareHowTo}>
+                  <p style={styles.shareHowToLabel}>How to use Share Sheet</p>
+                  <div style={styles.shareHowToStep}>
+                    <span style={styles.shareHowToNum}>①</span>
+                    <span style={styles.shareHowToText}>Open any link in Chrome, Twitter, Reddit, or any app</span>
+                  </div>
+                  <div style={styles.shareHowToStep}>
+                    <span style={styles.shareHowToNum}>②</span>
+                    <span style={styles.shareHowToText}>Tap <strong style={{ color: "#ccc" }}>Share</strong> → choose <strong style={{ color: "#ccc" }}>ReCall</strong> — it saves instantly</span>
+                  </div>
+                </div>
+              )}
               <div style={styles.progressDotsRow}>
                 {[1,2,3,4,5].map(i => (
                   <span key={i} style={i <= first5Count ? styles.dotFilled : styles.dotEmpty} />
@@ -1706,6 +1719,11 @@ const styles = {
   bottomSheetHandle: { width: "36px", height: "4px", background: "#444", borderRadius: "2px", alignSelf: "center", marginBottom: "4px" },
   bottomSheetTitle: { fontSize: "20px", fontWeight: "700", margin: 0, color: "#fff" },
   bottomSheetBody: { fontSize: "14px", color: "#888", margin: 0, lineHeight: 1.5 },
+  shareHowTo: { background: "#111", borderRadius: "10px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "8px" },
+  shareHowToLabel: { fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "1px", margin: 0 },
+  shareHowToStep: { display: "flex", alignItems: "flex-start", gap: "10px" },
+  shareHowToNum: { fontSize: "16px", color: "#fbbf24", flexShrink: 0, lineHeight: 1.4 },
+  shareHowToText: { fontSize: "13px", color: "#888", lineHeight: 1.5 },
 
   // Search nudge toast
   nudgeToast: { position: "fixed", top: "16px", left: "16px", right: "16px", background: "#1e1e1e", border: "1px solid #333", borderRadius: "14px", padding: "12px 14px", display: "flex", alignItems: "center", gap: "10px", zIndex: 50, animation: "slideDown 0.3s ease-out", boxShadow: "0 4px 24px rgba(0,0,0,0.6)" },
