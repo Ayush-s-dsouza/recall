@@ -180,6 +180,10 @@ def get_embedding(text: str):
         timeout=30.0
     )
     data = response.json()
+    if "embedding" not in data:
+        error_msg = data.get("error", {}).get("message", "unknown error")
+        print(f"[embedding] Gemini API error: {error_msg} (status {response.status_code})", flush=True)
+        raise HTTPException(status_code=503, detail=f"Embedding service error: {error_msg}")
     return data["embedding"]["values"]
 
 def extract_save_metadata(raw_title: str, content: str, extra_context: str = ""):

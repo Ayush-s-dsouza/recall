@@ -286,6 +286,8 @@ On the Save tab (and on initial load if not a share-sheet trigger), `checkClipbo
 | content_text | text | extracted page text (up to 5000 chars) |
 | embedding | vector(768) | from gemini-embedding-001 |
 | tag | text | Tech / Product / Business / Finance / Health / Personal / Other |
+| content_type | text | `article` (default) or `video` / `image` for media URLs |
+| related_ids | uuid[] | IDs of semantically related saves (best-effort, may be null) |
 | created_at | timestamptz | auto |
 
 RLS is enabled — policies restrict all access to `user_id = auth.uid()`.
