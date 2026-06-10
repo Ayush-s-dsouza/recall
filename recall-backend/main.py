@@ -181,8 +181,8 @@ def get_embedding(text: str):
     )
     data = response.json()
     if "embedding" not in data:
+        print(f"[embedding] Gemini API error (status {response.status_code}): {data}", flush=True)
         error_msg = data.get("error", {}).get("message", "unknown error")
-        print(f"[embedding] Gemini API error: {error_msg} (status {response.status_code})", flush=True)
         raise HTTPException(status_code=503, detail=f"Embedding service error: {error_msg}")
     return data["embedding"]["values"]
 
