@@ -791,7 +791,15 @@ export default function App() {
             <button
               onClick={async () => {
                 const { data: { session } } = await supabase.auth.getSession()
-                setExternalToken(session?.refresh_token ?? null)
+                console.log('[ReCall debug] session keys:', session ? Object.keys(session) : null)
+                const token = session?.refresh_token ?? null
+                if (token) {
+                  console.log('[ReCall debug] token length:', token.length)
+                  console.log('[ReCall debug] token preview:', token.slice(0, 8) + '...' + token.slice(-8))
+                } else {
+                  console.log('[ReCall debug] token is null/undefined')
+                }
+                setExternalToken(token)
               }}
               style={styles.settingsLink}
             >Show External App Token</button>
