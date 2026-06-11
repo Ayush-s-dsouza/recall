@@ -71,6 +71,8 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [deletingAccount, setDeletingAccount] = useState(false)
   const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false)
+  const [externalToken, setExternalToken] = useState(null)
+  const [tokenCopied, setTokenCopied] = useState(false)
   const [message, setMessage] = useState("")
   const [isError, setIsError] = useState(false)
   const [selectedSource, setSelectedSource] = useState(null)
@@ -770,7 +772,7 @@ export default function App() {
       <div style={styles.header}>
         <h1 style={styles.logoSmall}>ReCall</h1>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          <button onClick={() => { setShowSettings(s => !s); setConfirmDeleteAccount(false) }} style={styles.signOut} title="Settings">⚙</button>
+          <button onClick={() => { setShowSettings(s => !s); setConfirmDeleteAccount(false); setExternalToken(null); setTokenCopied(false) }} style={styles.signOut} title="Settings">⚙</button>
           <button onClick={signOut} style={styles.signOut}>Sign out</button>
         </div>
       </div>
@@ -781,6 +783,44 @@ export default function App() {
             <button onClick={() => { setLegalSection('privacy'); setView('legal'); setShowSettings(false) }} style={styles.settingsLink}>Privacy Policy</button>
             <button onClick={() => { setLegalSection('terms'); setView('legal'); setShowSettings(false) }} style={styles.settingsLink}>Terms of Service</button>
           </div>
+          <div style={styles.settingsDivider} />
+
+          {/* Connect to other apps */}
+          <p style={styles.settingsSectionHeading}>Connect to other apps</p>
+          {!externalToken ? (
+            <button
+              onClick={async () => {
+                const { data: { session } } = await supabase.auth.getSession()
+                setExternalToken(session?.refresh_token ?? null)
+              }}
+              style={styles.settingsLink}
+            >Show External App Token</button>
+          ) : (
+            <div style={styles.tokenSection}>
+              <div style={styles.tokenRow}>
+                <input
+                  readOnly
+                  type="password"
+                  value={externalToken}
+                  style={styles.tokenInput}
+                  onFocus={e => e.target.select()}
+                />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(externalToken)
+                    setTokenCopied(true)
+                    setTimeout(() => setTokenCopied(false), 2000)
+                  }}
+                  style={styles.tokenCopyButton}
+                >{tokenCopied ? "Copied!" : "Copy"}</button>
+              </div>
+              <p style={styles.tokenWarning}>
+                Use this to authenticate ReCall in external apps like Claude Desktop. Treat it like a password — anyone with this token has full read access to your saves until you sign out of all sessions. Don't paste it anywhere public, don't share it.
+              </p>
+              <button onClick={() => { setExternalToken(null); setTokenCopied(false) }} style={styles.tokenHideButton}>Hide token</button>
+            </div>
+          )}
+
           <div style={styles.settingsDivider} />
           {!confirmDeleteAccount ? (
             <button onClick={() => setConfirmDeleteAccount(true)} style={styles.deleteAccountButton}>Delete account</button>
@@ -1742,6 +1782,13 @@ const styles = {
   settingsLinks: { display: "flex", gap: "8px", flexWrap: "wrap" },
   settingsLink: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "20px", cursor: "pointer", fontSize: "13px" },
   settingsDivider: { height: "1px", background: "#2a2a2a" },
+  settingsSectionHeading: { fontSize: "11px", fontWeight: "600", color: "#555", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 },
+  tokenSection: { display: "flex", flexDirection: "column", gap: "8px" },
+  tokenRow: { display: "flex", gap: "6px", alignItems: "center" },
+  tokenInput: { flex: 1, background: "#111", border: "1px solid #333", borderRadius: "8px", color: "#ccc", fontSize: "13px", padding: "7px 10px", fontFamily: "ui-monospace, Consolas, monospace", minWidth: 0 },
+  tokenCopyButton: { background: "#fff", border: "none", color: "#000", borderRadius: "8px", padding: "7px 14px", fontSize: "13px", fontWeight: "600", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
+  tokenWarning: { fontSize: "12px", color: "#666", lineHeight: 1.5, margin: 0 },
+  tokenHideButton: { background: "none", border: "none", color: "#555", fontSize: "12px", cursor: "pointer", padding: 0, alignSelf: "flex-start" },
   deleteAccountButton: { background: "none", border: "1px solid #ef4444", color: "#ef4444", padding: "7px 16px", borderRadius: "8px", cursor: "pointer", fontSize: "13px", alignSelf: "flex-start" },
   deleteAccountConfirm: { display: "flex", flexDirection: "column", gap: "10px" },
   deleteAccountWarning: { fontSize: "13px", color: "#aaa", margin: 0, lineHeight: 1.4 },
