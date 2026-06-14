@@ -286,13 +286,21 @@ Overall visibility gate: `showInstallUI = !isStandalone && !justInstalled && (de
 
 ### 13. iOS Share Sheet (via Shortcuts app)
 
-iOS/WebKit doesn't implement the Web Share Target API, so there's no way for a PWA to register as a native Share Sheet target without an App Store app + Share Extension. Instead, on iOS (`isIOS`), the Settings panel has a "Save from any app" section (`shortcutGuideOpen` state) with a 6-step guide for building a **"Save to ReCall" Shortcut** in the iOS Shortcuts app:
-1. Create a new shortcut, enable "Use with Share Sheet" (type: URLs)
-2. Add a "URL" action: `https://recall-iota-six.vercel.app/?url=` + Shortcut Input
-3. Add an "Open URLs" action using that URL
-4. Name it "Save to ReCall"
+iOS/WebKit doesn't implement the Web Share Target API, so there's no way for a PWA to register as a native Share Sheet target without an App Store app + Share Extension. Even an installed/home-screened PWA never appears in the main Share Sheet app row — the only path on is a custom **Shortcut** with "Use with Share Sheet" enabled, which surfaces in the separate horizontally-scrolling **Shortcuts row** near the bottom of the share sheet (often behind "More").
 
-Once built, `Share → Save to ReCall` opens ReCall with `?url=<link>`, which the existing `extractSharedUrl`/`pendingUrl` flow (see #7) already handles via the `url` param fast-path — no backend or manifest changes needed. The install onboarding overlay's iOS branch points users to this guide in ⚙ Settings instead of the old "coming soon" placeholder.
+On iOS (`isIOS`), the Settings panel has a "Save from any app" section (`shortcutGuideOpen` state):
+- **Primary path** — if `SAVE_TO_RECALL_SHORTCUT_URL` (App.jsx:14, currently `null`) is set to an iCloud shortcut link, a 1-tap **"Add 'Save to ReCall' Shortcut"** button is shown, plus a note explaining the Shortcuts-row location. This installs a pre-configured shortcut — no manual steps.
+- **Fallback / manual path** — a collapsible 6-step guide for building the **"Save to ReCall" Shortcut** by hand:
+  1. Create a new shortcut, enable "Use with Share Sheet" (types: URLs, Safari Web Pages, Text)
+  2. Add a "URL" action: `https://recall-iota-six.vercel.app/?text=` + Shortcut Input
+  3. Add an "Open URLs" action using that URL
+  4. Name it "Save to ReCall"
+
+Once built (either path), sharing a link → Shortcuts row → "Save to ReCall" opens ReCall with `?text=<link>`, which the existing `extractSharedUrl`/`pendingUrl` flow (see #7) picks up. The install onboarding overlay's iOS branch points users to this Settings section.
+
+**Important — use `?text=`, not `?url=`.** See Known Issue #21: the `url` query param has no regex fallback in `extractSharedUrl`, so it only works if the value is a bare `http...` string with nothing appended. The `text`/`title` params tolerate extra content (Safari Web Page / Text share types, embedded URLs) via a regex fallback. Any future share-target URL construction must use `?text=`.
+
+**Maintaining the iCloud shortcut link** — if the "Save to ReCall" shortcut is ever rebuilt or renamed, regenerate its iCloud link (Shortcuts app → long-press → Share → Copy iCloud Link) and update `SAVE_TO_RECALL_SHORTCUT_URL` in App.jsx.
 
 ---
 
@@ -449,6 +457,10 @@ A lightning bolt / cursor-shaped path:
 19. **Filter dropdowns reset `displayCount`** — both the Source and Tag dropdowns call `setDisplayCount(5)` on change. This is intentional: switching filters should always start from the top of the filtered set, not mid-paginated.
 
 20. **Install banner and bottom button are mutually exclusive, gated by `showInstallUI`** — `recall_install_banner_dismissed` (localStorage) switches the UI from the banner to the bottom button; `recall_installed` (localStorage, set on `appinstalled`) hides both permanently. `deferredInstallPrompt` is single-use — call `.prompt()` then clear it immediately after `.userChoice` resolves. Don't gate either UI element on `isStandalone` alone — also check `justInstalled`/`recall_installed`, since `appinstalled` can fire before the page re-evaluates `display-mode: standalone`.
+
+21. **`extractSharedUrl`'s `url` param has no regex fallback — use `?text=` for any new share-target links.** Only `text`/`title` params get the `/https?:\/\/\S+/` regex fallback for embedded/extra-content URLs; `url` requires the value to already start with `http` or it returns `null` (share silently does nothing). The iOS Shortcut (#13) and the Android `share_target` manifest entry (#7) both rely on this — don't add a new integration that builds `?url=<value>` unless `<value>` is guaranteed to be a bare URL.
+
+22. **`isIOS` also matches iPadOS Safari in desktop mode** — `isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)`. iPadOS Safari has sent a desktop ("Macintosh") User-Agent by default since iPadOS 13, so the UA regex alone misses iPads — without the `MacIntel` + `maxTouchPoints` check, iPad users fell through to `isDesktop`/Android-flavored copy (e.g. "Tap ⋮ in Chrome"), which is wrong for Safari and was the actual cause of a tester seeing Chrome-specific instructions. `isAndroid`/`isDesktop` derive from `isIOS`, so this fix propagates everywhere (install banner copy, onboarding overlay, Settings Shortcut guide).
 
 ---
 

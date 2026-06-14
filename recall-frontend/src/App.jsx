@@ -11,6 +11,7 @@ const BACKEND = import.meta.env.VITE_BACKEND_URL
 
 const VALID_TAGS = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
 const SHARE_SHEET_VIDEO_URL = null // replace with YouTube URL when ready
+const SAVE_TO_RECALL_SHORTCUT_URL = "https://www.icloud.com/shortcuts/fd37dd0550924fafb19a0f984ded9825" // "Save to ReCall" shortcut — regenerate via Shortcuts app → long-press → Share → Copy iCloud Link if ever rebuilt
 const LOADING_STEPS = ["Fetching...", "Reading...", "Analyzing...", "Almost there..."]
 
 function getAppScheme(url) {
@@ -146,7 +147,7 @@ export default function App() {
 
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
-  const isIOS = /iPhone|iPad/i.test(navigator.userAgent)
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
   const isAndroid = /Android/i.test(navigator.userAgent)
   const isDesktop = !isIOS && !isAndroid
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
@@ -906,17 +907,25 @@ export default function App() {
 
               {/* Save from any app — iOS Share Sheet Shortcut guide */}
               <p style={styles.settingsSectionHeading}>Save from any app</p>
+              {SAVE_TO_RECALL_SHORTCUT_URL && (
+                <>
+                  <a href={SAVE_TO_RECALL_SHORTCUT_URL} target="_blank" rel="noreferrer" style={styles.shortcutAddButton}>
+                    Add "Save to ReCall" Shortcut
+                  </a>
+                  <p style={styles.overlayNote}>After adding, open the Share Sheet on any link → scroll to the <strong>Shortcuts</strong> row (tap "More" if you don't see it) → tap <strong>Save to ReCall</strong>.</p>
+                </>
+              )}
               <button onClick={() => setShortcutGuideOpen(o => !o)} style={styles.settingsLink}>
-                {shortcutGuideOpen ? "Hide Share Sheet setup" : "Set up Share Sheet →"}
+                {shortcutGuideOpen ? "Hide manual setup" : SAVE_TO_RECALL_SHORTCUT_URL ? "Set it up manually instead →" : "Set up Share Sheet →"}
               </button>
               {shortcutGuideOpen && (
                 <div style={styles.overlaySteps}>
                   <p style={styles.overlayStep}>① Open the <strong>Shortcuts</strong> app → tap <strong>+</strong> to create a new shortcut</p>
-                  <p style={styles.overlayStep}>② Tap the <strong>ⓘ</strong> info button → enable <strong>"Use with Share Sheet"</strong>, set type to <strong>URLs</strong></p>
-                  <p style={styles.overlayStep}>③ Add action <strong>"URL"</strong> → set it to <strong>https://recall-iota-six.vercel.app/?url=</strong> followed by the Shortcut Input variable</p>
+                  <p style={styles.overlayStep}>② Tap the <strong>ⓘ</strong> info button → enable <strong>"Use with Share Sheet"</strong>, set types to <strong>URLs, Safari Web Pages, Text</strong></p>
+                  <p style={styles.overlayStep}>③ Add action <strong>"URL"</strong> → set it to <strong>https://recall-iota-six.vercel.app/?text=</strong> followed by the Shortcut Input variable</p>
                   <p style={styles.overlayStep}>④ Add action <strong>"Open URLs"</strong> → input = the URL from step ③</p>
                   <p style={styles.overlayStep}>⑤ Name it <strong>"Save to ReCall"</strong> and tap Done</p>
-                  <p style={styles.overlayStep}>⑥ Now <strong>Share → Save to ReCall</strong> works from any app</p>
+                  <p style={styles.overlayStep}>⑥ Share any link → scroll to the <strong>Shortcuts</strong> row → tap <strong>Save to ReCall</strong></p>
                 </div>
               )}
             </>
@@ -1666,7 +1675,7 @@ export default function App() {
                   <p style={styles.overlayStep}>① Tap the <strong>Share</strong> icon in Safari</p>
                   <p style={styles.overlayStep}>② Tap <strong>"Add to Home Screen"</strong> → <strong>"Add"</strong></p>
                 </div>
-                <p style={styles.overlayNote}>Want 1-tap save from any app? Set up the Share Sheet Shortcut anytime in ⚙ Settings.</p>
+                <p style={styles.overlayNote}>Want 1-tap save from any app? Add the Share Sheet Shortcut anytime in ⚙ Settings — just one tap.</p>
                 <button style={styles.button} onClick={() => advanceOnboarding('install')}>Got it</button>
                 <button style={styles.overlaySkip} onClick={() => advanceOnboarding('install')}>Skip for now</button>
               </>
@@ -1893,6 +1902,7 @@ const styles = {
   settingsLink: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "20px", cursor: "pointer", fontSize: "13px" },
   settingsDivider: { height: "1px", background: "#2a2a2a" },
   settingsSectionHeading: { fontSize: "11px", fontWeight: "600", color: "#555", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 },
+  shortcutAddButton: { display: "inline-block", textAlign: "center", background: "#fff", border: "none", color: "#000", borderRadius: "10px", padding: "10px 16px", fontSize: "14px", fontWeight: "600", cursor: "pointer", textDecoration: "none" },
   tokenSection: { display: "flex", flexDirection: "column", gap: "8px" },
   tokenRow: { display: "flex", gap: "6px", alignItems: "center" },
   tokenInput: { flex: 1, background: "#111", border: "1px solid #333", borderRadius: "8px", color: "#ccc", fontSize: "13px", padding: "7px 10px", fontFamily: "ui-monospace, Consolas, monospace", minWidth: 0 },
