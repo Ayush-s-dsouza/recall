@@ -271,6 +271,29 @@ On the Save tab (and on initial load if not a share-sheet trigger), `checkClipbo
 - Substack → `substack://`
 - Unknown → `null` (falls back to `window.history.back()`)
 
+### 12. PWA Install Prompt (banner + bottom-of-page button)
+
+A `useEffect` listens for `beforeinstallprompt` (Android/desktop Chrome only — never fires on iOS Safari) and `appinstalled`:
+- `beforeinstallprompt` → `e.preventDefault()`, stores the event in `deferredInstallPrompt` state for later use (it's single-use).
+- `appinstalled` → clears `deferredInstallPrompt`, sets `justInstalled` state, and writes `recall_installed = 'true'` to `localStorage` so the install UI never reappears in this browser.
+
+`isStandalone` detects an already-installed/launched-from-home-screen session via `window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true` (the latter is iOS Safari's non-standard API).
+
+Overall visibility gate: `showInstallUI = !isStandalone && !justInstalled && (deferredInstallPrompt || isIOS || isAndroid)`.
+
+- **Banner** (`showInstallUI && !installBannerDismissed`) — renders below the header on every view. Primary button: if `deferredInstallPrompt` exists, calls `.prompt()` then awaits `.userChoice` and clears it; otherwise toggles `installStepsOpen` to reveal inline "Add to Home Screen" instructions (platform-specific copy via `installInstructions`, reusing `styles.overlaySteps`/`styles.overlayStep`). Dismiss (✕) sets `installBannerDismissed` and writes `recall_install_banner_dismissed = 'true'` to `localStorage`.
+- **Bottom-of-page button** (`showInstallUI && installBannerDismissed`) — small fallback "Install ReCall" button rendered near `legalFooter`, shown on every view once the banner has been dismissed. Same click behavior as the banner's primary action. The banner and bottom button are mutually exclusive — exactly one is always visible while `showInstallUI` is true.
+
+### 13. iOS Share Sheet (via Shortcuts app)
+
+iOS/WebKit doesn't implement the Web Share Target API, so there's no way for a PWA to register as a native Share Sheet target without an App Store app + Share Extension. Instead, on iOS (`isIOS`), the Settings panel has a "Save from any app" section (`shortcutGuideOpen` state) with a 6-step guide for building a **"Save to ReCall" Shortcut** in the iOS Shortcuts app:
+1. Create a new shortcut, enable "Use with Share Sheet" (type: URLs)
+2. Add a "URL" action: `https://recall-iota-six.vercel.app/?url=` + Shortcut Input
+3. Add an "Open URLs" action using that URL
+4. Name it "Save to ReCall"
+
+Once built, `Share → Save to ReCall` opens ReCall with `?url=<link>`, which the existing `extractSharedUrl`/`pendingUrl` flow (see #7) already handles via the `url` param fast-path — no backend or manifest changes needed. The install onboarding overlay's iOS branch points users to this guide in ⚙ Settings instead of the old "coming soon" placeholder.
+
 ---
 
 ## Supabase Schema
@@ -425,6 +448,8 @@ A lightning bolt / cursor-shaped path:
 
 19. **Filter dropdowns reset `displayCount`** — both the Source and Tag dropdowns call `setDisplayCount(5)` on change. This is intentional: switching filters should always start from the top of the filtered set, not mid-paginated.
 
+20. **Install banner and bottom button are mutually exclusive, gated by `showInstallUI`** — `recall_install_banner_dismissed` (localStorage) switches the UI from the banner to the bottom button; `recall_installed` (localStorage, set on `appinstalled`) hides both permanently. `deferredInstallPrompt` is single-use — call `.prompt()` then clear it immediately after `.userChoice` resolves. Don't gate either UI element on `isStandalone` alone — also check `justInstalled`/`recall_installed`, since `appinstalled` can fire before the page re-evaluates `display-mode: standalone`.
+
 ---
 
 ## Current Status
@@ -464,10 +489,11 @@ A lightning bolt / cursor-shaped path:
 - **Observability — PostHog** — product analytics on frontend; tracks `url_saved`, `search_performed`, `tag_edited`, `title_edited`, `save_deleted`, `share_sheet_triggered`, `account_deleted`; identifies users by Supabase UID; resets on sign-out
 - **Account deletion** — `DELETE /account` endpoint wipes all saves + deletes auth user; frontend settings panel (⚙ in header) with confirmation step
 - **Privacy Policy + Terms of Service** — inline legal view at `/privacy` and `/terms`; footer links on all views; content is factual and minimal
+- **Install banner + bottom-of-page fallback button** — persistent, dismissible "Install ReCall" banner below the header on all views; once dismissed, replaced by a small button near the footer. Uses `beforeinstallprompt`/`appinstalled` where available, falls back to platform-specific "Add to Home Screen" instructions on iOS/others
+- **iOS Share Sheet via Shortcuts guide** — Settings panel walks iOS users through building a "Save to ReCall" Shortcut that feeds the existing share-sheet URL handling
 
 ### Not Yet Built
 - Offline support / service worker caching
-- iOS Share Sheet (not supported by PWA spec yet)
 - Browser extension for desktop saving
 - Bulk import / export
 - Gemini API budget alert (Google Cloud Console — manual task)

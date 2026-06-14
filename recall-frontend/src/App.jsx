@@ -135,13 +135,42 @@ export default function App() {
   // Total save count for multi-stage milestone track
   const [totalSaveCount, setTotalSaveCount] = useState(null)
 
+  // Install prompt (banner + bottom-of-page fallback)
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null)
+  const [installBannerDismissed, setInstallBannerDismissed] = useState(() => localStorage.getItem('recall_install_banner_dismissed') === 'true')
+  const [justInstalled, setJustInstalled] = useState(() => localStorage.getItem('recall_installed') === 'true')
+  const [installStepsOpen, setInstallStepsOpen] = useState(false)
+
+  // iOS Share Sheet Shortcut setup guide (Settings)
+  const [shortcutGuideOpen, setShortcutGuideOpen] = useState(false)
+
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
   const isIOS = /iPhone|iPad/i.test(navigator.userAgent)
   const isAndroid = /Android/i.test(navigator.userAgent)
   const isDesktop = !isIOS && !isAndroid
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
+  const showInstallUI = !isStandalone && !justInstalled && (deferredInstallPrompt || isIOS || isAndroid)
 
   useEffect(() => { sessionStorage.setItem("recall_view", view) }, [view])
+
+  useEffect(() => {
+    const handleBeforeInstall = (e) => {
+      e.preventDefault()
+      setDeferredInstallPrompt(e)
+    }
+    const handleAppInstalled = () => {
+      setDeferredInstallPrompt(null)
+      setJustInstalled(true)
+      localStorage.setItem('recall_installed', 'true')
+    }
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall)
+    window.addEventListener('appinstalled', handleAppInstalled)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstall)
+      window.removeEventListener('appinstalled', handleAppInstalled)
+    }
+  }, [])
 
   useEffect(() => {
     if (view === "library" && user && Object.keys(calendarSaves).length === 0 && !calendarLoading) {
@@ -426,6 +455,16 @@ export default function App() {
       localStorage.setItem('recall_onboarding_search', 'true')
       localStorage.setItem('recall_onboarded', 'true')
       setOnboardingStep('done')
+    }
+  }
+
+  const handleInstallClick = async () => {
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt()
+      await deferredInstallPrompt.userChoice
+      setDeferredInstallPrompt(null)
+    } else {
+      setInstallStepsOpen(open => !open)
     }
   }
 
@@ -767,6 +806,17 @@ export default function App() {
     )
   }
 
+  const installInstructions = isIOS ? (
+    <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
+      <p style={styles.overlayStep}>① Tap the <strong>Share</strong> icon in Safari</p>
+      <p style={styles.overlayStep}>② Tap <strong>"Add to Home Screen"</strong> → <strong>"Add"</strong></p>
+    </div>
+  ) : (
+    <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
+      <p style={styles.overlayStep}>① Tap <strong>⋮</strong> in Chrome → <strong>"Add to Home Screen"</strong></p>
+    </div>
+  )
+
   return (
     <div style={styles.container}>
       <div style={styles.header}>
@@ -776,6 +826,27 @@ export default function App() {
           <button onClick={signOut} style={styles.signOut}>Sign out</button>
         </div>
       </div>
+
+      {showInstallUI && !installBannerDismissed && (
+        <div style={styles.installBanner}>
+          <div style={styles.installBannerRow}>
+            <span style={styles.installBannerText}>
+              {isIOS ? "Install ReCall for quick access" : "Install ReCall for one-tap saving"}
+            </span>
+            <div style={styles.installBannerActions}>
+              <button onClick={handleInstallClick} style={styles.installBannerButton}>
+                {deferredInstallPrompt ? "Install" : "Show me"}
+              </button>
+              <button
+                onClick={() => { localStorage.setItem('recall_install_banner_dismissed', 'true'); setInstallBannerDismissed(true) }}
+                style={styles.installBannerDismiss}
+                title="Dismiss"
+              >✕</button>
+            </div>
+          </div>
+          {installStepsOpen && installInstructions}
+        </div>
+      )}
 
       {showSettings && (
         <div style={styles.settingsPanel}>
@@ -827,6 +898,28 @@ export default function App() {
               </p>
               <button onClick={() => { setExternalToken(null); setTokenCopied(false) }} style={styles.tokenHideButton}>Hide token</button>
             </div>
+          )}
+
+          {isIOS && (
+            <>
+              <div style={styles.settingsDivider} />
+
+              {/* Save from any app — iOS Share Sheet Shortcut guide */}
+              <p style={styles.settingsSectionHeading}>Save from any app</p>
+              <button onClick={() => setShortcutGuideOpen(o => !o)} style={styles.settingsLink}>
+                {shortcutGuideOpen ? "Hide Share Sheet setup" : "Set up Share Sheet →"}
+              </button>
+              {shortcutGuideOpen && (
+                <div style={styles.overlaySteps}>
+                  <p style={styles.overlayStep}>① Open the <strong>Shortcuts</strong> app → tap <strong>+</strong> to create a new shortcut</p>
+                  <p style={styles.overlayStep}>② Tap the <strong>ⓘ</strong> info button → enable <strong>"Use with Share Sheet"</strong>, set type to <strong>URLs</strong></p>
+                  <p style={styles.overlayStep}>③ Add action <strong>"URL"</strong> → set it to <strong>https://recall-iota-six.vercel.app/?url=</strong> followed by the Shortcut Input variable</p>
+                  <p style={styles.overlayStep}>④ Add action <strong>"Open URLs"</strong> → input = the URL from step ③</p>
+                  <p style={styles.overlayStep}>⑤ Name it <strong>"Save to ReCall"</strong> and tap Done</p>
+                  <p style={styles.overlayStep}>⑥ Now <strong>Share → Save to ReCall</strong> works from any app</p>
+                </div>
+              )}
+            </>
           )}
 
           <div style={styles.settingsDivider} />
@@ -1573,7 +1666,7 @@ export default function App() {
                   <p style={styles.overlayStep}>① Tap the <strong>Share</strong> icon in Safari</p>
                   <p style={styles.overlayStep}>② Tap <strong>"Add to Home Screen"</strong> → <strong>"Add"</strong></p>
                 </div>
-                <p style={styles.overlayNote}>iOS Shortcut (1-tap save from any app) — coming soon</p>
+                <p style={styles.overlayNote}>Want 1-tap save from any app? Set up the Share Sheet Shortcut anytime in ⚙ Settings.</p>
                 <button style={styles.button} onClick={() => advanceOnboarding('install')}>Got it</button>
                 <button style={styles.overlaySkip} onClick={() => advanceOnboarding('install')}>Skip for now</button>
               </>
@@ -1618,6 +1711,15 @@ export default function App() {
             onClick={() => { advanceOnboarding('firstSearch'); setView('search'); setTimeout(() => searchInputRef.current?.focus(), 100) }}
           >Search now →</button>
           <button style={styles.nudgeDismiss} onClick={() => advanceOnboarding('firstSearch')}>✕</button>
+        </div>
+      )}
+
+      {showInstallUI && installBannerDismissed && (
+        <div style={styles.installFooterWrap}>
+          <button onClick={handleInstallClick} style={styles.installFooterButton}>
+            {deferredInstallPrompt ? "Install ReCall" : installStepsOpen ? "Hide install steps" : "Install ReCall"}
+          </button>
+          {installStepsOpen && installInstructions}
         </div>
       )}
 
@@ -1814,6 +1916,16 @@ const styles = {
   // Legal footer
   legalFooter: { display: "flex", justifyContent: "center", alignItems: "center", gap: "8px", padding: "24px 0 16px", marginTop: "8px" },
   legalFooterLink: { background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "12px", padding: 0 },
+
+  // Install banner + bottom-of-page fallback button
+  installBanner: { display: "flex", flexDirection: "column", gap: "8px", background: "rgba(167,139,250,0.07)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "12px", padding: "10px 14px", marginBottom: "16px" },
+  installBannerRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" },
+  installBannerText: { fontSize: "13px", color: "#ccc", flex: 1, lineHeight: 1.4 },
+  installBannerActions: { display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 },
+  installBannerButton: { background: "#fff", border: "none", color: "#000", borderRadius: "8px", padding: "7px 14px", fontSize: "13px", fontWeight: "600", cursor: "pointer", whiteSpace: "nowrap" },
+  installBannerDismiss: { background: "none", border: "none", color: "#555", fontSize: "16px", cursor: "pointer", padding: "0 2px", lineHeight: 1, flexShrink: 0 },
+  installFooterWrap: { display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", padding: "8px 0 0" },
+  installFooterButton: { background: "none", border: "1px solid #333", color: "#888", padding: "8px 18px", borderRadius: "20px", cursor: "pointer", fontSize: "13px" },
 
   // Ask / Search mode toggle
   modeToggle: { display: "flex", gap: "4px", background: "#111", borderRadius: "20px", padding: "3px", alignSelf: "flex-start" },
