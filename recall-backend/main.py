@@ -168,17 +168,17 @@ def get_source_label(url: str) -> str:
     except:
         return "Page"
 
-def get_embedding(text: str):
+async def get_embedding(text: str):
     api_key = os.getenv("GEMINI_API_KEY")
-    response = httpx.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={api_key}",
-        json={
-            "model": "models/gemini-embedding-001",
-            "content": {"parts": [{"text": text[:8000]}]},
-            "outputDimensionality": 768
-        },
-        timeout=30.0
-    )
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={api_key}",
+            json={
+                "model": "models/gemini-embedding-001",
+                "content": {"parts": [{"text": text[:8000]}]},
+                "outputDimensionality": 768
+            }
+        )
     data = response.json()
     if "embedding" not in data:
         print(f"[embedding] Gemini API error (status {response.status_code}): {data}", flush=True)
@@ -220,6 +220,18 @@ Respond with exactly three lines, nothing else."""
     except:
         return raw_title, "Other"
 
+async def extract_save_metadata_async(raw_title: str, content: str, extra_context: str = ""):
+    """Runs extract_save_metadata in a thread with a bounded timeout so a slow/rate-limited
+    Gemini call can't block the event loop — falls back like extract_save_metadata's own except."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_executor, extract_save_metadata, raw_title, content, extra_context),
+            timeout=12.0
+        )
+    except asyncio.TimeoutError:
+        return raw_title, "Other"
+
 def extract_og_tags(html: str) -> dict:
     """Extract Open Graph and meta description tags from raw HTML."""
     result = {}
@@ -253,19 +265,26 @@ async def analyze_image(image_url: str) -> str:
             # Force a safe mime type if CDN returns octet-stream
             if mime_type == "application/octet-stream":
                 mime_type = "image/jpeg"
-        response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[
-                types.Content(role="user", parts=[
-                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                    types.Part.from_text(
-                        "Describe what this image contains in 2-3 sentences. "
-                        "If there is visible text, include it. Focus on the main subject, "
-                        "people, brands, or key information shown."
-                    )
-                ])
-            ],
-            config=_NO_THINKING
+        loop = asyncio.get_running_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                _executor,
+                lambda: gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[
+                        types.Content(role="user", parts=[
+                            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                            types.Part.from_text(
+                                "Describe what this image contains in 2-3 sentences. "
+                                "If there is visible text, include it. Focus on the main subject, "
+                                "people, brands, or key information shown."
+                            )
+                        ])
+                    ],
+                    config=_NO_THINKING
+                )
+            ),
+            timeout=12.0
         )
         return response.text.strip()
     except:
@@ -458,8 +477,8 @@ async def save_url(req: SaveRequest, request: Request):
                         raw_title = og.get("og:title") or req.url
                 except:
                     raw_title = req.url
-            embedding = get_embedding(raw_title)
-            _, tag = extract_save_metadata(raw_title, "", "")
+            embedding = await get_embedding(raw_title)
+            _, tag = await extract_save_metadata_async(raw_title, "", "")
             try:
                 result = supabase.table("saves").insert({
                     "user_id": user_id,
@@ -580,19 +599,23 @@ async def save_url(req: SaveRequest, request: Request):
         if len((clean_text + extra_context).strip()) < QUALITY_THRESHOLD:
             return {"thin_content": True, "url": req.url}
 
-    title, tag = extract_save_metadata(title, clean_text, extra_context)
-    embedding = get_embedding(f"{title} {clean_text}")
+    title, tag = await extract_save_metadata_async(title, clean_text, extra_context)
+    embedding = await get_embedding(f"{title} {clean_text}")
 
-    result = supabase.table("saves").insert({
-        "user_id": user_id,
-        "url": req.url,
-        "title": title,
-        "content_text": clean_text,
-        "embedding": embedding,
-        "tag": tag,
-        "content_type": "article"
-    }).execute()
-    inserted_id = result.data[0]["id"]
+    try:
+        result = supabase.table("saves").insert({
+            "user_id": user_id,
+            "url": req.url,
+            "title": title,
+            "content_text": clean_text,
+            "embedding": embedding,
+            "tag": tag,
+            "content_type": "article"
+        }).execute()
+        inserted_id = result.data[0]["id"]
+    except Exception as e:
+        print(f"[save] DB insert failed: {e}", flush=True)
+        raise HTTPException(status_code=500, detail="DB insert failed")
 
     # Find semantically related saves and store cross-references (best-effort)
     related_ids = []
@@ -617,14 +640,21 @@ async def expand_search_query(query: str) -> str:
     if len(query.split()) >= 6:
         return query  # already specific enough — skip Gemini call
     try:
-        response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=(
-                "Rewrite this search query as a short phrase with 3-5 related synonyms "
-                "and concepts to improve semantic search. Return only the expanded query, no explanation.\n"
-                f"Query: {query}"
+        loop = asyncio.get_running_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                _executor,
+                lambda: gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=(
+                        "Rewrite this search query as a short phrase with 3-5 related synonyms "
+                        "and concepts to improve semantic search. Return only the expanded query, no explanation.\n"
+                        f"Query: {query}"
+                    ),
+                    config=_NO_THINKING
+                )
             ),
-            config=_NO_THINKING
+            timeout=8.0
         )
         return response.text.strip()
     except Exception:
@@ -640,7 +670,7 @@ async def search(req: SearchRequest, request: Request):
 
     # Expand short queries before embedding to improve semantic recall; FTS uses original
     q_expanded = await expand_search_query(req.query)
-    query_embedding = get_embedding(q_expanded)
+    query_embedding = await get_embedding(q_expanded)
     semantic_result = supabase.rpc("match_saves", {
         "query_embedding": query_embedding,
         "match_user_id": user_id,
@@ -802,7 +832,7 @@ async def ask_recall(req: AskRequest, request: Request):
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    query_embedding = get_embedding(req.query)
+    query_embedding = await get_embedding(req.query)
     semantic_result = supabase.rpc("match_saves", {
         "query_embedding": query_embedding,
         "match_user_id": user_id,

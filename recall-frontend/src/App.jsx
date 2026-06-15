@@ -560,11 +560,19 @@ export default function App() {
     setEditingTag(false)
     try {
       const token = await getToken()
-      const res = await fetch(`${BACKEND}/save`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, token })
-      })
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 20000)
+      let res
+      try {
+        res = await fetch(`${BACKEND}/save`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url, token }),
+          signal: controller.signal
+        })
+      } finally {
+        clearTimeout(timeoutId)
+      }
       if (!res.ok) throw new Error()
       const data = await res.json()
       if (data.media) {
@@ -609,9 +617,13 @@ export default function App() {
           setTimeout(() => advanceOnboarding('firstSave'), 600)
         }
       }
-    } catch {
+    } catch (err) {
       setSaveReceipt(null)
-      setMessage(`Failed to save from ${getSourceLabel(url)}. Try again.`)
+      if (err?.name === "AbortError") {
+        setMessage("ReCall is taking longer than usual — please try again in a moment.")
+      } else {
+        setMessage(`Failed to save from ${getSourceLabel(url)}. Try again.`)
+      }
       setIsError(true)
     }
     setLoading(false)
