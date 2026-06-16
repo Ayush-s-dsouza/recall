@@ -145,8 +145,14 @@ export default function App() {
   // iOS Share Sheet Shortcut setup guide (Settings)
   const [shortcutGuideOpen, setShortcutGuideOpen] = useState(false)
 
+  // Bookmark import (Settings)
+  const [importJob, setImportJob] = useState(null)
+  const [importUploading, setImportUploading] = useState(false)
+
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
+  const importFileInputRef = useRef(null)
+  const importPollRef = useRef(null)
   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
   const isAndroid = /Android/i.test(navigator.userAgent)
   const isDesktop = !isIOS && !isAndroid
@@ -172,6 +178,8 @@ export default function App() {
       window.removeEventListener('appinstalled', handleAppInstalled)
     }
   }, [])
+
+  useEffect(() => () => clearInterval(importPollRef.current), [])
 
   useEffect(() => {
     if (view === "library" && user && Object.keys(calendarSaves).length === 0 && !calendarLoading) {
@@ -333,6 +341,26 @@ export default function App() {
         fetchLibraryFilters()
         fetchSuggestions()
         fetchSaveCount()
+        // Resume any in-progress bookmark import
+        const savedJobId = localStorage.getItem("recall_import_job_id")
+        if (savedJobId) {
+          pollImportStatus(savedJobId)
+        } else {
+          getToken().then(token => {
+            fetch(`${BACKEND}/import/jobs/latest`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ token }),
+            }).then(r => r.json()).then(({ job }) => {
+              if (job?.status === "running") {
+                localStorage.setItem("recall_import_job_id", job.id)
+                pollImportStatus(job.id)
+              } else if (job) {
+                setImportJob(job)
+              }
+            }).catch(() => {})
+          })
+        }
         // Restore last search session
         const savedQuery = sessionStorage.getItem("recall_last_query")
         const savedResults = sessionStorage.getItem("recall_last_results")
@@ -472,6 +500,62 @@ export default function App() {
   const getToken = async () => {
     const { data: { session } } = await supabase.auth.getSession()
     return session?.access_token
+  }
+
+  const pollImportStatus = (jobId) => {
+    if (importPollRef.current) clearInterval(importPollRef.current)
+    const tick = async () => {
+      try {
+        const token = await getToken()
+        const res = await fetch(`${BACKEND}/import/status/${jobId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        })
+        if (!res.ok) { clearInterval(importPollRef.current); return }
+        const job = await res.json()
+        setImportJob(job)
+        if (job.status !== "running") {
+          clearInterval(importPollRef.current)
+          localStorage.removeItem("recall_import_job_id")
+          posthog.capture("x_bookmarks_import_finished", { status: job.status, succeeded: job.succeeded })
+          if (job.succeeded > 0) fetchTodaySaves()
+        }
+      } catch {
+        clearInterval(importPollRef.current)
+      }
+    }
+    tick()
+    importPollRef.current = setInterval(tick, 5000)
+  }
+
+  const handleImportFileChange = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImportUploading(true)
+    try {
+      const token = await getToken()
+      const formData = new FormData()
+      formData.append("token", token)
+      formData.append("file", file)
+      const res = await fetch(`${BACKEND}/import/x-bookmarks`, { method: "POST", body: formData })
+      const data = await res.json()
+      if (!res.ok) {
+        setMessage(data.detail || "Import failed")
+        setIsError(true)
+        return
+      }
+      localStorage.setItem("recall_import_job_id", data.job_id)
+      posthog.capture("x_bookmarks_import_started", { total: data.total, capped: data.capped })
+      if (data.capped) setMessage(`Found ${data.total_found} bookmarks — importing the most recent ${data.total}.`)
+      pollImportStatus(data.job_id)
+    } catch {
+      setMessage("Import failed — try again")
+      setIsError(true)
+    } finally {
+      setImportUploading(false)
+      e.target.value = ""
+    }
   }
 
   const updateSaveTitle = async (newTitle) => {
@@ -911,6 +995,66 @@ export default function App() {
               </p>
               <button onClick={() => { setExternalToken(null); setTokenCopied(false) }} style={styles.tokenHideButton}>Hide token</button>
             </div>
+          )}
+
+          <div style={styles.settingsDivider} />
+
+          {/* Import X bookmarks */}
+          <p style={styles.settingsSectionHeading}>Import your X bookmarks</p>
+          {!importJob || importJob.status === "completed" || importJob.status === "stalled" ? (
+            <>
+              <p style={styles.overlayNote}>
+                Use a browser extension that exports your X bookmarks as JSON or CSV (search your browser's extension store for "export twitter bookmarks"). Upload the file below — ReCall reads any format that includes links to your bookmarked posts.
+              </p>
+              <input
+                ref={importFileInputRef}
+                type="file"
+                accept=".json,.csv,.txt,.js,.zip"
+                onChange={handleImportFileChange}
+                style={{ display: "none" }}
+              />
+              <button
+                onClick={() => importFileInputRef.current?.click()}
+                style={styles.settingsLink}
+                disabled={importUploading}
+              >
+                {importUploading ? "Uploading…" : "Choose bookmarks file"}
+              </button>
+              {importJob?.status === "completed" && (
+                <p style={styles.overlayNote}>
+                  Last import: <strong>{importJob.succeeded}</strong> added,{" "}
+                  {importJob.duplicates} already saved, {importJob.skipped} skipped,{" "}
+                  {importJob.failed} failed.
+                </p>
+              )}
+              {importJob?.status === "stalled" && (
+                <p style={styles.overlayNote}>
+                  Last import stalled ({importJob.processed}/{importJob.total} done). Re-upload the file to continue — already-imported bookmarks are skipped automatically.
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <p style={styles.overlayNote}>
+                Importing… {importJob.processed} / {importJob.total}
+                {importJob.duplicates > 0 || importJob.skipped > 0 || importJob.failed > 0
+                  ? ` (${[
+                      importJob.duplicates > 0 ? `${importJob.duplicates} duplicate${importJob.duplicates !== 1 ? "s" : ""}` : null,
+                      importJob.skipped > 0 ? `${importJob.skipped} skipped` : null,
+                      importJob.failed > 0 ? `${importJob.failed} failed` : null,
+                    ].filter(Boolean).join(", ")})`
+                  : ""}
+              </p>
+              <div style={{ height: 4, background: "#222", borderRadius: 2, margin: "4px 0 8px" }}>
+                <div style={{
+                  height: "100%",
+                  width: `${importJob.total > 0 ? Math.round((importJob.processed / importJob.total) * 100) : 0}%`,
+                  background: "#4ade80",
+                  borderRadius: 2,
+                  transition: "width 0.4s ease",
+                }} />
+              </div>
+            </>
           )}
 
           {isIOS && (

@@ -6,3 +6,4 @@ google-genai>=1.0.0,<2.0.0
 httpx
 slowapi
 sentry-sdk[fastapi]
+python-multipart

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -7,11 +7,14 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import os
 import re
+import io
 import socket
 import ipaddress
 import json
+import zipfile
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone, timedelta
 import httpx
 import asyncio
 import sentry_sdk
@@ -132,6 +135,9 @@ class SaveWikiRequest(BaseModel):
 class WikiTokenRequest(BaseModel):
     token: str
 
+class ImportStatusRequest(BaseModel):
+    token: str
+
 MEDIA_URLS = [
     ("youtube.com/watch",    "video", "YouTube videos"),
     ("youtube.com/shorts/",  "video", "YouTube Shorts"),
@@ -142,6 +148,9 @@ MEDIA_URLS = [
 ]
 QUALITY_THRESHOLD = 100  # chars — below this, content is too thin to be useful
 ASK_MIN_RELEVANCE = 0.5  # cosine similarity floor for /ask context — filters weakly-related saves
+MAX_IMPORT_ITEMS = 500  # cap per bulk import job to bound Gemini/Jina usage
+IMPORT_DELAY_SECONDS = int(os.getenv("IMPORT_DELAY_SECONDS", "3"))
+TWEET_URL_RE = re.compile(r'(?:twitter\.com|x\.com)/\w{1,15}/status/(\d{1,20})')
 
 def get_user_id(token: str):
     user = supabase.auth.get_user(token)
@@ -441,19 +450,19 @@ async def fetch_og_html(url: str) -> str:
     except Exception:
         return ""
 
-@app.post("/save")
-@limiter.limit("10/minute")
-async def save_url(req: SaveRequest, request: Request):
-    try:
-        user_id = get_user_id(req.token)
-    except:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    validate_url(req.url)
-
+async def process_save(url: str, user_id: str) -> dict:
+    """Core save pipeline shared by /save and the bookmark import job.
+    Returns one of:
+      {"duplicate": True, "id", "title", "tag", "created_at"}
+      {"thin_content": True, "url"}
+      {"success": True, "media": True, "content_type", "label", "title", "tag", "id"}
+      {"success": True, "title", "tag", "id", "related_ids"}
+      {"error": True, "url", "detail"}
+    Never raises — import loop can safely tally result dicts without try/except per call.
+    """
     existing = supabase.table("saves") \
         .select("id, title, tag, created_at") \
-        .eq("user_id", user_id).eq("url", req.url) \
+        .eq("user_id", user_id).eq("url", url) \
         .limit(1).execute()
     if existing.data:
         row = existing.data[0]
@@ -462,27 +471,27 @@ async def save_url(req: SaveRequest, request: Request):
 
     # --- Media URL detection: lightweight save, skip full Gemini pipeline ---
     for pattern, ctype, label in MEDIA_URLS:
-        if pattern in req.url:
-            if "youtube.com" in req.url or "youtu.be" in req.url:
-                yt_title, yt_author = await fetch_youtube(req.url)
+        if pattern in url:
+            if "youtube.com" in url or "youtu.be" in url:
+                yt_title, yt_author = await fetch_youtube(url)
                 if yt_title:
                     raw_title = f"{yt_title} · {yt_author}" if yt_author else yt_title
                 else:
-                    raw_title = req.url
+                    raw_title = url
             else:
                 try:
                     async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-                        r = await client.get(req.url, follow_redirects=True)
+                        r = await client.get(url, follow_redirects=True)
                         og = extract_og_tags(r.text[:5000])
-                        raw_title = og.get("og:title") or req.url
+                        raw_title = og.get("og:title") or url
                 except:
-                    raw_title = req.url
+                    raw_title = url
             embedding = await get_embedding(raw_title)
             _, tag = await extract_save_metadata_async(raw_title, "", "")
             try:
                 result = supabase.table("saves").insert({
                     "user_id": user_id,
-                    "url": req.url,
+                    "url": url,
                     "title": raw_title,
                     "content_text": "",
                     "embedding": embedding,
@@ -492,21 +501,23 @@ async def save_url(req: SaveRequest, request: Request):
                 inserted_id = result.data[0]["id"]
             except Exception as e:
                 print(f"[media save] DB insert failed: {e}", flush=True)
-                raise HTTPException(status_code=500, detail="DB insert failed — content_type column may be missing")
+                return {"error": True, "url": url, "detail": "DB insert failed"}
             return {"success": True, "media": True, "content_type": ctype,
                     "label": label, "title": raw_title, "tag": tag, "id": inserted_id}
 
-    is_tweet = "x.com" in req.url or "twitter.com" in req.url
-    is_instagram = "instagram.com" in req.url
-    is_linkedin = "linkedin.com" in req.url
+    is_tweet = "x.com" in url or "twitter.com" in url
+    is_instagram = "instagram.com" in url
+    is_linkedin = "linkedin.com" in url
 
     extra_context = ""
 
     if is_tweet:
-        clean_text, tweet_author = await fetch_tweet(req.url)
-        title = tweet_author or req.url
+        clean_text, tweet_author = await fetch_tweet(url)
+        title = tweet_author or url
+        if len(clean_text.strip()) < QUALITY_THRESHOLD:
+            return {"thin_content": True, "url": url}
     elif is_instagram:
-        caption, author, thumbnail_url = await fetch_instagram(req.url)
+        caption, author, thumbnail_url = await fetch_instagram(url)
         clean_text = caption
         title = author or "Instagram"
         # If caption is sparse, analyze the thumbnail image
@@ -517,8 +528,8 @@ async def save_url(req: SaveRequest, request: Request):
                 clean_text = (clean_text + "\n\n" + extra_context).strip()
     elif is_linkedin:
         (jina_text, jina_title), raw_html = await asyncio.gather(
-            fetch_with_jina(req.url),
-            fetch_og_html(req.url)
+            fetch_with_jina(url),
+            fetch_og_html(url)
         )
         og = extract_og_tags(raw_html)
         og_title = og.get("og:title", "")
@@ -536,14 +547,14 @@ async def save_url(req: SaveRequest, request: Request):
             combined = combined.replace(noise, "")
         clean_text = re.sub(r'\s{2,}', ' ', combined).strip()
 
-        title = og_title or jina_title or req.url
+        title = og_title or jina_title or url
         if len(clean_text.strip()) < QUALITY_THRESHOLD:
-            return {"thin_content": True, "url": req.url}
+            return {"thin_content": True, "url": url}
     else:
         # Run Jina Reader and raw OG fetch concurrently for speed
         (jina_text, jina_title), raw_html = await asyncio.gather(
-            fetch_with_jina(req.url),
-            fetch_og_html(req.url)
+            fetch_with_jina(url),
+            fetch_og_html(url)
         )
 
         title_match = re.search(r'<title>(.*?)</title>', raw_html, re.IGNORECASE)
@@ -556,7 +567,7 @@ async def save_url(req: SaveRequest, request: Request):
         if jina_text:
             # Jina succeeded — use its clean rendered content
             clean_text = jina_text
-            title = jina_title or og_title or html_title or req.url
+            title = jina_title or og_title or html_title or url
         else:
             # Jina failed — fall back to HTML parse of raw page
             from html.parser import HTMLParser
@@ -577,10 +588,10 @@ async def save_url(req: SaveRequest, request: Request):
             parser = TextExtractor()
             parser.feed(raw_html)
             clean_text = " ".join(t for t in parser.text if t)[:5000]
-            title = og_title or html_title or req.url
+            title = og_title or html_title or url
 
         # Prefer og:title when current title is generic
-        if og_title and (not title or title == req.url):
+        if og_title and (not title or title == url):
             title = og_title
 
         # Build extra context: OG description + vision analysis for sparse pages
@@ -597,7 +608,7 @@ async def save_url(req: SaveRequest, request: Request):
             clean_text = (clean_text + "\n\n" + extra_context)[:5000]
 
         if len((clean_text + extra_context).strip()) < QUALITY_THRESHOLD:
-            return {"thin_content": True, "url": req.url}
+            return {"thin_content": True, "url": url}
 
     title, tag = await extract_save_metadata_async(title, clean_text, extra_context)
     embedding = await get_embedding(f"{title} {clean_text}")
@@ -605,7 +616,7 @@ async def save_url(req: SaveRequest, request: Request):
     try:
         result = supabase.table("saves").insert({
             "user_id": user_id,
-            "url": req.url,
+            "url": url,
             "title": title,
             "content_text": clean_text,
             "embedding": embedding,
@@ -615,7 +626,7 @@ async def save_url(req: SaveRequest, request: Request):
         inserted_id = result.data[0]["id"]
     except Exception as e:
         print(f"[save] DB insert failed: {e}", flush=True)
-        raise HTTPException(status_code=500, detail="DB insert failed")
+        return {"error": True, "url": url, "detail": "DB insert failed"}
 
     # Find semantically related saves and store cross-references (best-effort)
     related_ids = []
@@ -634,6 +645,22 @@ async def save_url(req: SaveRequest, request: Request):
         pass  # Silently skip if RPC/column not yet set up in Supabase
 
     return {"success": True, "title": title, "tag": tag, "id": inserted_id, "related_ids": related_ids}
+
+
+@app.post("/save")
+@limiter.limit("10/minute")
+async def save_url(req: SaveRequest, request: Request):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    validate_url(req.url)
+
+    result = await process_save(req.url, user_id)
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail=result["detail"])
+    return result
 
 async def expand_search_query(query: str) -> str:
     """Expand a short query with related synonyms/concepts to improve semantic recall."""
@@ -1027,6 +1054,157 @@ async def delete_wiki_insight(wiki_id: str, req: WikiTokenRequest):
     supabase.table("wiki_pages").delete() \
         .eq("id", wiki_id).eq("user_id", user_id).execute()
     return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# Bookmark import — helpers and endpoints
+# ---------------------------------------------------------------------------
+
+def extract_tweet_ids(raw: bytes, filename: str) -> list[str]:
+    """Extract tweet IDs from any bookmark export (JSON, CSV, .js, or zip archive)
+    by scanning for x.com/twitter.com status URLs. Format-agnostic — works with
+    any export tool's output as long as the file contains links back to the posts."""
+    texts = []
+    if raw[:2] == b"PK":  # zip magic bytes
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                for name in zf.namelist():
+                    if name.lower().endswith((".js", ".json", ".csv", ".txt")):
+                        texts.append(zf.read(name).decode("utf-8", errors="ignore"))
+        except zipfile.BadZipFile:
+            texts.append(raw.decode("utf-8", errors="ignore"))
+    else:
+        texts.append(raw.decode("utf-8", errors="ignore"))
+
+    seen, ids = set(), []
+    for text in texts:
+        for m in TWEET_URL_RE.finditer(text):
+            tid = m.group(1)
+            if tid not in seen:
+                seen.add(tid)
+                ids.append(tid)
+    return ids
+
+
+def tweet_id_to_url(tweet_id: str) -> str:
+    return f"https://x.com/i/web/status/{tweet_id}"
+
+
+async def run_import_job(job_id: str, user_id: str, tweet_ids: list[str]):
+    succeeded = duplicates = failed = skipped = 0
+    for i, tid in enumerate(tweet_ids):
+        url = tweet_id_to_url(tid)
+        try:
+            validate_url(url)
+            result = await process_save(url, user_id)
+            if result.get("duplicate"):
+                duplicates += 1
+            elif result.get("thin_content"):
+                skipped += 1
+            elif result.get("success"):
+                succeeded += 1
+            else:
+                failed += 1
+        except Exception as e:
+            print(f"[import {job_id}] item {tid} failed: {e}", flush=True)
+            failed += 1
+
+        try:
+            supabase.table("import_jobs").update({
+                "processed": i + 1, "succeeded": succeeded, "duplicates": duplicates,
+                "failed": failed, "skipped": skipped,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", job_id).execute()
+        except Exception as e:
+            print(f"[import {job_id}] status update failed: {e}", flush=True)
+
+        if i < len(tweet_ids) - 1:
+            await asyncio.sleep(IMPORT_DELAY_SECONDS)
+
+    try:
+        supabase.table("import_jobs").update({
+            "status": "completed",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", job_id).execute()
+    except Exception as e:
+        print(f"[import {job_id}] final status update failed: {e}", flush=True)
+
+
+@app.post("/import/x-bookmarks")
+@limiter.limit("2/hour")
+async def import_x_bookmarks(request: Request, token: str = Form(...), file: UploadFile = File(...)):
+    try:
+        user_id = get_user_id(token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    raw = await file.read()
+    if len(raw) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+
+    all_ids = extract_tweet_ids(raw, file.filename or "")
+    if not all_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="No X/Twitter bookmark links found in this file. Make sure you exported with a tool that includes links to the posts."
+        )
+
+    existing_job = supabase.table("import_jobs") \
+        .select("id").eq("user_id", user_id).eq("status", "running").limit(1).execute()
+    if existing_job.data:
+        raise HTTPException(status_code=409, detail="An import is already in progress")
+
+    tweet_ids = all_ids[:MAX_IMPORT_ITEMS]
+    job = supabase.table("import_jobs").insert({
+        "user_id": user_id, "source": "x_bookmarks", "status": "running",
+        "total": len(tweet_ids), "processed": 0, "succeeded": 0,
+        "duplicates": 0, "skipped": 0, "failed": 0,
+    }).execute()
+    job_id = job.data[0]["id"]
+
+    asyncio.create_task(run_import_job(job_id, user_id, tweet_ids))
+
+    return {
+        "job_id": job_id,
+        "total": len(tweet_ids),
+        "total_found": len(all_ids),
+        "capped": len(all_ids) > len(tweet_ids),
+    }
+
+
+@app.post("/import/status/{job_id}")
+async def import_status(job_id: str, req: ImportStatusRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    result = supabase.table("import_jobs").select("*") \
+        .eq("id", job_id).eq("user_id", user_id).limit(1).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = result.data[0]
+    # Surface stalled jobs — asyncio task dies if Railway restarts mid-import
+    if job["status"] == "running":
+        updated = datetime.fromisoformat(job["updated_at"])
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - updated > timedelta(minutes=2):
+            job["status"] = "stalled"
+    return job
+
+
+@app.post("/import/jobs/latest")
+async def latest_import_job(req: ImportStatusRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    result = supabase.table("import_jobs").select("*") \
+        .eq("user_id", user_id).order("created_at", desc=True).limit(1).execute()
+    return {"job": result.data[0] if result.data else None}
 
 
 @app.get("/")
