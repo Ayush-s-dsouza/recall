@@ -13,7 +13,7 @@ import socket
 import ipaddress
 import json
 import zipfile
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 import httpx
@@ -499,6 +499,21 @@ async def process_save(url: str, user_id: str) -> dict:
       {"error": True, "url", "detail"}
     Never raises — import loop can safely tally result dicts without try/except per call.
     """
+    # Resolve LinkedIn safety redirects to the actual destination URL
+    if "linkedin.com/safety/go" in url:
+        try:
+            params = parse_qs(urlparse(url).query)
+            target = params.get("url", [""])[0]
+            if target:
+                async with httpx.AsyncClient(timeout=8, follow_redirects=True,
+                        headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+                    r = await client.get(target)
+                    resolved = str(r.url)
+                validate_url(resolved)
+                url = resolved
+        except Exception:
+            pass
+
     existing = supabase.table("saves") \
         .select("id, title, tag, created_at") \
         .eq("user_id", user_id).eq("url", url) \
