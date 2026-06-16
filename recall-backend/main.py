@@ -408,12 +408,14 @@ async def _fetch_tweet_oembed(url: str) -> tuple[str, str, str]:
 
 async def fetch_tweet(url: str):
     """Jina Reader for richer content (quoted tweets, linked previews); oEmbed as author source + text fallback."""
-    (jina_text, jina_title), (oembed_text, author, tco_url) = await asyncio.gather(
+    (jina_text, jina_title), (oembed_text, author, tco_url), og_html = await asyncio.gather(
         fetch_with_jina(url),
-        _fetch_tweet_oembed(url)
+        _fetch_tweet_oembed(url),
+        fetch_og_html(url)
     )
+    og_title = extract_og_tags(og_html).get("og:title", "")
     content = jina_text if len(jina_text) > len(oembed_text) else oembed_text
-    return content, author, jina_title, tco_url
+    return content, author, jina_title or og_title, tco_url
 
 async def fetch_with_jina(url: str) -> tuple[str, str]:
     """Fetch clean article content via Jina Reader (handles JS rendering, 'read more', etc).
@@ -522,12 +524,16 @@ async def process_save(url: str, user_id: str) -> dict:
                     r = await client.get(tco_url)
                     final_url = str(r.url)
                 if "x.com/i/article/" in final_url or "twitter.com/i/article/" in final_url:
-                    # X Article — Jina can read the full content
-                    article_jina_text, article_jina_title = await fetch_with_jina(final_url)
+                    # X Article — try OG tags and Jina in parallel
+                    (article_jina_text, article_jina_title), article_og_html = await asyncio.gather(
+                        fetch_with_jina(final_url),
+                        fetch_og_html(final_url)
+                    )
+                    article_og_title = extract_og_tags(article_og_html).get("og:title", "")
                     if article_jina_text:
                         clean_text = article_jina_text
-                    article_title = article_jina_title
-                    print(f"[tweet] X Article detected — jina_title={repr(article_jina_title)} content_len={len(clean_text)}", flush=True)
+                    article_title = article_og_title or article_jina_title
+                    print(f"[tweet] X Article — og_title={repr(article_og_title)} jina_title={repr(article_jina_title)} content_len={len(clean_text)}", flush=True)
                 elif "twitter.com" not in final_url and "x.com" not in final_url:
                     og = extract_og_tags(r.text[:5000])
                     article_title = og.get("og:title", "")
