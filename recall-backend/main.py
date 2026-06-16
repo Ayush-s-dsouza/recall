@@ -514,8 +514,6 @@ async def process_save(url: str, user_id: str) -> dict:
     if is_tweet:
         clean_text, tweet_author, jina_title = await fetch_tweet(url)
         title = jina_title or tweet_author or url
-        if len(clean_text.strip()) < QUALITY_THRESHOLD:
-            return {"thin_content": True, "url": url}
     elif is_instagram:
         caption, author, thumbnail_url = await fetch_instagram(url)
         clean_text = caption
