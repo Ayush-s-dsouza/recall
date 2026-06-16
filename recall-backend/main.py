@@ -387,8 +387,8 @@ async def fetch_youtube(url: str):
     except:
         return "", ""
 
-async def _fetch_tweet_oembed(url: str) -> tuple[str, str]:
-    """oEmbed gives reliable author name + basic tweet text as fallback."""
+async def _fetch_tweet_oembed(url: str) -> tuple[str, str, str]:
+    """oEmbed gives reliable author name + basic tweet text + first linked URL."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             res = await client.get(
@@ -399,20 +399,21 @@ async def _fetch_tweet_oembed(url: str) -> tuple[str, str]:
         data = res.json()
         author = data.get("author_name", "")
         raw_html = data.get("html", "")
+        tco_urls = re.findall(r'href="(https://t\.co/[^"]+)"', raw_html)
         text = re.sub(r'<[^>]+>', ' ', raw_html)
         text = re.sub(r'\s+', ' ', text).strip()
-        return text, author
+        return text, author, tco_urls[0] if tco_urls else ""
     except Exception:
-        return "", ""
+        return "", "", ""
 
 async def fetch_tweet(url: str):
     """Jina Reader for richer content (quoted tweets, linked previews); oEmbed as author source + text fallback."""
-    (jina_text, jina_title), (oembed_text, author) = await asyncio.gather(
+    (jina_text, jina_title), (oembed_text, author, tco_url) = await asyncio.gather(
         fetch_with_jina(url),
         _fetch_tweet_oembed(url)
     )
     content = jina_text if len(jina_text) > len(oembed_text) else oembed_text
-    return content, author, jina_title
+    return content, author, jina_title, tco_url
 
 async def fetch_with_jina(url: str) -> tuple[str, str]:
     """Fetch clean article content via Jina Reader (handles JS rendering, 'read more', etc).
@@ -512,8 +513,19 @@ async def process_save(url: str, user_id: str) -> dict:
     extra_context = ""
 
     if is_tweet:
-        clean_text, tweet_author, jina_title = await fetch_tweet(url)
-        title = clean_text[:100].strip() if clean_text else tweet_author or url
+        clean_text, tweet_author, jina_title, tco_url = await fetch_tweet(url)
+        article_title = ""
+        if tco_url and is_safe_url(tco_url):
+            try:
+                async with httpx.AsyncClient(timeout=8, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+                    r = await client.get(tco_url)
+                    final_url = str(r.url)
+                    if "twitter.com" not in final_url and "x.com" not in final_url:
+                        og = extract_og_tags(r.text[:5000])
+                        article_title = og.get("og:title", "")
+            except Exception:
+                pass
+        title = article_title or (jina_title if len(clean_text) > 400 else "") or clean_text[:100].strip() or tweet_author or url
         extra_context = f"Tweet by: {tweet_author}" if tweet_author else ""
     elif is_instagram:
         caption, author, thumbnail_url = await fetch_instagram(url)
