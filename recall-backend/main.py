@@ -513,7 +513,8 @@ async def process_save(url: str, user_id: str) -> dict:
 
     if is_tweet:
         clean_text, tweet_author, jina_title = await fetch_tweet(url)
-        title = jina_title or tweet_author or url
+        title = clean_text[:100].strip() if clean_text else tweet_author or url
+        extra_context = f"Tweet by: {tweet_author}" if tweet_author else ""
     elif is_instagram:
         caption, author, thumbnail_url = await fetch_instagram(url)
         clean_text = caption
