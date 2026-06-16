@@ -521,10 +521,17 @@ async def process_save(url: str, user_id: str) -> dict:
                 async with httpx.AsyncClient(timeout=8, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
                     r = await client.get(tco_url)
                     final_url = str(r.url)
-                    if "twitter.com" not in final_url and "x.com" not in final_url:
-                        og = extract_og_tags(r.text[:5000])
-                        article_title = og.get("og:title", "")
-                    print(f"[tweet] tco resolved to {repr(final_url)} article_title={repr(article_title)}", flush=True)
+                if "x.com/i/article/" in final_url or "twitter.com/i/article/" in final_url:
+                    # X Article — Jina can read the full content
+                    article_jina_text, article_jina_title = await fetch_with_jina(final_url)
+                    if article_jina_text:
+                        clean_text = article_jina_text
+                    article_title = article_jina_title
+                    print(f"[tweet] X Article detected — jina_title={repr(article_jina_title)} content_len={len(clean_text)}", flush=True)
+                elif "twitter.com" not in final_url and "x.com" not in final_url:
+                    og = extract_og_tags(r.text[:5000])
+                    article_title = og.get("og:title", "")
+                    print(f"[tweet] external link — final_url={repr(final_url)} article_title={repr(article_title)}", flush=True)
             except Exception as e:
                 print(f"[tweet] tco resolution failed: {e}", flush=True)
         title = article_title or (jina_title if len(clean_text) > 400 else "") or clean_text[:100].strip() or tweet_author or url
