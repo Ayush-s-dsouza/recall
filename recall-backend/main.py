@@ -540,7 +540,8 @@ async def process_save(url: str, user_id: str) -> dict:
                     print(f"[tweet] external link — final_url={repr(final_url)} article_title={repr(article_title)}", flush=True)
             except Exception as e:
                 print(f"[tweet] tco resolution failed: {e}", flush=True)
-        title = article_title or (jina_title if len(clean_text) > 400 else "") or clean_text[:100].strip() or tweet_author or url
+        stub_only = not clean_text or clean_text.strip().startswith("https://t.co/") or len(clean_text) < 80
+        title = article_title or (jina_title if len(clean_text) > 400 else "") or (clean_text[:100].strip() if not stub_only else "") or tweet_author or url
         print(f"[tweet] final title passed to extract_save_metadata: {repr(title)}", flush=True)
     elif is_instagram:
         caption, author, thumbnail_url = await fetch_instagram(url)
