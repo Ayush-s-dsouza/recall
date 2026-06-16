@@ -514,6 +514,7 @@ async def process_save(url: str, user_id: str) -> dict:
 
     if is_tweet:
         clean_text, tweet_author, jina_title, tco_url = await fetch_tweet(url)
+        print(f"[tweet] author={repr(tweet_author)} jina_title={repr(jina_title)} tco_url={repr(tco_url)} clean_text_len={len(clean_text)} clean_text_preview={repr(clean_text[:150])}", flush=True)
         article_title = ""
         if tco_url and is_safe_url(tco_url):
             try:
@@ -523,9 +524,11 @@ async def process_save(url: str, user_id: str) -> dict:
                     if "twitter.com" not in final_url and "x.com" not in final_url:
                         og = extract_og_tags(r.text[:5000])
                         article_title = og.get("og:title", "")
-            except Exception:
-                pass
+                    print(f"[tweet] tco resolved to {repr(final_url)} article_title={repr(article_title)}", flush=True)
+            except Exception as e:
+                print(f"[tweet] tco resolution failed: {e}", flush=True)
         title = article_title or (jina_title if len(clean_text) > 400 else "") or clean_text[:100].strip() or tweet_author or url
+        print(f"[tweet] final title passed to extract_save_metadata: {repr(title)}", flush=True)
     elif is_instagram:
         caption, author, thumbnail_url = await fetch_instagram(url)
         clean_text = caption
