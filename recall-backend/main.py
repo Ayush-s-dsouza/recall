@@ -8,6 +8,7 @@ from slowapi.errors import RateLimitExceeded
 import os
 import re
 import io
+import math
 import socket
 import ipaddress
 import json
@@ -406,16 +407,46 @@ async def _fetch_tweet_oembed(url: str) -> tuple[str, str, str]:
     except Exception:
         return "", "", ""
 
+async def _fetch_tweet_card_title(tweet_url: str) -> str:
+    """Twitter syndication API — returns tweet card title (article title for X Articles) without auth."""
+    m = re.search(r'/status/(\d+)', tweet_url)
+    if not m:
+        return ""
+    tweet_id = m.group(1)
+    try:
+        val = math.floor(int(tweet_id) / 1e15 * math.pi)
+        chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+        token = ""
+        while val > 0:
+            token = chars[int(val) % 36] + token
+            val //= 36
+        token = token or "0"
+        async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+            res = await client.get(
+                "https://cdn.syndication.twimg.com/tweet-result",
+                params={"id": tweet_id, "token": token, "lang": "en"},
+                follow_redirects=True
+            )
+            data = res.json()
+            bv = (data.get("card") or {}).get("binding_values") or {}
+            return bv.get("title", {}).get("string_value", "")
+    except Exception:
+        return ""
+
 async def fetch_tweet(url: str):
     """Jina Reader for richer content (quoted tweets, linked previews); oEmbed as author source + text fallback."""
-    (jina_text, jina_title), (oembed_text, author, tco_url), og_html = await asyncio.gather(
+    (jina_text, jina_title), (oembed_text, author, tco_url), og_html, card_title = await asyncio.gather(
         fetch_with_jina(url),
         _fetch_tweet_oembed(url),
-        fetch_og_html(url)
+        fetch_og_html(url),
+        _fetch_tweet_card_title(url)
     )
     og_title = extract_og_tags(og_html).get("og:title", "")
+    # Filter generic X platform titles like "Rork (@rork) on X"
+    if " on X" in og_title or og_title.endswith("on Twitter"):
+        og_title = ""
     content = jina_text if len(jina_text) > len(oembed_text) else oembed_text
-    return content, author, jina_title or og_title, tco_url
+    return content, author, card_title or jina_title or og_title, tco_url
 
 async def fetch_with_jina(url: str) -> tuple[str, str]:
     """Fetch clean article content via Jina Reader (handles JS rendering, 'read more', etc).
@@ -541,7 +572,7 @@ async def process_save(url: str, user_id: str) -> dict:
             except Exception as e:
                 print(f"[tweet] tco resolution failed: {e}", flush=True)
         stub_only = not clean_text or clean_text.strip().startswith("https://t.co/") or len(clean_text) < 80
-        title = article_title or (jina_title if len(clean_text) > 400 else "") or (clean_text[:100].strip() if not stub_only else "") or tweet_author or url
+        title = article_title or jina_title or (clean_text[:100].strip() if not stub_only else "") or tweet_author or url
         print(f"[tweet] final title passed to extract_save_metadata: {repr(title)}", flush=True)
     elif is_instagram:
         caption, author, thumbnail_url = await fetch_instagram(url)
