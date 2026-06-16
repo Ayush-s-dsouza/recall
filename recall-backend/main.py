@@ -407,12 +407,12 @@ async def _fetch_tweet_oembed(url: str) -> tuple[str, str]:
 
 async def fetch_tweet(url: str):
     """Jina Reader for richer content (quoted tweets, linked previews); oEmbed as author source + text fallback."""
-    (jina_text, _), (oembed_text, author) = await asyncio.gather(
+    (jina_text, jina_title), (oembed_text, author) = await asyncio.gather(
         fetch_with_jina(url),
         _fetch_tweet_oembed(url)
     )
     content = jina_text if len(jina_text) > len(oembed_text) else oembed_text
-    return content, author
+    return content, author, jina_title
 
 async def fetch_with_jina(url: str) -> tuple[str, str]:
     """Fetch clean article content via Jina Reader (handles JS rendering, 'read more', etc).
@@ -512,8 +512,8 @@ async def process_save(url: str, user_id: str) -> dict:
     extra_context = ""
 
     if is_tweet:
-        clean_text, tweet_author = await fetch_tweet(url)
-        title = tweet_author or url
+        clean_text, tweet_author, jina_title = await fetch_tweet(url)
+        title = jina_title or tweet_author or url
         if len(clean_text.strip()) < QUALITY_THRESHOLD:
             return {"thin_content": True, "url": url}
     elif is_instagram:
