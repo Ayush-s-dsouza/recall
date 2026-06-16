@@ -428,26 +428,29 @@ async def _fetch_tweet_card_title(tweet_url: str) -> str:
                 follow_redirects=True
             )
             data = res.json()
-            print(f"[syndication] status={res.status_code} keys={list(data.keys())} card={data.get('card')} article={data.get('article')}", flush=True)
+            article = data.get("article") or {}
+            if article.get("title"):
+                return article["title"], article.get("preview_text", "")
             bv = (data.get("card") or {}).get("binding_values") or {}
-            return bv.get("title", {}).get("string_value", "")
+            return bv.get("title", {}).get("string_value", ""), ""
     except Exception as e:
         print(f"[syndication] exception: {e}", flush=True)
-        return ""
+        return "", ""
 
 async def fetch_tweet(url: str):
     """Jina Reader for richer content (quoted tweets, linked previews); oEmbed as author source + text fallback."""
-    (jina_text, jina_title), (oembed_text, author, tco_url), og_html, card_title = await asyncio.gather(
+    (jina_text, jina_title), (oembed_text, author, tco_url), og_html, (card_title, card_preview) = await asyncio.gather(
         fetch_with_jina(url),
         _fetch_tweet_oembed(url),
         fetch_og_html(url),
         _fetch_tweet_card_title(url)
     )
     og_title = extract_og_tags(og_html).get("og:title", "")
-    # Filter generic X platform titles like "Rork (@rork) on X"
     if " on X" in og_title or og_title.endswith("on Twitter"):
         og_title = ""
     content = jina_text if len(jina_text) > len(oembed_text) else oembed_text
+    if card_preview and len(card_preview) > len(content):
+        content = card_preview
     return content, author, card_title or jina_title or og_title, tco_url
 
 async def fetch_with_jina(url: str) -> tuple[str, str]:
