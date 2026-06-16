@@ -427,8 +427,8 @@ async def _fetch_tweet_card_title(tweet_url: str) -> str:
                 params={"id": tweet_id, "token": token, "lang": "en"},
                 follow_redirects=True
             )
-            print(f"[syndication] status={res.status_code} token={token} tweet_id={tweet_id} body={res.text[:500]}", flush=True)
             data = res.json()
+            print(f"[syndication] status={res.status_code} keys={list(data.keys())} card={data.get('card')} article={data.get('article')}", flush=True)
             bv = (data.get("card") or {}).get("binding_values") or {}
             return bv.get("title", {}).get("string_value", "")
     except Exception as e:
