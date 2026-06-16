@@ -526,7 +526,6 @@ async def process_save(url: str, user_id: str) -> dict:
             except Exception:
                 pass
         title = article_title or (jina_title if len(clean_text) > 400 else "") or clean_text[:100].strip() or tweet_author or url
-        extra_context = f"Tweet by: {tweet_author}" if tweet_author else ""
     elif is_instagram:
         caption, author, thumbnail_url = await fetch_instagram(url)
         clean_text = caption
