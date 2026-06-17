@@ -139,6 +139,12 @@ class WikiTokenRequest(BaseModel):
 class ImportStatusRequest(BaseModel):
     token: str
 
+class XConnectRequest(BaseModel):
+    token: str
+    code: str
+    code_verifier: str
+    redirect_uri: str
+
 MEDIA_URLS = [
     ("youtube.com/watch",    "video", "YouTube videos"),
     ("youtube.com/shorts/",  "video", "YouTube Shorts"),
@@ -1285,6 +1291,94 @@ async def latest_import_job(req: ImportStatusRequest):
     result = supabase.table("import_jobs").select("*") \
         .eq("user_id", user_id).order("created_at", desc=True).limit(1).execute()
     return {"job": result.data[0] if result.data else None}
+
+
+@app.post("/import/x-connect")
+@limiter.limit("5/hour")
+async def import_x_connect(req: XConnectRequest, request: Request):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    client_id = os.getenv("TWITTER_CLIENT_ID")
+    client_secret = os.getenv("TWITTER_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=503, detail="X import not configured")
+
+    # Exchange authorization code for X access token
+    async with httpx.AsyncClient(timeout=15) as client:
+        token_res = await client.post(
+            "https://api.twitter.com/2/oauth2/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": req.code,
+                "redirect_uri": req.redirect_uri,
+                "code_verifier": req.code_verifier,
+                "client_id": client_id,
+            },
+            auth=(client_id, client_secret),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    if token_res.status_code != 200:
+        print(f"[x-connect] token exchange failed: {token_res.status_code} {token_res.text}", flush=True)
+        raise HTTPException(status_code=400, detail="X authorization failed — try connecting again")
+    x_token = token_res.json()["access_token"]
+
+    # Get X user ID
+    async with httpx.AsyncClient(timeout=10, headers={"Authorization": f"Bearer {x_token}"}) as client:
+        me_res = await client.get("https://api.twitter.com/2/users/me")
+    if me_res.status_code != 200:
+        raise HTTPException(status_code=400, detail="Could not fetch X user info")
+    x_user_id = me_res.json()["data"]["id"]
+
+    # Paginate through bookmarks to collect all tweet IDs
+    tweet_ids = []
+    next_token = None
+    async with httpx.AsyncClient(timeout=15, headers={"Authorization": f"Bearer {x_token}"}) as client:
+        while len(tweet_ids) < MAX_IMPORT_ITEMS:
+            params = {"max_results": 100}
+            if next_token:
+                params["pagination_token"] = next_token
+            bm_res = await client.get(
+                f"https://api.twitter.com/2/users/{x_user_id}/bookmarks",
+                params=params,
+            )
+            if bm_res.status_code != 200:
+                print(f"[x-connect] bookmarks fetch failed: {bm_res.status_code} {bm_res.text}", flush=True)
+                break
+            body = bm_res.json()
+            for item in body.get("data") or []:
+                tweet_ids.append(item["id"])
+            next_token = body.get("meta", {}).get("next_token")
+            if not next_token:
+                break
+
+    total_found = len(tweet_ids)
+    if total_found == 0:
+        raise HTTPException(status_code=404, detail="No bookmarks found on this X account")
+
+    existing = supabase.table("import_jobs") \
+        .select("id").eq("user_id", user_id).eq("status", "running").limit(1).execute()
+    if existing.data:
+        raise HTTPException(status_code=409, detail="An import is already in progress")
+
+    capped_ids = tweet_ids[:MAX_IMPORT_ITEMS]
+    job = supabase.table("import_jobs").insert({
+        "user_id": user_id, "source": "x_oauth", "status": "running",
+        "total": len(capped_ids), "processed": 0, "succeeded": 0,
+        "duplicates": 0, "skipped": 0, "failed": 0,
+    }).execute()
+    job_id = job.data[0]["id"]
+
+    asyncio.create_task(run_import_job(job_id, user_id, capped_ids))
+
+    return {
+        "job_id": job_id,
+        "total": len(capped_ids),
+        "total_found": total_found,
+        "capped": total_found > len(capped_ids),
+    }
 
 
 @app.get("/")

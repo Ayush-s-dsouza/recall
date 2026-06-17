@@ -8,6 +8,7 @@ const supabase = createClient(
 )
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL
+const TWITTER_CLIENT_ID = import.meta.env.VITE_TWITTER_CLIENT_ID
 
 const VALID_TAGS = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
 const SHARE_SHEET_VIDEO_URL = null // replace with YouTube URL when ready
@@ -148,6 +149,7 @@ export default function App() {
   // Bookmark import (Settings)
   const [importJob, setImportJob] = useState(null)
   const [importUploading, setImportUploading] = useState(false)
+  const [xConnecting, setXConnecting] = useState(false)
 
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
@@ -312,6 +314,22 @@ export default function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
+
+    // X OAuth callback — must run before share-sheet extraction to avoid misreading ?code= as a URL
+    const xCode = params.get('code')
+    const xState = params.get('state')
+    const storedState = sessionStorage.getItem('x_import_state')
+    const xVerifier = sessionStorage.getItem('x_import_verifier')
+    if (xCode && xState && xState === storedState && xVerifier) {
+      sessionStorage.removeItem('x_import_state')
+      sessionStorage.removeItem('x_import_verifier')
+      window.history.replaceState({}, '', '/')
+      sessionStorage.setItem('x_import_pending', JSON.stringify({
+        code: xCode, verifier: xVerifier,
+        redirectUri: window.location.origin + '/'
+      }))
+    }
+
     function extractSharedUrl(p) {
       const urlParam = p.get("url")
       if (urlParam && urlParam.startsWith("http")) return urlParam
@@ -341,6 +359,33 @@ export default function App() {
         fetchLibraryFilters()
         fetchSuggestions()
         fetchSaveCount()
+        // X OAuth import — consume pending code from callback
+        const xPending = sessionStorage.getItem('x_import_pending')
+        if (xPending) {
+          sessionStorage.removeItem('x_import_pending')
+          const { code, verifier, redirectUri } = JSON.parse(xPending)
+          getToken().then(token =>
+            fetch(`${BACKEND}/import/x-connect`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token, code, code_verifier: verifier, redirect_uri: redirectUri }),
+            })
+            .then(r => r.json())
+            .then(data => {
+              if (data.job_id) {
+                localStorage.setItem('recall_import_job_id', data.job_id)
+                if (data.capped) setMessage(`Found ${data.total_found} bookmarks — importing the most recent ${data.total}.`)
+                posthog.capture('x_bookmarks_import_started', { source: 'oauth', total: data.total })
+                pollImportStatus(data.job_id)
+                setShowSettings(true)
+              } else {
+                setMessage(data.detail || 'X import failed — try again')
+                setIsError(true)
+              }
+            })
+            .catch(() => { setMessage('X import failed — try again'); setIsError(true) })
+          )
+        }
         // Resume any in-progress bookmark import
         const savedJobId = localStorage.getItem("recall_import_job_id")
         if (savedJobId) {
@@ -527,6 +572,36 @@ export default function App() {
     }
     tick()
     importPollRef.current = setInterval(tick, 5000)
+  }
+
+  const generatePKCE = async () => {
+    const array = new Uint8Array(32)
+    crypto.getRandomValues(array)
+    const verifier = btoa(String.fromCharCode(...array))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
+    const challenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+    return { verifier, challenge }
+  }
+
+  const connectXForImport = async () => {
+    setXConnecting(true)
+    const { verifier, challenge } = await generatePKCE()
+    const state = crypto.randomUUID()
+    sessionStorage.setItem('x_import_verifier', verifier)
+    sessionStorage.setItem('x_import_state', state)
+    const redirectUri = window.location.origin + '/'
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: TWITTER_CLIENT_ID,
+      redirect_uri: redirectUri,
+      scope: 'bookmark.read users.read',
+      state,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    })
+    window.location.href = `https://twitter.com/i/oauth2/authorize?${params}`
   }
 
   const handleImportFileChange = async (e) => {
@@ -1003,8 +1078,21 @@ export default function App() {
           <p style={styles.settingsSectionHeading}>Import your X bookmarks</p>
           {!importJob || importJob.status === "completed" || importJob.status === "stalled" ? (
             <>
+              <button
+                onClick={connectXForImport}
+                style={styles.settingsLink}
+                disabled={xConnecting || !TWITTER_CLIENT_ID}
+              >
+                {xConnecting ? "Connecting…" : "Connect X to import bookmarks"}
+              </button>
               <p style={styles.overlayNote}>
-                Use a browser extension that exports your X bookmarks as JSON or CSV (search your browser's extension store for "export twitter bookmarks"). Upload the file below — ReCall reads any format that includes links to your bookmarked posts.
+                Opens X's login screen — ReCall reads your bookmarks and imports them automatically.
+                {importJob?.status === "completed" && (
+                  <> Last import: <strong>{importJob.succeeded}</strong> added, {importJob.duplicates} already saved, {importJob.skipped} skipped, {importJob.failed} failed.</>
+                )}
+                {importJob?.status === "stalled" && (
+                  <> Last import stalled ({importJob.processed}/{importJob.total} done). Connect again to retry — already-imported bookmarks are skipped.</>
+                )}
               </p>
               <input
                 ref={importFileInputRef}
@@ -1015,23 +1103,11 @@ export default function App() {
               />
               <button
                 onClick={() => importFileInputRef.current?.click()}
-                style={styles.settingsLink}
+                style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
                 disabled={importUploading}
               >
-                {importUploading ? "Uploading…" : "Choose bookmarks file"}
+                {importUploading ? "Uploading…" : "or upload a file export instead"}
               </button>
-              {importJob?.status === "completed" && (
-                <p style={styles.overlayNote}>
-                  Last import: <strong>{importJob.succeeded}</strong> added,{" "}
-                  {importJob.duplicates} already saved, {importJob.skipped} skipped,{" "}
-                  {importJob.failed} failed.
-                </p>
-              )}
-              {importJob?.status === "stalled" && (
-                <p style={styles.overlayNote}>
-                  Last import stalled ({importJob.processed}/{importJob.total} done). Re-upload the file to continue — already-imported bookmarks are skipped automatically.
-                </p>
-              )}
             </>
           ) : (
             <>
