@@ -145,6 +145,10 @@ class XConnectRequest(BaseModel):
     code_verifier: str
     redirect_uri: str
 
+class ScrapedImportRequest(BaseModel):
+    token: str
+    tweet_ids: list[str]
+
 MEDIA_URLS = [
     ("youtube.com/watch",    "video", "YouTube videos"),
     ("youtube.com/shorts/",  "video", "YouTube Shorts"),
@@ -1379,6 +1383,41 @@ async def import_x_connect(req: XConnectRequest, request: Request):
         "total": len(capped_ids),
         "total_found": total_found,
         "capped": total_found > len(capped_ids),
+    }
+
+
+@app.post("/import/x-scraped")
+@limiter.limit("5/hour")
+async def import_x_scraped(req: ScrapedImportRequest, request: Request):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    clean_ids = list(dict.fromkeys(tid for tid in req.tweet_ids if tid.isdigit()))
+    if not clean_ids:
+        raise HTTPException(status_code=400, detail="No valid bookmark IDs found")
+
+    existing = supabase.table("import_jobs") \
+        .select("id").eq("user_id", user_id).eq("status", "running").limit(1).execute()
+    if existing.data:
+        raise HTTPException(status_code=409, detail="An import is already in progress")
+
+    capped_ids = clean_ids[:MAX_IMPORT_ITEMS]
+    job = supabase.table("import_jobs").insert({
+        "user_id": user_id, "source": "x_scraped", "status": "running",
+        "total": len(capped_ids), "processed": 0, "succeeded": 0,
+        "duplicates": 0, "skipped": 0, "failed": 0,
+    }).execute()
+    job_id = job.data[0]["id"]
+
+    asyncio.create_task(run_import_job(job_id, user_id, capped_ids))
+
+    return {
+        "job_id": job_id,
+        "total": len(capped_ids),
+        "total_found": len(clean_ids),
+        "capped": len(clean_ids) > len(capped_ids),
     }
 
 

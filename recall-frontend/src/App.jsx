@@ -10,6 +10,44 @@ const supabase = createClient(
 const BACKEND = import.meta.env.VITE_BACKEND_URL
 const TWITTER_CLIENT_ID = import.meta.env.VITE_TWITTER_CLIENT_ID
 
+// Bookmarklet: scrapes tweet IDs from x.com/i/bookmarks (the user's own authenticated
+// session, client-side only) and opens a new tab to ReCall with the collected IDs in
+// the URL hash. No X API involved — works around the paid-tier requirement for v2 reads.
+// Kept as a readable multi-line template, then flattened to one line below — multi-line
+// javascript: URIs are unreliable when dragged to a bookmarks bar in some browsers.
+const BOOKMARKLET_SCRIPT = `(function(){
+  var RECALL_URL='${typeof window !== "undefined" ? window.location.origin : "https://recall-iota-six.vercel.app"}/';
+  var ids=new Set();
+  var lastCount=-1, stableRounds=0;
+  var overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;top:10px;right:10px;background:#000;color:#4ade80;padding:10px 16px;border-radius:8px;font-family:monospace;font-size:14px;z-index:999999;border:1px solid #4ade80';
+  document.body.appendChild(overlay);
+  function update(){ overlay.textContent='ReCall: collected '+ids.size+' bookmarks…'; }
+  function scan(){
+    document.querySelectorAll('a[href*="/status/"]').forEach(function(a){
+      var m=a.href.match(/status\\/(\\d+)/);
+      if(m) ids.add(m[1]);
+    });
+    update();
+  }
+  function finish(){
+    overlay.textContent='ReCall: found '+ids.size+' bookmarks. Opening…';
+    var idList=Array.from(ids).join(',');
+    window.open(RECALL_URL+'#import_tweets='+idList, '_blank');
+    setTimeout(function(){ overlay.remove(); }, 3000);
+  }
+  function step(){
+    scan();
+    if(ids.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=ids.size; }
+    if(stableRounds>=5 || ids.size>=500){ finish(); return; }
+    window.scrollTo(0, document.body.scrollHeight);
+    setTimeout(step, 800);
+  }
+  if(ids.size===0) update();
+  step();
+})();`
+const BOOKMARKLET_CODE = "javascript:" + BOOKMARKLET_SCRIPT.replace(/\s+/g, " ").trim()
+
 const VALID_TAGS = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
 const SHARE_SHEET_VIDEO_URL = null // replace with YouTube URL when ready
 const SAVE_TO_RECALL_SHORTCUT_URL = "https://www.icloud.com/shortcuts/fd37dd0550924fafb19a0f984ded9825" // "Save to ReCall" shortcut — regenerate via Shortcuts app → long-press → Share → Copy iCloud Link if ever rebuilt
@@ -315,6 +353,16 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
 
+    // Bookmarklet-scraped tweet IDs, passed via URL hash (never sent over the network)
+    if (window.location.hash.startsWith('#import_tweets=')) {
+      const idsStr = window.location.hash.slice('#import_tweets='.length)
+      const tweetIds = idsStr.split(',').filter(Boolean)
+      window.history.replaceState({}, '', '/')
+      if (tweetIds.length > 0) {
+        sessionStorage.setItem('x_scraped_pending', JSON.stringify(tweetIds))
+      }
+    }
+
     // X OAuth callback — must run before share-sheet extraction to avoid misreading ?code= as a URL
     const xCode = params.get('code')
     const xState = params.get('state')
@@ -368,6 +416,38 @@ export default function App() {
         fetchLibraryFilters()
         fetchSuggestions()
         fetchSaveCount()
+        // Bookmarklet import — consume scraped tweet IDs
+        const scrapedPending = sessionStorage.getItem('x_scraped_pending')
+        if (scrapedPending) {
+          sessionStorage.removeItem('x_scraped_pending')
+          const tweetIds = JSON.parse(scrapedPending)
+          setMessage(`Found ${tweetIds.length} bookmarks — importing now…`)
+          setIsError(false)
+          getToken().then(token =>
+            fetch(`${BACKEND}/import/x-scraped`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token, tweet_ids: tweetIds }),
+            })
+            .then(r => r.json())
+            .then(data => {
+              if (data.job_id) {
+                localStorage.setItem('recall_import_job_id', data.job_id)
+                setMessage(data.capped
+                  ? `Found ${data.total_found} bookmarks — importing the most recent ${data.total}.`
+                  : `Found ${data.total} bookmarks — importing now.`)
+                setIsError(false)
+                posthog.capture('x_bookmarks_import_started', { source: 'bookmarklet', total: data.total })
+                pollImportStatus(data.job_id)
+                setShowSettings(true)
+              } else {
+                setMessage(data.detail || 'Import failed — try again')
+                setIsError(true)
+              }
+            })
+            .catch(() => { setMessage('Import failed — try again'); setIsError(true) })
+          )
+        }
         // X OAuth import — consume pending code from callback
         const xPending = sessionStorage.getItem('x_import_pending')
         if (xPending) {
@@ -1096,20 +1176,22 @@ export default function App() {
           <p style={styles.settingsSectionHeading}>Import your X bookmarks</p>
           {!importJob || importJob.status === "completed" || importJob.status === "stalled" ? (
             <>
-              <button
-                onClick={connectXForImport}
-                style={styles.settingsLink}
-                disabled={xConnecting || !TWITTER_CLIENT_ID}
+              <a
+                href={BOOKMARKLET_CODE}
+                onClick={e => e.preventDefault()}
+                draggable="true"
+                style={{ ...styles.shortcutAddButton, display: "inline-block", cursor: "grab" }}
               >
-                {xConnecting ? "Connecting…" : "Connect X to import bookmarks"}
-              </button>
+                📑 Import X Bookmarks
+              </a>
               <p style={styles.overlayNote}>
-                Opens X's login screen — ReCall reads your bookmarks and imports them automatically.
+                Drag this button to your bookmarks bar (don't click it here). Then open{" "}
+                <strong>x.com/i/bookmarks</strong> in a new tab and click it there — it collects your bookmarks and opens ReCall to import them automatically.
                 {importJob?.status === "completed" && (
                   <> Last import: <strong>{importJob.succeeded}</strong> added, {importJob.duplicates} already saved, {importJob.skipped} skipped, {importJob.failed} failed.</>
                 )}
                 {importJob?.status === "stalled" && (
-                  <> Last import stalled ({importJob.processed}/{importJob.total} done). Connect again to retry — already-imported bookmarks are skipped.</>
+                  <> Last import stalled ({importJob.processed}/{importJob.total} done). Run it again to retry — already-imported bookmarks are skipped.</>
                 )}
               </p>
               <input
