@@ -1015,7 +1015,7 @@ export default function App() {
         </div>
       </div>
 
-      {message && <p style={isError ? styles.error : styles.success}>{message}</p>}
+      {message && <p style={xConnecting ? styles.neutral : (isError ? styles.error : styles.success)}>{message}</p>}
 
       {showInstallUI && !installBannerDismissed && (
         <div style={styles.installBanner}>
@@ -2007,6 +2007,7 @@ const styles = {
   cardTag: { fontSize: "11px", color: "#888", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" },
   success: { color: "#4ade80", fontSize: "14px", margin: 0 },
   error: { color: "#ef4444", fontSize: "14px", margin: 0 },
+  neutral: { color: "#888", fontSize: "14px", margin: 0 },
   receiptCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px", transition: "box-shadow 0.8s ease" },
   receiptTagButton: { background: "none", border: "none", color: "#888", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: "4px", alignSelf: "flex-start" },
   receiptTag: { fontSize: "11px", color: "#888", textTransform: "uppercase", letterSpacing: "1px" },
