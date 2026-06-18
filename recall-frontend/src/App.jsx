@@ -48,6 +48,43 @@ const BOOKMARKLET_SCRIPT = `(function(){
 })();`
 const BOOKMARKLET_CODE = "javascript:" + BOOKMARKLET_SCRIPT.replace(/\s+/g, " ").trim()
 
+// Same technique, applied to LinkedIn's "My items > Saved posts" page. Collects full
+// post URLs (not just IDs, since LinkedIn permalinks vary in shape) via #import_urls=.
+const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
+  var RECALL_URL='${typeof window !== "undefined" ? window.location.origin : "https://recall-iota-six.vercel.app"}/';
+  var urls=new Set();
+  var lastCount=-1, stableRounds=0;
+  var overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;top:10px;right:10px;background:#000;color:#0a66c2;padding:10px 16px;border-radius:8px;font-family:monospace;font-size:14px;z-index:999999;border:1px solid #0a66c2';
+  document.body.appendChild(overlay);
+  function update(){ overlay.textContent='ReCall: collected '+urls.size+' saved posts…'; }
+  function clean(href){
+    try { var u=new URL(href); return u.origin+u.pathname; } catch(e){ return href; }
+  }
+  function scan(){
+    document.querySelectorAll('a[href*="/posts/"], a[href*="/feed/update/"], a[href*="/pulse/"]').forEach(function(a){
+      urls.add(clean(a.href));
+    });
+    update();
+  }
+  function finish(){
+    overlay.textContent='ReCall: found '+urls.size+' saved posts. Opening…';
+    var encoded=Array.from(urls).map(encodeURIComponent).join(',');
+    window.open(RECALL_URL+'#import_urls='+encoded, '_blank');
+    setTimeout(function(){ overlay.remove(); }, 3000);
+  }
+  function step(){
+    scan();
+    if(urls.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=urls.size; }
+    if(stableRounds>=5 || urls.size>=500){ finish(); return; }
+    window.scrollTo(0, document.body.scrollHeight);
+    setTimeout(step, 800);
+  }
+  if(urls.size===0) update();
+  step();
+})();`
+const LINKEDIN_BOOKMARKLET_CODE = "javascript:" + LINKEDIN_BOOKMARKLET_SCRIPT.replace(/\s+/g, " ").trim()
+
 const VALID_TAGS = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
 const SHARE_SHEET_VIDEO_URL = null // replace with YouTube URL when ready
 const SAVE_TO_RECALL_SHORTCUT_URL = "https://www.icloud.com/shortcuts/fd37dd0550924fafb19a0f984ded9825" // "Save to ReCall" shortcut — regenerate via Shortcuts app → long-press → Share → Copy iCloud Link if ever rebuilt
@@ -363,6 +400,16 @@ export default function App() {
       }
     }
 
+    // Bookmarklet-scraped full URLs (e.g. LinkedIn saved posts), passed via URL hash
+    if (window.location.hash.startsWith('#import_urls=')) {
+      const encodedStr = window.location.hash.slice('#import_urls='.length)
+      const urls = encodedStr.split(',').filter(Boolean).map(decodeURIComponent)
+      window.history.replaceState({}, '', '/')
+      if (urls.length > 0) {
+        sessionStorage.setItem('urls_scraped_pending', JSON.stringify(urls))
+      }
+    }
+
     // X OAuth callback — must run before share-sheet extraction to avoid misreading ?code= as a URL
     const xCode = params.get('code')
     const xState = params.get('state')
@@ -438,6 +485,38 @@ export default function App() {
                   : `Found ${data.total} bookmarks — importing now.`)
                 setIsError(false)
                 posthog.capture('x_bookmarks_import_started', { source: 'bookmarklet', total: data.total })
+                pollImportStatus(data.job_id)
+                setShowSettings(true)
+              } else {
+                setMessage(data.detail || 'Import failed — try again')
+                setIsError(true)
+              }
+            })
+            .catch(() => { setMessage('Import failed — try again'); setIsError(true) })
+          )
+        }
+        // Bookmarklet import — consume scraped full URLs (e.g. LinkedIn saved posts)
+        const urlsPending = sessionStorage.getItem('urls_scraped_pending')
+        if (urlsPending) {
+          sessionStorage.removeItem('urls_scraped_pending')
+          const scrapedUrls = JSON.parse(urlsPending)
+          setMessage(`Found ${scrapedUrls.length} saved posts — importing now…`)
+          setIsError(false)
+          getToken().then(token =>
+            fetch(`${BACKEND}/import/urls-scraped`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token, urls: scrapedUrls }),
+            })
+            .then(r => r.json())
+            .then(data => {
+              if (data.job_id) {
+                localStorage.setItem('recall_import_job_id', data.job_id)
+                setMessage(data.capped
+                  ? `Found ${data.total_found} saved posts — importing the most recent ${data.total}.`
+                  : `Found ${data.total} saved posts — importing now.`)
+                setIsError(false)
+                posthog.capture('linkedin_import_started', { source: 'bookmarklet', total: data.total })
                 pollImportStatus(data.job_id)
                 setShowSettings(true)
               } else {
@@ -1230,6 +1309,27 @@ export default function App() {
                   transition: "width 0.4s ease",
                 }} />
               </div>
+            </>
+          )}
+
+          <div style={styles.settingsDivider} />
+
+          {/* Import LinkedIn saved posts */}
+          <p style={styles.settingsSectionHeading}>Import your LinkedIn saved posts</p>
+          {(!importJob || importJob.status === "completed" || importJob.status === "stalled") && (
+            <>
+              <a
+                href={LINKEDIN_BOOKMARKLET_CODE}
+                onClick={e => e.preventDefault()}
+                draggable="true"
+                style={{ ...styles.shortcutAddButton, display: "inline-block", cursor: "grab" }}
+              >
+                💼 Import LinkedIn Saved Posts
+              </a>
+              <p style={styles.overlayNote}>
+                Drag this button to your bookmarks bar (don't click it here). Then open{" "}
+                <strong>linkedin.com/my-items/saved-posts/</strong> in a new tab and click it there — same idea as the X import above.
+              </p>
             </>
           )}
 

@@ -149,6 +149,10 @@ class ScrapedImportRequest(BaseModel):
     token: str
     tweet_ids: list[str]
 
+class ScrapedUrlsImportRequest(BaseModel):
+    token: str
+    urls: list[str]
+
 MEDIA_URLS = [
     ("youtube.com/watch",    "video", "YouTube videos"),
     ("youtube.com/shorts/",  "video", "YouTube Shorts"),
@@ -1180,10 +1184,11 @@ def tweet_id_to_url(tweet_id: str) -> str:
     return f"https://x.com/i/web/status/{tweet_id}"
 
 
-async def run_import_job(job_id: str, user_id: str, tweet_ids: list[str]):
+async def run_import_job(job_id: str, user_id: str, urls: list[str]):
+    """Background job runner — source-agnostic. Callers (X tweet IDs, scraped LinkedIn
+    URLs, etc.) convert their own identifiers to full URLs before calling this."""
     succeeded = duplicates = failed = skipped = 0
-    for i, tid in enumerate(tweet_ids):
-        url = tweet_id_to_url(tid)
+    for i, url in enumerate(urls):
         try:
             validate_url(url)
             result = await process_save(url, user_id)
@@ -1196,7 +1201,7 @@ async def run_import_job(job_id: str, user_id: str, tweet_ids: list[str]):
             else:
                 failed += 1
         except Exception as e:
-            print(f"[import {job_id}] item {tid} failed: {e}", flush=True)
+            print(f"[import {job_id}] item {url} failed: {e}", flush=True)
             failed += 1
 
         try:
@@ -1208,7 +1213,7 @@ async def run_import_job(job_id: str, user_id: str, tweet_ids: list[str]):
         except Exception as e:
             print(f"[import {job_id}] status update failed: {e}", flush=True)
 
-        if i < len(tweet_ids) - 1:
+        if i < len(urls) - 1:
             await asyncio.sleep(IMPORT_DELAY_SECONDS)
 
     try:
@@ -1252,7 +1257,7 @@ async def import_x_bookmarks(request: Request, token: str = Form(...), file: Upl
     }).execute()
     job_id = job.data[0]["id"]
 
-    asyncio.create_task(run_import_job(job_id, user_id, tweet_ids))
+    asyncio.create_task(run_import_job(job_id, user_id, [tweet_id_to_url(t) for t in tweet_ids]))
 
     return {
         "job_id": job_id,
@@ -1376,7 +1381,7 @@ async def import_x_connect(req: XConnectRequest, request: Request):
     }).execute()
     job_id = job.data[0]["id"]
 
-    asyncio.create_task(run_import_job(job_id, user_id, capped_ids))
+    asyncio.create_task(run_import_job(job_id, user_id, [tweet_id_to_url(t) for t in capped_ids]))
 
     return {
         "job_id": job_id,
@@ -1411,13 +1416,51 @@ async def import_x_scraped(req: ScrapedImportRequest, request: Request):
     }).execute()
     job_id = job.data[0]["id"]
 
-    asyncio.create_task(run_import_job(job_id, user_id, capped_ids))
+    asyncio.create_task(run_import_job(job_id, user_id, [tweet_id_to_url(t) for t in capped_ids]))
 
     return {
         "job_id": job_id,
         "total": len(capped_ids),
         "total_found": len(clean_ids),
         "capped": len(clean_ids) > len(capped_ids),
+    }
+
+
+@app.post("/import/urls-scraped")
+@limiter.limit("5/hour")
+async def import_urls_scraped(req: ScrapedUrlsImportRequest, request: Request):
+    """Generic, source-agnostic import endpoint — accepts any scraped post URLs
+    (currently used for LinkedIn saved posts; bookmarklet-based, same pattern as
+    /import/x-scraped). Each URL gets validated for SSRF inside run_import_job."""
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    clean_urls = list(dict.fromkeys(u for u in req.urls if u.startswith("http")))
+    if not clean_urls:
+        raise HTTPException(status_code=400, detail="No valid URLs found")
+
+    existing = supabase.table("import_jobs") \
+        .select("id").eq("user_id", user_id).eq("status", "running").limit(1).execute()
+    if existing.data:
+        raise HTTPException(status_code=409, detail="An import is already in progress")
+
+    capped_urls = clean_urls[:MAX_IMPORT_ITEMS]
+    job = supabase.table("import_jobs").insert({
+        "user_id": user_id, "source": "url_scraped", "status": "running",
+        "total": len(capped_urls), "processed": 0, "succeeded": 0,
+        "duplicates": 0, "skipped": 0, "failed": 0,
+    }).execute()
+    job_id = job.data[0]["id"]
+
+    asyncio.create_task(run_import_job(job_id, user_id, capped_urls))
+
+    return {
+        "job_id": job_id,
+        "total": len(capped_urls),
+        "total_found": len(clean_urls),
+        "capped": len(clean_urls) > len(capped_urls),
     }
 
 
