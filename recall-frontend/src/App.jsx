@@ -318,16 +318,25 @@ export default function App() {
     // X OAuth callback — must run before share-sheet extraction to avoid misreading ?code= as a URL
     const xCode = params.get('code')
     const xState = params.get('state')
-    const storedState = sessionStorage.getItem('x_import_state')
-    const xVerifier = sessionStorage.getItem('x_import_verifier')
-    if (xCode && xState && xState === storedState && xVerifier) {
-      sessionStorage.removeItem('x_import_state')
-      sessionStorage.removeItem('x_import_verifier')
+    if (xCode || xState) {
+      const storedState = localStorage.getItem('x_import_state')
+      const xVerifier = localStorage.getItem('x_import_verifier')
       window.history.replaceState({}, '', '/')
-      sessionStorage.setItem('x_import_pending', JSON.stringify({
-        code: xCode, verifier: xVerifier,
-        redirectUri: window.location.origin + '/'
-      }))
+      if (xCode && xState && xState === storedState && xVerifier) {
+        localStorage.removeItem('x_import_state')
+        localStorage.removeItem('x_import_verifier')
+        sessionStorage.setItem('x_import_pending', JSON.stringify({
+          code: xCode, verifier: xVerifier,
+          redirectUri: window.location.origin + '/'
+        }))
+      } else {
+        console.warn('[ReCall] X OAuth callback could not be validated', {
+          hasCode: !!xCode, hasState: !!xState,
+          stateMatch: xState === storedState, hasVerifier: !!xVerifier,
+        })
+        setMessage("X connection session expired or was lost — please try again.")
+        setIsError(true)
+      }
     }
 
     function extractSharedUrl(p) {
@@ -364,6 +373,9 @@ export default function App() {
         if (xPending) {
           sessionStorage.removeItem('x_import_pending')
           const { code, verifier, redirectUri } = JSON.parse(xPending)
+          setXConnecting(true)
+          setMessage("Connecting to X and fetching your bookmarks… this can take a few seconds.")
+          setIsError(false)
           getToken().then(token =>
             fetch(`${BACKEND}/import/x-connect`, {
               method: 'POST',
@@ -372,9 +384,13 @@ export default function App() {
             })
             .then(r => r.json())
             .then(data => {
+              setXConnecting(false)
               if (data.job_id) {
                 localStorage.setItem('recall_import_job_id', data.job_id)
-                if (data.capped) setMessage(`Found ${data.total_found} bookmarks — importing the most recent ${data.total}.`)
+                setMessage(data.capped
+                  ? `Found ${data.total_found} bookmarks — importing the most recent ${data.total}.`
+                  : `Found ${data.total} bookmarks — importing now.`)
+                setIsError(false)
                 posthog.capture('x_bookmarks_import_started', { source: 'oauth', total: data.total })
                 pollImportStatus(data.job_id)
                 setShowSettings(true)
@@ -383,7 +399,7 @@ export default function App() {
                 setIsError(true)
               }
             })
-            .catch(() => { setMessage('X import failed — try again'); setIsError(true) })
+            .catch(() => { setXConnecting(false); setMessage('X import failed — try again'); setIsError(true) })
           )
         }
         // Resume any in-progress bookmark import
@@ -589,8 +605,8 @@ export default function App() {
     setXConnecting(true)
     const { verifier, challenge } = await generatePKCE()
     const state = crypto.randomUUID()
-    sessionStorage.setItem('x_import_verifier', verifier)
-    sessionStorage.setItem('x_import_state', state)
+    localStorage.setItem('x_import_verifier', verifier)
+    localStorage.setItem('x_import_state', state)
     const redirectUri = window.location.origin + '/'
     const params = new URLSearchParams({
       response_type: 'code',
@@ -998,6 +1014,8 @@ export default function App() {
           <button onClick={signOut} style={styles.signOut}>Sign out</button>
         </div>
       </div>
+
+      {message && <p style={isError ? styles.error : styles.success}>{message}</p>}
 
       {showInstallUI && !installBannerDismissed && (
         <div style={styles.installBanner}>
@@ -1667,9 +1685,6 @@ export default function App() {
               ← Return to {getSourceLabel(saveReceipt.url)}
             </a>
           )}
-
-
-          {message && <p style={isError ? styles.error : styles.success}>{message}</p>}
 
           {todaySaves.length > 0 && (
             <div style={styles.todaySection}>
