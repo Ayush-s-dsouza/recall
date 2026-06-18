@@ -1329,7 +1329,8 @@ async def import_x_connect(req: XConnectRequest, request: Request):
     async with httpx.AsyncClient(timeout=10, headers={"Authorization": f"Bearer {x_token}"}) as client:
         me_res = await client.get("https://api.twitter.com/2/users/me")
     if me_res.status_code != 200:
-        raise HTTPException(status_code=400, detail="Could not fetch X user info")
+        print(f"[x-connect] /users/me failed: {me_res.status_code} {me_res.text}", flush=True)
+        raise HTTPException(status_code=400, detail=f"Could not fetch X user info (status {me_res.status_code})")
     x_user_id = me_res.json()["data"]["id"]
 
     # Paginate through bookmarks to collect all tweet IDs
