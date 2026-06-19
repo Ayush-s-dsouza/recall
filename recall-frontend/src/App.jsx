@@ -497,6 +497,7 @@ export default function App() {
                 setIsError(false)
                 posthog.capture('x_bookmarks_import_started', { source: 'bookmarklet', total: data.total })
                 pollImportStatus(data.job_id)
+                setView('save')
                 setShowSettings(true)
               } else {
                 setMessage(data.detail || 'Import failed — try again')
@@ -529,6 +530,7 @@ export default function App() {
                 setIsError(false)
                 posthog.capture('linkedin_import_started', { source: 'bookmarklet', total: data.total })
                 pollImportStatus(data.job_id)
+                setView('save')
                 setShowSettings(true)
               } else {
                 setMessage(data.detail || 'Import failed — try again')
@@ -563,6 +565,7 @@ export default function App() {
                 setIsError(false)
                 posthog.capture('x_bookmarks_import_started', { source: 'oauth', total: data.total })
                 pollImportStatus(data.job_id)
+                setView('save')
                 setShowSettings(true)
               } else {
                 setMessage(data.detail || 'X import failed — try again')
@@ -751,6 +754,13 @@ export default function App() {
           localStorage.removeItem("recall_import_job_id")
           posthog.capture("x_bookmarks_import_finished", { status: job.status, succeeded: job.succeeded })
           if (job.succeeded > 0) fetchTodaySaves()
+          if (job.status === "completed") {
+            setMessage(`Import finished: ${job.succeeded} added, ${job.duplicates} already saved, ${job.skipped} skipped, ${job.failed} failed.`)
+            setIsError(false)
+          } else if (job.status === "stalled") {
+            setMessage(`Import stalled (${job.processed}/${job.total} done) — try running it again.`)
+            setIsError(true)
+          }
         }
       } catch {
         clearInterval(importPollRef.current)
