@@ -411,6 +411,9 @@ async def _fetch_tweet_oembed(url: str) -> tuple[str, str, str]:
                 params={"url": url, "omit_script": "true"},
                 follow_redirects=True
             )
+        if res.status_code != 200:
+            print(f"[oembed] non-200: {res.status_code} body={res.text[:200]!r} url={url}", flush=True)
+            return "", "", ""
         data = res.json()
         author = data.get("author_name", "")
         raw_html = data.get("html", "")
@@ -418,7 +421,8 @@ async def _fetch_tweet_oembed(url: str) -> tuple[str, str, str]:
         text = re.sub(r'<[^>]+>', ' ', raw_html)
         text = re.sub(r'\s+', ' ', text).strip()
         return text, author, tco_urls[0] if tco_urls else ""
-    except Exception:
+    except Exception as e:
+        print(f"[oembed] exception: {e!r} url={url}", flush=True)
         return "", "", ""
 
 async def _fetch_tweet_card_title(tweet_url: str) -> str:
@@ -477,6 +481,7 @@ async def fetch_with_jina(url: str) -> tuple[str, str]:
         }) as client:
             res = await client.get(f"https://r.jina.ai/{url}", follow_redirects=True)
             if res.status_code != 200 or len(res.text) < 150:
+                print(f"[jina] status={res.status_code} len={len(res.text)} body={res.text[:200]!r} url={url}", flush=True)
                 return "", ""
             text = res.text
             # Extract title from Jina's output header (first few lines)
@@ -491,7 +496,8 @@ async def fetch_with_jina(url: str) -> tuple[str, str]:
                     break
             content = text[content_start:].strip() if content_start else text
             return content[:5000], title
-    except Exception:
+    except Exception as e:
+        print(f"[jina] exception: {e!r} url={url}", flush=True)
         return "", ""
 
 async def fetch_og_html(url: str) -> str:
