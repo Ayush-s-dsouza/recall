@@ -607,6 +607,10 @@ async def process_save(url: str, user_id: str) -> dict:
                 print(f"[tweet] tco resolution failed: {e}", flush=True)
         stub_only = not clean_text or clean_text.strip().startswith("https://t.co/") or len(clean_text) < 80
         title = article_title or jina_title or (clean_text[:100].strip() if not stub_only else "") or tweet_author or url
+        if title == url:
+            # Nothing usable came back at all (deleted/protected/unfetchable tweet) — skip
+            # rather than insert a row whose only "title" is the URL itself.
+            return {"thin_content": True, "url": url}
         if tweet_author:
             extra_context = f"Author: {tweet_author}"
         print(f"[tweet] final title passed to extract_save_metadata: {repr(title)}", flush=True)
