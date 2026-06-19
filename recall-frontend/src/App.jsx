@@ -230,6 +230,8 @@ export default function App() {
   const searchInputRef = useRef(null)
   const importFileInputRef = useRef(null)
   const importPollRef = useRef(null)
+  const xBookmarkletRef = useRef(null)
+  const linkedinBookmarkletRef = useRef(null)
   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
   const isAndroid = /Android/i.test(navigator.userAgent)
   const isDesktop = !isIOS && !isAndroid
@@ -257,6 +259,15 @@ export default function App() {
   }, [])
 
   useEffect(() => () => clearInterval(importPollRef.current), [])
+
+  // React's JSX `href` prop sanitizes/blocks javascript: URLs as an XSS precaution
+  // (throws "React has blocked a javascript: URL..." on click). Set these directly
+  // via the DOM instead, bypassing that check — these are static, developer-authored
+  // bookmarklet scripts, not user-supplied input.
+  useEffect(() => {
+    if (xBookmarkletRef.current) xBookmarkletRef.current.setAttribute('href', BOOKMARKLET_CODE)
+    if (linkedinBookmarkletRef.current) linkedinBookmarkletRef.current.setAttribute('href', LINKEDIN_BOOKMARKLET_CODE)
+  }, [showSettings, importJob])
 
   useEffect(() => {
     if (view === "library" && user && Object.keys(calendarSaves).length === 0 && !calendarLoading) {
@@ -1256,7 +1267,7 @@ export default function App() {
           {!importJob || importJob.status === "completed" || importJob.status === "stalled" ? (
             <>
               <a
-                href={BOOKMARKLET_CODE}
+                ref={xBookmarkletRef}
                 onClick={e => e.preventDefault()}
                 draggable="true"
                 style={{ ...styles.shortcutAddButton, display: "inline-block", cursor: "grab" }}
@@ -1319,7 +1330,7 @@ export default function App() {
           {(!importJob || importJob.status === "completed" || importJob.status === "stalled") && (
             <>
               <a
-                href={LINKEDIN_BOOKMARKLET_CODE}
+                ref={linkedinBookmarkletRef}
                 onClick={e => e.preventDefault()}
                 draggable="true"
                 style={{ ...styles.shortcutAddButton, display: "inline-block", cursor: "grab" }}
