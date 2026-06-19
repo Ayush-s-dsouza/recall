@@ -475,10 +475,14 @@ async def fetch_with_jina(url: str) -> tuple[str, str]:
     """Fetch clean article content via Jina Reader (handles JS rendering, 'read more', etc).
     Returns (clean_text, title). Falls back to ("", "") on failure."""
     try:
-        async with httpx.AsyncClient(timeout=15, headers={
+        jina_headers = {
             "User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)",
             "X-Return-Format": "text",
-        }) as client:
+        }
+        jina_key = os.getenv("JINA_API_KEY")
+        if jina_key:
+            jina_headers["Authorization"] = f"Bearer {jina_key}"
+        async with httpx.AsyncClient(timeout=15, headers=jina_headers) as client:
             res = await client.get(f"https://r.jina.ai/{url}", follow_redirects=True)
             if res.status_code != 200 or len(res.text) < 150:
                 print(f"[jina] status={res.status_code} len={len(res.text)} body={res.text[:200]!r} url={url}", flush=True)
