@@ -59,28 +59,36 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
   var win=null;
   try{ win=window.open('about:blank','_blank'); }catch(e){}
   if(win){ try{ win.document.write('<title>ReCall</title><body style="background:#0f0f0f;color:#0a66c2;font-family:monospace;padding:40px;text-align:center;font-size:16px">Collecting your LinkedIn saved posts…<br>This tab will redirect automatically.</body>'); }catch(e){} }
-  var urls=new Set();
+  var postsById=new Map();
   var lastCount=-1, stableRounds=0;
   var overlay=document.createElement('div');
   overlay.style.cssText='position:fixed;top:10px;right:10px;background:#000;color:#0a66c2;padding:10px 16px;border-radius:8px;font-family:monospace;font-size:14px;z-index:999999;border:1px solid #0a66c2';
   document.body.appendChild(overlay);
-  function update(){ overlay.textContent='ReCall: collected '+urls.size+' saved posts…'; }
+  function update(){ overlay.textContent='ReCall: collected '+postsById.size+' saved posts…'; }
   function clean(href){
     try { var u=new URL(href); return u.origin+u.pathname; } catch(e){ return href; }
+  }
+  function activityId(str){
+    var m=str.match(/activity[:-](\\d+)/);
+    return m ? m[1] : null;
   }
   function scan(){
     document.querySelectorAll('a[href]').forEach(function(a){
       try {
         var path=new URL(a.href).pathname;
         if(/^\\/posts\\//.test(path) || /^\\/feed\\/update\\//.test(path) || /^\\/pulse\\//.test(path)){
-          urls.add(clean(a.href));
+          var cleaned=clean(a.href);
+          var id=activityId(cleaned)||cleaned;
+          if(!postsById.has(id)) postsById.set(id, cleaned);
         }
       } catch(e){}
     });
     document.querySelectorAll('[data-chameleon-result-urn], [data-urn]').forEach(function(el){
       var urn=el.getAttribute('data-chameleon-result-urn')||el.getAttribute('data-urn')||'';
       var m=urn.match(/urn:li:activity:(\\d+)/);
-      if(m) urls.add('https://www.linkedin.com/feed/update/urn:li:activity:'+m[1]+'/');
+      if(m && !postsById.has(m[1])){
+        postsById.set(m[1], 'https://www.linkedin.com/feed/update/urn:li:activity:'+m[1]+'/');
+      }
     });
     update();
   }
@@ -96,21 +104,21 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
     return false;
   }
   function finish(){
-    overlay.textContent='ReCall: found '+urls.size+' saved posts. Opening…';
-    var encoded=Array.from(urls).map(encodeURIComponent).join(',');
+    overlay.textContent='ReCall: found '+postsById.size+' saved posts. Opening…';
+    var encoded=Array.from(postsById.values()).map(encodeURIComponent).join(',');
     var target=RECALL_URL+'#import_urls='+encoded;
     if(win && !win.closed){ win.location.href=target; } else { window.open(target, '_blank'); }
     setTimeout(function(){ overlay.remove(); }, 3000);
   }
   function step(){
     scan();
-    if(urls.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=urls.size; }
-    if(stableRounds>=8 || urls.size>=500){ finish(); return; }
+    if(postsById.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=postsById.size; }
+    if(stableRounds>=8 || postsById.size>=500){ finish(); return; }
     var clicked=clickShowMore();
     window.scrollTo(0, document.body.scrollHeight);
     setTimeout(step, clicked ? 1400 : 900);
   }
-  if(urls.size===0) update();
+  if(postsById.size===0) update();
   step();
 })();`
 const LINKEDIN_BOOKMARKLET_CODE = "javascript:" + LINKEDIN_BOOKMARKLET_SCRIPT.replace(/\s+/g, " ").trim()
