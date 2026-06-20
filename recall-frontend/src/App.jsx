@@ -2297,8 +2297,8 @@ const styles = {
   zeroResultsMain: { fontSize: "15px", color: "#aaa", fontWeight: "600", margin: 0, textAlign: "center" },
   zeroResultsSub: { fontSize: "13px", color: "#555", margin: 0, textAlign: "center" },
 
-  cardMeta: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" },
-  cardDate: { fontSize: "11px", color: "#555" },
+  cardMeta: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", gap: "8px", width: "100%" },
+  cardDate: { fontSize: "11px", color: "#555", marginLeft: "auto" },
   cardTitle: { fontSize: "15px", fontWeight: "600", marginBottom: "4px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
   cardSource: { fontSize: "12px", color: "#555" },
 

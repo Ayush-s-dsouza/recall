@@ -657,6 +657,17 @@ async def process_save(url: str, user_id: str) -> dict:
 
         title = og_title or jina_title or url
         print(f"[linkedin] og_title={og_title!r} jina_title={jina_title!r} og_description_len={len(og_description)} clean_text_len={len(clean_text)} clean_text_preview={clean_text[:150]!r} url={url}", flush=True)
+        # LinkedIn's anonymous-access login wall returns generic marketing copy that's
+        # long enough to pass the length check — detect it by signature phrases instead.
+        AUTHWALL_SIGNATURES = [
+            "agree & join linkedin", "login to linkedin to keep in touch",
+            "by clicking continue to join or sign in", "new to linkedin? join now",
+            "skip to main content", "linkedin login, sign in",
+        ]
+        lowered = (clean_text + " " + og_title).lower()
+        if any(sig in lowered for sig in AUTHWALL_SIGNATURES):
+            print(f"[linkedin] authwall signature detected, skipping url={url}", flush=True)
+            return {"thin_content": True, "url": url}
         if len(clean_text.strip()) < QUALITY_THRESHOLD:
             return {"thin_content": True, "url": url}
     else:
