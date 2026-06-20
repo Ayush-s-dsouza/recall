@@ -20,6 +20,7 @@ const BOOKMARKLET_SCRIPT = `(function(){
   var win=null;
   try{ win=window.open('about:blank','_blank'); }catch(e){}
   if(win){ try{ win.document.write('<title>ReCall</title><body style="background:#0f0f0f;color:#4ade80;font-family:monospace;padding:40px;text-align:center;font-size:16px">Collecting your X bookmarks…<br>This tab will redirect automatically.</body>'); }catch(e){} }
+  try{ window.focus(); }catch(e){}
   var ids=new Set();
   var lastCount=-1, stableRounds=0;
   var overlay=document.createElement('div');
@@ -41,6 +42,7 @@ const BOOKMARKLET_SCRIPT = `(function(){
     setTimeout(function(){ overlay.remove(); }, 3000);
   }
   function step(){
+    try{ window.focus(); }catch(e){}
     scan();
     if(ids.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=ids.size; }
     if(stableRounds>=5 || ids.size>=500){ finish(); return; }
@@ -59,6 +61,7 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
   var win=null;
   try{ win=window.open('about:blank','_blank'); }catch(e){}
   if(win){ try{ win.document.write('<title>ReCall</title><body style="background:#0f0f0f;color:#0a66c2;font-family:monospace;padding:40px;text-align:center;font-size:16px">Collecting your LinkedIn saved posts…<br>This tab will redirect automatically.</body>'); }catch(e){} }
+  try{ window.focus(); }catch(e){}
   var postsById=new Map();
   var lastCount=-1, stableRounds=0, iterations=0;
   var overlay=document.createElement('div');
@@ -111,6 +114,7 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
     setTimeout(function(){ overlay.remove(); }, 3000);
   }
   function step(){
+    try{ window.focus(); }catch(e){}
     scan();
     iterations++;
     if(postsById.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=postsById.size; }
