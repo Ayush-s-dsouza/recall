@@ -72,6 +72,17 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
     });
     update();
   }
+  function clickShowMore(){
+    var els=document.querySelectorAll('button, a');
+    for(var i=0;i<els.length;i++){
+      var t=(els[i].textContent||'').trim().toLowerCase();
+      if(t==='show more results'||t==='show more'||t==='see more results'||t==='see more'){
+        els[i].click();
+        return true;
+      }
+    }
+    return false;
+  }
   function finish(){
     overlay.textContent='ReCall: found '+urls.size+' saved posts. Opening…';
     var encoded=Array.from(urls).map(encodeURIComponent).join(',');
@@ -82,9 +93,10 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
   function step(){
     scan();
     if(urls.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=urls.size; }
-    if(stableRounds>=5 || urls.size>=500){ finish(); return; }
+    if(stableRounds>=8 || urls.size>=500){ finish(); return; }
+    var clicked=clickShowMore();
     window.scrollTo(0, document.body.scrollHeight);
-    setTimeout(step, 800);
+    setTimeout(step, clicked ? 1400 : 900);
   }
   if(urls.size===0) update();
   step();

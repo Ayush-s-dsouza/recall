@@ -656,6 +656,7 @@ async def process_save(url: str, user_id: str) -> dict:
         clean_text = re.sub(r'\s{2,}', ' ', combined).strip()
 
         title = og_title or jina_title or url
+        print(f"[linkedin] og_title={og_title!r} jina_title={jina_title!r} og_description_len={len(og_description)} clean_text_len={len(clean_text)} clean_text_preview={clean_text[:150]!r} url={url}", flush=True)
         if len(clean_text.strip()) < QUALITY_THRESHOLD:
             return {"thin_content": True, "url": url}
     else:
