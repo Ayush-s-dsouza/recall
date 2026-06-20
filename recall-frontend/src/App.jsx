@@ -17,7 +17,8 @@ const TWITTER_CLIENT_ID = import.meta.env.VITE_TWITTER_CLIENT_ID
 // javascript: URIs are unreliable when dragged to a bookmarks bar in some browsers.
 const BOOKMARKLET_SCRIPT = `(function(){
   var RECALL_URL='${typeof window !== "undefined" ? window.location.origin : "https://recall-iota-six.vercel.app"}/';
-  var win=window.open('about:blank','_blank');
+  var win=null;
+  try{ win=window.open('about:blank','_blank'); }catch(e){}
   if(win){ try{ win.document.write('<title>ReCall</title><body style="background:#0f0f0f;color:#4ade80;font-family:monospace;padding:40px;text-align:center;font-size:16px">Collecting your X bookmarks…<br>This tab will redirect automatically.</body>'); }catch(e){} }
   var ids=new Set();
   var lastCount=-1, stableRounds=0;
@@ -55,7 +56,8 @@ const BOOKMARKLET_CODE = "javascript:" + BOOKMARKLET_SCRIPT.replace(/\s+/g, " ")
 // post URLs (not just IDs, since LinkedIn permalinks vary in shape) via #import_urls=.
 const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
   var RECALL_URL='${typeof window !== "undefined" ? window.location.origin : "https://recall-iota-six.vercel.app"}/';
-  var win=window.open('about:blank','_blank');
+  var win=null;
+  try{ win=window.open('about:blank','_blank'); }catch(e){}
   if(win){ try{ win.document.write('<title>ReCall</title><body style="background:#0f0f0f;color:#0a66c2;font-family:monospace;padding:40px;text-align:center;font-size:16px">Collecting your LinkedIn saved posts…<br>This tab will redirect automatically.</body>'); }catch(e){} }
   var urls=new Set();
   var lastCount=-1, stableRounds=0;
