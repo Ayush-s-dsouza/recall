@@ -73,9 +73,6 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
     update();
   }
   function clickShowMore(){
-    // Deliberately narrow match — generic "see more"/"show more" collides with the
-    // per-post inline text-expand links every LinkedIn post card has, which doesn't
-    // load new posts and can disrupt the list. Only the page-level pagination button.
     var els=document.querySelectorAll('button');
     for(var i=0;i<els.length;i++){
       var t=(els[i].textContent||'').trim().toLowerCase();
