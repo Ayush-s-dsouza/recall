@@ -60,14 +60,19 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
   var RECALL_URL='${typeof window !== "undefined" ? window.location.origin : "https://recall-iota-six.vercel.app"}/';
   var win=null;
   try{ win=window.open('about:blank','_blank'); }catch(e){}
-  if(win){ try{ win.document.write('<title>ReCall</title><body style="background:#0f0f0f;color:#0a66c2;font-family:monospace;padding:40px;text-align:center;font-size:16px">Collecting your LinkedIn saved posts…<br>This tab will redirect automatically.</body>'); }catch(e){} }
+  if(win){ try{ win.document.write('<title>ReCall</title><body style="background:#0f0f0f;color:#0a66c2;font-family:monospace;padding:40px;text-align:center;font-size:16px"><div id="status">Switching back to your LinkedIn tab to collect saved posts…</div><div style="color:#555;font-size:13px;margin-top:12px">This tab will redirect automatically once it\\'s done — usually 20-40 seconds. It\\'s normal for the LinkedIn tab to stay in front during that time.</div></body>'); }catch(e){} }
   try{ window.focus(); }catch(e){}
   var postsById=new Map();
   var lastCount=-1, stableRounds=0, iterations=0;
   var overlay=document.createElement('div');
   overlay.style.cssText='position:fixed;top:10px;right:10px;background:#000;color:#0a66c2;padding:10px 16px;border-radius:8px;font-family:monospace;font-size:14px;z-index:999999;border:1px solid #0a66c2';
   document.body.appendChild(overlay);
-  function update(){ overlay.textContent='ReCall: collected '+postsById.size+' saved posts…'; }
+  function update(){
+    overlay.textContent='ReCall: collected '+postsById.size+' saved posts…';
+    if(win && !win.closed){
+      try{ var s=win.document.getElementById('status'); if(s) s.textContent='Collecting your LinkedIn saved posts… '+postsById.size+' found so far.'; }catch(e){}
+    }
+  }
   function clean(href){
     try { var u=new URL(href); return u.origin+u.pathname; } catch(e){ return href; }
   }
@@ -114,7 +119,7 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
     setTimeout(function(){ overlay.remove(); }, 3000);
   }
   function step(){
-    try{ window.focus(); }catch(e){}
+    if(iterations % 3 === 0){ try{ window.focus(); }catch(e){} }
     scan();
     iterations++;
     if(postsById.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=postsById.size; }
