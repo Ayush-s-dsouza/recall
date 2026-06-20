@@ -77,8 +77,8 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
         }
       } catch(e){}
     });
-    document.querySelectorAll('[data-urn]').forEach(function(el){
-      var urn=el.getAttribute('data-urn')||'';
+    document.querySelectorAll('[data-chameleon-result-urn], [data-urn]').forEach(function(el){
+      var urn=el.getAttribute('data-chameleon-result-urn')||el.getAttribute('data-urn')||'';
       var m=urn.match(/urn:li:activity:(\\d+)/);
       if(m) urls.add('https://www.linkedin.com/feed/update/urn:li:activity:'+m[1]+'/');
     });
