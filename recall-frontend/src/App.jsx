@@ -67,8 +67,18 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
     try { var u=new URL(href); return u.origin+u.pathname; } catch(e){ return href; }
   }
   function scan(){
-    document.querySelectorAll('a[href*="/posts/"], a[href*="/feed/update/"], a[href*="/pulse/"]').forEach(function(a){
-      urls.add(clean(a.href));
+    document.querySelectorAll('a[href]').forEach(function(a){
+      try {
+        var path=new URL(a.href).pathname;
+        if(/^\/posts\//.test(path) || /^\/feed\/update\//.test(path) || /^\/pulse\//.test(path)){
+          urls.add(clean(a.href));
+        }
+      } catch(e){}
+    });
+    document.querySelectorAll('[data-urn]').forEach(function(el){
+      var urn=el.getAttribute('data-urn')||'';
+      var m=urn.match(/urn:li:activity:(\d+)/);
+      if(m) urls.add('https://www.linkedin.com/feed/update/urn:li:activity:'+m[1]+'/');
     });
     update();
   }
