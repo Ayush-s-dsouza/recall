@@ -230,7 +230,6 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [deletingAccount, setDeletingAccount] = useState(false)
   const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false)
-  const [externalToken, setExternalToken] = useState(null)
   const [tokenCopied, setTokenCopied] = useState(false)
   const [message, setMessage] = useState("")
   const [isError, setIsError] = useState(false)
@@ -1392,7 +1391,7 @@ export default function App() {
       <div style={styles.header}>
         <h1 style={styles.logoSmall}>ReCall</h1>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          <button onClick={() => { setShowSettings(s => !s); setConfirmDeleteAccount(false); setExternalToken(null); setTokenCopied(false) }} style={styles.signOut} title="Settings">⚙</button>
+          <button onClick={() => { setShowSettings(s => !s); setConfirmDeleteAccount(false); setTokenCopied(false) }} style={styles.signOut} title="Settings">⚙</button>
           <button onClick={signOut} style={styles.signOut}>Sign out</button>
         </div>
       </div>
@@ -1426,52 +1425,6 @@ export default function App() {
             <button onClick={() => { setLegalSection('privacy'); setView('legal'); setShowSettings(false) }} style={styles.settingsLink}>Privacy Policy</button>
             <button onClick={() => { setLegalSection('terms'); setView('legal'); setShowSettings(false) }} style={styles.settingsLink}>Terms of Service</button>
           </div>
-          <div style={styles.settingsDivider} />
-
-          {/* Connect to other apps */}
-          <p style={styles.settingsSectionHeading}>Connect to other apps</p>
-          {!externalToken ? (
-            <button
-              onClick={async () => {
-                const { data: { session } } = await supabase.auth.getSession()
-                console.log('[ReCall debug] session keys:', session ? Object.keys(session) : null)
-                const token = session?.refresh_token ?? null
-                if (token) {
-                  console.log('[ReCall debug] token length:', token.length)
-                  console.log('[ReCall debug] token preview:', token.slice(0, 8) + '...' + token.slice(-8))
-                } else {
-                  console.log('[ReCall debug] token is null/undefined')
-                }
-                setExternalToken(token)
-              }}
-              style={styles.settingsLink}
-            >Show External App Token</button>
-          ) : (
-            <div style={styles.tokenSection}>
-              <div style={styles.tokenRow}>
-                <input
-                  readOnly
-                  type="password"
-                  value={externalToken}
-                  style={styles.tokenInput}
-                  onFocus={e => e.target.select()}
-                />
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(externalToken)
-                    setTokenCopied(true)
-                    setTimeout(() => setTokenCopied(false), 2000)
-                  }}
-                  style={styles.tokenCopyButton}
-                >{tokenCopied ? "Copied!" : "Copy"}</button>
-              </div>
-              <p style={styles.tokenWarning}>
-                Use this to authenticate ReCall in external apps like Claude Desktop. Treat it like a password — anyone with this token has full read access to your saves until you sign out of all sessions. Don't paste it anywhere public, don't share it.
-              </p>
-              <button onClick={() => { setExternalToken(null); setTokenCopied(false) }} style={styles.tokenHideButton}>Hide token</button>
-            </div>
-          )}
-
           <div style={styles.settingsDivider} />
 
           {/* Connect to Claude or ChatGPT — OAuth connector, no token to copy */}
