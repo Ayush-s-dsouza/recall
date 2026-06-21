@@ -912,7 +912,11 @@ export default function App() {
           posthog.capture("x_bookmarks_import_finished", { status: job.status, succeeded: job.succeeded })
           if (job.succeeded > 0) fetchTodaySaves()
           if (job.status === "completed") {
-            setMessage(`Import finished: ${job.succeeded} added, ${job.duplicates} already saved, ${job.skipped} skipped, ${job.failed} failed.`)
+            if (job.source === "url_scraped") {
+              setMessage(`Imported ${job.succeeded} public LinkedIn posts${job.duplicates > 0 ? `, plus ${job.duplicates} already in ReCall` : ""}. The other ${job.skipped} needed a logged-in LinkedIn session to view, so we couldn't pull those in — that's a LinkedIn restriction, not an error.`)
+            } else {
+              setMessage(`Import finished: ${job.succeeded} added, ${job.duplicates} already saved, ${job.skipped} skipped, ${job.failed} failed.`)
+            }
             setIsError(false)
           } else if (job.status === "stalled") {
             setMessage(`Import stalled (${job.processed}/${job.total} done) — try running it again.`)
@@ -1537,9 +1541,18 @@ export default function App() {
                 💼 Import LinkedIn Saved Posts
               </a>
               <p style={styles.overlayNote}>
+                Heads up: LinkedIn blocks most saved-post content from browsers that aren't logged in, so this typically recovers <strong>about 60% of your saves, sometimes more</strong> — we bring in everything that's publicly viewable and skip the rest automatically. Still way better than starting from zero.
+              </p>
+              <p style={styles.overlayNote}>
                 Drag this button to your bookmarks bar (don't click it here). Then open{" "}
                 <strong>linkedin.com/my-items/saved-posts/</strong>, scroll down a little so your posts load, and click it there.
                 It can take a couple of minutes (LinkedIn loads this page slowly) and then redirects that tab to ReCall automatically — leave it running in the background, don't close the tab.
+                {importJob?.status === "completed" && importJob.source === "url_scraped" && (
+                  <> Last import: <strong>{importJob.succeeded}</strong> public posts imported{importJob.duplicates > 0 ? `, ${importJob.duplicates} already saved` : ""}. The rest needed a LinkedIn login to view.</>
+                )}
+                {importJob?.status === "stalled" && importJob.source === "url_scraped" && (
+                  <> Last import stalled ({importJob.processed}/{importJob.total} done). Run it again to retry — already-imported posts are skipped.</>
+                )}
               </p>
             </>
           )}
