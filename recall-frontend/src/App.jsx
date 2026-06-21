@@ -114,7 +114,7 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
     scan();
     iterations++;
     if(postsById.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=postsById.size; }
-    if((stableRounds>=8 && iterations>=20) || postsById.size>=500 || iterations>=70){ finish(); return; }
+    if((stableRounds>=10 && iterations>=80) || postsById.size>=500 || iterations>=160){ finish(); return; }
     var clicked=clickShowMore();
     window.scrollTo(0, document.body.scrollHeight);
     setTimeout(step, clicked ? 1400 : 900);
@@ -1539,7 +1539,7 @@ export default function App() {
               <p style={styles.overlayNote}>
                 Drag this button to your bookmarks bar (don't click it here). Then open{" "}
                 <strong>linkedin.com/my-items/saved-posts/</strong>, scroll down a little so your posts load, and click it there.
-                It takes 20-40 seconds and then redirects that tab to ReCall automatically — don't switch away while it's running.
+                It can take a couple of minutes (LinkedIn loads this page slowly) and then redirects that tab to ReCall automatically — leave it running in the background, don't close the tab.
               </p>
             </>
           )}
