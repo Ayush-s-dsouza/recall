@@ -188,8 +188,30 @@ export default function App() {
   const [view, setView] = useState(() => {
     const path = window.location.pathname
     if (path === '/privacy' || path === '/terms') return 'legal'
+    if (path === '/mcp/consent') return 'mcp-consent'
     return sessionStorage.getItem("recall_view") || "search"
   })
+  // Captured once at mount (keyed off pathname, not just presence of params) so it
+  // survives the Google sign-in round-trip and never gets confused with the
+  // X/Twitter OAuth callback, which also lands on "/" with its own code/state.
+  const [mcpConsentParams] = useState(() => {
+    if (window.location.pathname !== '/mcp/consent') return null
+    const p = new URLSearchParams(window.location.search)
+    return {
+      client_id: p.get('client_id'),
+      client_name: p.get('client_name'),
+      state: p.get('state'),
+      redirect_uri: p.get('redirect_uri'),
+      code_challenge: p.get('code_challenge'),
+      code_challenge_method: p.get('code_challenge_method') || 'S256',
+      scope: p.get('scope'),
+      resource: p.get('resource'),
+    }
+  })
+  const [mcpConsenting, setMcpConsenting] = useState(false)
+  const [mcpConsentError, setMcpConsentError] = useState("")
+  const [mcpConnections, setMcpConnections] = useState(null)
+  const [mcpDisconnectingId, setMcpDisconnectingId] = useState(null)
   const [legalSection, setLegalSection] = useState(() =>
     window.location.pathname === '/terms' ? 'terms' : 'privacy'
   )
@@ -286,7 +308,10 @@ export default function App() {
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
   const showInstallUI = !isStandalone && !justInstalled && (deferredInstallPrompt || isIOS || isAndroid)
 
-  useEffect(() => { sessionStorage.setItem("recall_view", view) }, [view])
+  useEffect(() => {
+    if (view === 'mcp-consent') return // transient, query-param-driven — never persist as the default view
+    sessionStorage.setItem("recall_view", view)
+  }, [view])
 
   useEffect(() => {
     const handleBeforeInstall = (e) => {
@@ -469,9 +494,11 @@ export default function App() {
       }
     }
 
-    // X OAuth callback — must run before share-sheet extraction to avoid misreading ?code= as a URL
-    const xCode = params.get('code')
-    const xState = params.get('state')
+    // X OAuth callback — must run before share-sheet extraction to avoid misreading ?code= as a URL.
+    // Skipped on /mcp/consent: that path uses its own code/state params (see mcpConsentParams)
+    // which would otherwise be misread as a stale/invalid X callback here.
+    const xCode = window.location.pathname === '/mcp/consent' ? null : params.get('code')
+    const xState = window.location.pathname === '/mcp/consent' ? null : params.get('state')
     if (xCode || xState) {
       const storedState = localStorage.getItem('x_import_state')
       const xVerifier = localStorage.getItem('x_import_verifier')
@@ -707,6 +734,77 @@ export default function App() {
       provider: "google",
       options: { redirectTo: window.location.origin }
     })
+  }
+
+  // Same as signIn, but preserves the full /mcp/consent?... URL (including the
+  // pending authorization params) across the Google redirect round-trip — signIn's
+  // redirectTo: origin would otherwise drop the user back at "/" and lose the request.
+  const signInForMcpConsent = async () => {
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.href }
+    })
+  }
+
+  const approveMcpConsent = async () => {
+    setMcpConsenting(true)
+    setMcpConsentError("")
+    try {
+      const token = await getToken()
+      const res = await fetch(`${BACKEND}/mcp/authorize/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          supabase_access_token: token,
+          client_id: mcpConsentParams.client_id,
+          redirect_uri: mcpConsentParams.redirect_uri,
+          state: mcpConsentParams.state,
+          code_challenge: mcpConsentParams.code_challenge,
+          code_challenge_method: mcpConsentParams.code_challenge_method,
+          scope: mcpConsentParams.scope,
+          resource: mcpConsentParams.resource,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || "Could not complete authorization")
+      window.location.href = data.redirect_uri
+    } catch (e) {
+      setMcpConsentError(e.message || "Something went wrong — try connecting again")
+      setMcpConsenting(false)
+    }
+  }
+
+  const denyMcpConsent = () => {
+    const url = new URL(mcpConsentParams.redirect_uri)
+    url.searchParams.set('error', 'access_denied')
+    if (mcpConsentParams.state) url.searchParams.set('state', mcpConsentParams.state)
+    window.location.href = url.toString()
+  }
+
+  const fetchMcpConnections = async () => {
+    const token = await getToken()
+    try {
+      const res = await fetch(`${BACKEND}/mcp/connections?token=${encodeURIComponent(token)}`)
+      const data = await res.json()
+      setMcpConnections(data.connections || [])
+    } catch {
+      setMcpConnections([])
+    }
+  }
+
+  const disconnectMcpClient = async (clientId) => {
+    setMcpDisconnectingId(clientId)
+    try {
+      const token = await getToken()
+      await fetch(`${BACKEND}/mcp/connections/${clientId}/revoke`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      })
+      setMcpConnections(conns => conns.filter(c => c.client_id !== clientId))
+    } finally {
+      setMcpDisconnectingId(null)
+    }
   }
 
   const signOut = async () => {
@@ -1190,6 +1288,41 @@ export default function App() {
     )
   }
 
+  if (view === 'mcp-consent') {
+    if (!mcpConsentParams?.client_id || !mcpConsentParams?.redirect_uri || !mcpConsentParams?.code_challenge) {
+      return (
+        <div style={styles.container}>
+          <div style={styles.hero}>
+            <h1 style={styles.logo}>ReCall</h1>
+            <p style={styles.heroBody}>This connection request is missing required information. Go back to the app you were connecting from and try again.</p>
+          </div>
+        </div>
+      )
+    }
+    const clientLabel = mcpConsentParams.client_name || "a third-party app"
+    return (
+      <div style={styles.container}>
+        <div style={styles.hero}>
+          <h1 style={styles.logo}>ReCall</h1>
+          <p style={styles.heroTagline}>Connect to {clientLabel}</p>
+          <p style={styles.heroBody}>{clientLabel} wants to search, save, and manage URLs in your ReCall library on your behalf.</p>
+          {!user ? (
+            <button onClick={signInForMcpConsent} style={styles.button}>Sign in with Google to continue</button>
+          ) : (
+            <>
+              <p style={{ ...styles.heroBody, fontSize: "13px", color: "#888" }}>Signed in as {user.email}</p>
+              {mcpConsentError && <p style={styles.error}>{mcpConsentError}</p>}
+              <button onClick={approveMcpConsent} disabled={mcpConsenting} style={styles.button}>
+                {mcpConsenting ? "Connecting…" : "Allow"}
+              </button>
+              <button onClick={denyMcpConsent} style={styles.legalFooterLink}>Deny</button>
+            </>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   if (!user) {
     return (
       <div style={styles.container}>
@@ -1315,6 +1448,49 @@ export default function App() {
                 Use this to authenticate ReCall in external apps like Claude Desktop. Treat it like a password — anyone with this token has full read access to your saves until you sign out of all sessions. Don't paste it anywhere public, don't share it.
               </p>
               <button onClick={() => { setExternalToken(null); setTokenCopied(false) }} style={styles.tokenHideButton}>Hide token</button>
+            </div>
+          )}
+
+          <div style={styles.settingsDivider} />
+
+          {/* Connect to Claude or ChatGPT — OAuth connector, no token to copy */}
+          <p style={styles.settingsSectionHeading}>Connect to Claude or ChatGPT</p>
+          <div style={styles.tokenSection}>
+            <div style={styles.tokenRow}>
+              <input readOnly value={`${BACKEND}/mcp`} style={styles.tokenInput} onFocus={e => e.target.select()} />
+              <button
+                onClick={() => { navigator.clipboard.writeText(`${BACKEND}/mcp`); setTokenCopied(true); setTimeout(() => setTokenCopied(false), 2000) }}
+                style={styles.tokenCopyButton}
+              >{tokenCopied ? "Copied!" : "Copy"}</button>
+            </div>
+            <p style={styles.tokenWarning}>
+              Paste this URL into Claude's or ChatGPT's "Add custom connector" dialog. You'll sign in with Google and approve access — no token to copy.
+            </p>
+          </div>
+
+          <div style={styles.settingsDivider} />
+
+          {/* Connected apps — list + revoke active OAuth connections */}
+          <p style={styles.settingsSectionHeading}>Connected apps</p>
+          {mcpConnections === null ? (
+            <button onClick={fetchMcpConnections} style={styles.settingsLink}>Show connected apps</button>
+          ) : mcpConnections.length === 0 ? (
+            <p style={styles.tokenWarning}>No apps connected yet.</p>
+          ) : (
+            <div style={styles.tokenSection}>
+              {mcpConnections.map(c => (
+                <div key={c.client_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+                  <span style={{ fontSize: "13px", color: "#ccc" }}>
+                    {c.client_name || "Unnamed app"}
+                    <span style={{ color: "#666" }}> · connected {new Date(c.connected_at).toLocaleDateString()}</span>
+                  </span>
+                  <button
+                    onClick={() => disconnectMcpClient(c.client_id)}
+                    disabled={mcpDisconnectingId === c.client_id}
+                    style={styles.tokenHideButton}
+                  >{mcpDisconnectingId === c.client_id ? "Disconnecting…" : "Disconnect"}</button>
+                </div>
+              ))}
             </div>
           )}
 
