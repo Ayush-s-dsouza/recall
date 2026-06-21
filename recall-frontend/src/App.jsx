@@ -119,7 +119,7 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
     setTimeout(function(){ overlay.remove(); }, 3000);
   }
   function step(){
-    if(iterations % 3 === 0){ try{ window.focus(); }catch(e){} }
+    try{ window.focus(); }catch(e){}
     scan();
     iterations++;
     if(postsById.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=postsById.size; }
