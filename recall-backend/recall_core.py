@@ -8,6 +8,7 @@ import math
 import socket
 import ipaddress
 import asyncio
+import html as html_entities
 from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor
 
@@ -167,6 +168,14 @@ async def extract_save_metadata_async(raw_title: str, content: str, extra_contex
     except asyncio.TimeoutError:
         return raw_title, "Other"
 
+def decode_html_entities(s: str) -> str:
+    """Decode HTML entities, including the double-encoded form some sites (e.g. LinkedIn)
+    serve in meta tags (&amp;#39; instead of &#39;). A second pass is safe/idempotent for
+    normally-encoded text — unescape() doesn't re-scan its own output for new entities."""
+    if not s:
+        return s
+    return html_entities.unescape(html_entities.unescape(s))
+
 def extract_og_tags(html: str) -> dict:
     """Extract Open Graph and meta description tags from raw HTML."""
     result = {}
@@ -175,7 +184,7 @@ def extract_og_tags(html: str) -> dict:
         prop_match = re.search(r'(?:property|name)\s*=\s*["\']([^"\']+)["\']', attrs_str, re.IGNORECASE)
         content_match = re.search(r'content\s*=\s*["\']([^"\']*)["\']', attrs_str, re.IGNORECASE)
         if prop_match and content_match:
-            result[prop_match.group(1).lower()] = content_match.group(1).strip()
+            result[prop_match.group(1).lower()] = decode_html_entities(content_match.group(1).strip())
     return result
 
 async def analyze_image(image_url: str) -> str:
@@ -597,7 +606,7 @@ async def process_save(url: str, user_id: str) -> dict:
         )
 
         title_match = re.search(r'<title>(.*?)</title>', raw_html, re.IGNORECASE)
-        html_title = title_match.group(1) if title_match else ""
+        html_title = decode_html_entities(title_match.group(1)) if title_match else ""
         og = extract_og_tags(raw_html)
         og_title = og.get("og:title", "")
         og_description = og.get("og:description", "") or og.get("description", "")
