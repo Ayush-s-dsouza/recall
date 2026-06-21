@@ -192,20 +192,32 @@ export default function App() {
     return sessionStorage.getItem("recall_view") || "search"
   })
   // Captured once at mount (keyed off pathname, not just presence of params) so it
-  // survives the Google sign-in round-trip and never gets confused with the
-  // X/Twitter OAuth callback, which also lands on "/" with its own code/state.
+  // never gets confused with the X/Twitter OAuth callback, which also lands on "/"
+  // with its own code/state. Falls back to a sessionStorage copy when the URL has
+  // no query string at all — Supabase's redirectTo doesn't reliably round-trip a
+  // long, heavily-encoded query string through its redirect-URL allowlist (signInForMcpConsent
+  // below stashes the params there before sending the user to Google, and sends Google
+  // back to a bare /mcp/consent with no query string instead of relying on that match).
   const [mcpConsentParams] = useState(() => {
     if (window.location.pathname !== '/mcp/consent') return null
     const p = new URLSearchParams(window.location.search)
-    return {
-      client_id: p.get('client_id'),
-      client_name: p.get('client_name'),
-      state: p.get('state'),
-      redirect_uri: p.get('redirect_uri'),
-      code_challenge: p.get('code_challenge'),
-      code_challenge_method: p.get('code_challenge_method') || 'S256',
-      scope: p.get('scope'),
-      resource: p.get('resource'),
+    if (p.get('client_id')) {
+      return {
+        client_id: p.get('client_id'),
+        client_name: p.get('client_name'),
+        state: p.get('state'),
+        redirect_uri: p.get('redirect_uri'),
+        code_challenge: p.get('code_challenge'),
+        code_challenge_method: p.get('code_challenge_method') || 'S256',
+        scope: p.get('scope'),
+        resource: p.get('resource'),
+      }
+    }
+    try {
+      const saved = sessionStorage.getItem('mcp_consent_params')
+      return saved ? JSON.parse(saved) : null
+    } catch {
+      return null
     }
   })
   const [mcpConsenting, setMcpConsenting] = useState(false)
@@ -736,13 +748,16 @@ export default function App() {
     })
   }
 
-  // Same as signIn, but preserves the full /mcp/consent?... URL (including the
-  // pending authorization params) across the Google redirect round-trip — signIn's
-  // redirectTo: origin would otherwise drop the user back at "/" and lose the request.
+  // Same as signIn, but returns to /mcp/consent instead of "/". Stashes the pending
+  // authorization params in sessionStorage first and redirects to a bare (query-string-free)
+  // URL — Supabase's redirect-URL allowlist doesn't reliably match a long, heavily-encoded
+  // query string via redirectTo, so the params are restored from sessionStorage on return
+  // instead of relying on them surviving in the URL (see mcpConsentParams above).
   const signInForMcpConsent = async () => {
+    sessionStorage.setItem('mcp_consent_params', JSON.stringify(mcpConsentParams))
     await supabase.auth.signInWithOAuth({
       provider: "google",
-      options: { redirectTo: window.location.href }
+      options: { redirectTo: `${window.location.origin}/mcp/consent` }
     })
   }
 
@@ -767,6 +782,7 @@ export default function App() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || "Could not complete authorization")
+      sessionStorage.removeItem('mcp_consent_params')
       window.location.href = data.redirect_uri
     } catch (e) {
       setMcpConsentError(e.message || "Something went wrong — try connecting again")
@@ -778,6 +794,7 @@ export default function App() {
     const url = new URL(mcpConsentParams.redirect_uri)
     url.searchParams.set('error', 'access_denied')
     if (mcpConsentParams.state) url.searchParams.set('state', mcpConsentParams.state)
+    sessionStorage.removeItem('mcp_consent_params')
     window.location.href = url.toString()
   }
 
