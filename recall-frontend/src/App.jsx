@@ -1538,7 +1538,8 @@ export default function App() {
               </a>
               <p style={styles.overlayNote}>
                 Drag this button to your bookmarks bar (don't click it here). Then open{" "}
-                <strong>linkedin.com/my-items/saved-posts/</strong> in a new tab and click it there — same idea as the X import above.
+                <strong>linkedin.com/my-items/saved-posts/</strong>, scroll down a little so your posts load, and click it there.
+                It takes 20-40 seconds and then redirects that tab to ReCall automatically — don't switch away while it's running.
               </p>
             </>
           )}
