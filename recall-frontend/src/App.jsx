@@ -690,8 +690,11 @@ export default function App() {
           setResults(JSON.parse(savedResults))
           setHasSearched(true)
         }
-        // Initialize onboarding for first-time users
-        if (!localStorage.getItem('recall_onboarded')) {
+        // Initialize onboarding for first-time users — skipped on /mcp/consent, where
+        // setView('save') would silently override the consent screen right after it
+        // was correctly set, since this runs on every SIGNED_IN event (including the
+        // one right after the Google redirect completes during the consent flow).
+        if (!localStorage.getItem('recall_onboarded') && window.location.pathname !== '/mcp/consent') {
           const isStandalone = window.matchMedia('(display-mode: standalone)').matches
           if (isStandalone || localStorage.getItem('recall_onboarding_install')) {
             setOnboardingStep('firstSave')
@@ -722,7 +725,8 @@ export default function App() {
         fetchLibraryFilters()
         fetchSuggestions()
         fetchSaveCount()
-        if (!localStorage.getItem('recall_onboarded')) {
+        // Skipped on /mcp/consent — see matching guard above for why.
+        if (!localStorage.getItem('recall_onboarded') && window.location.pathname !== '/mcp/consent') {
           const isStandalone = window.matchMedia('(display-mode: standalone)').matches
           if (isStandalone || localStorage.getItem('recall_onboarding_install')) {
             setOnboardingStep('firstSave')
