@@ -62,7 +62,10 @@ ReCall/
 │   ├── vite.config.js
 │   └── .env                    ← NEVER commit; see env vars section below
 └── recall-backend/
-    ├── main.py                 ← entire backend (single file)
+    ├── main.py                 ← FastAPI app: REST routes (thin wrappers) + mounts mcp_server.py
+    ├── recall_core.py          ← shared business logic (do_* functions, process_save, supabase client) — used by both main.py and mcp_server.py
+    ├── mcp_server.py           ← remote MCP server: OAuth 2.1 provider + 6 MCP tools (Claude/ChatGPT connector)
+    ├── sql/                    ← hand-run migrations (no migration tool); 001 = MCP OAuth tables, 002-004 = fixes
     ├── requirements.txt
     ├── Procfile                ← `web: uvicorn main:app --host 0.0.0.0 --port $PORT`
     ├── railway.json            ← Nixpacks build + start command
@@ -93,6 +96,8 @@ SUPABASE_SERVICE_KEY=<service role key — NEVER expose to client>
 GEMINI_API_KEY=<Gemini API key>
 SENTRY_DSN=<Sentry backend DSN>
 CORS_ORIGINS=https://recall-iota-six.vercel.app,http://localhost:5173
+BACKEND_PUBLIC_URL=https://recall-production-9941.up.railway.app   # mcp_server.py OAuth issuer/resource URL; defaults to http://localhost:8000 for local dev
+FRONTEND_URL=https://recall-iota-six.vercel.app                    # where mcp_server.py's authorize() redirects for consent; defaults to http://localhost:5173
 ```
 
 **On Railway**, these are set as environment variables in the Railway dashboard. `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes.
@@ -113,6 +118,20 @@ CORS_ORIGINS=https://recall-iota-six.vercel.app,http://localhost:5173
 | `GET` | `/` | Health check |
 
 All mutating endpoints verify the Supabase JWT and enforce `user_id` ownership before touching any row.
+
+### Remote MCP server (Claude/ChatGPT connector)
+
+Mounted at backend root by `mcp_server.py` (see CLAUDE.md "Folder Structure" and "Supabase Schema" above). OAuth 2.1 endpoints come from the `mcp` SDK itself: `/register`, `/authorize`, `/token`, `/revoke`, `/.well-known/oauth-authorization-server`. The actual MCP protocol endpoint (what gets pasted into Claude/ChatGPT as a custom connector) is `/mcp`.
+
+Bridge endpoints (ours, not the SDK's):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/mcp/authorize/complete` | Frontend calls this after the user approves consent — verifies the Supabase session, mints an MCP auth code, returns the URL to redirect back to Claude/ChatGPT |
+| `GET` | `/mcp/connections?token=` | List the user's active (non-revoked) connected apps |
+| `POST` | `/mcp/connections/{client_id}/revoke` | Disconnect an app |
+
+The 6 MCP tools (`recall_search`, `recall_save`, `recall_suggestions`, `recall_update_tag`, `recall_update_title`, `recall_delete`) call the same `do_*`/`process_save` functions as the REST API, resolving `user_id` from the OAuth access token instead of a body token.
 
 ---
 
@@ -331,6 +350,56 @@ Postgres function using `pgvector` cosine similarity. Parameters:
 - `match_count int`
 
 Returns rows ordered by `embedding <=> query_embedding` (cosine distance), filtered to the user's rows.
+
+### Remote MCP server (Claude/ChatGPT connector) — OAuth 2.1 tables
+
+Backs `mcp_server.py`. See `recall-backend/sql/001_mcp_oauth.sql` (and follow-up
+`002`–`004` fixes) for the exact DDL — no migration tool is used in this repo;
+schema changes are run by hand in the Supabase SQL editor.
+
+#### Table: `mcp_oauth_clients`
+
+| Column | Type | Notes |
+|---|---|---|
+| client_id | text | primary key |
+| client_secret | text | plaintext, server-generated; null for public PKCE-only clients (see `002` migration for why this isn't a hash) |
+| client_name | text | |
+| redirect_uris | text[] | exact-match validated on every authorize/token-exchange call |
+| grant_types | text[] | default `{authorization_code, refresh_token}` |
+| token_endpoint_auth_method | text | default `client_secret_post`; Claude/ChatGPT register as `none` (public, PKCE-only) |
+| registered_from_ip | text | abuse investigation only, not enforced |
+| created_at | timestamptz | auto |
+
+#### Table: `mcp_auth_codes`
+
+| Column | Type | Notes |
+|---|---|---|
+| code | text | primary key |
+| client_id | text | FK → `mcp_oauth_clients` |
+| user_id | uuid | resource owner; no FK to `auth.users` (intentional — see below) |
+| redirect_uri, redirect_uri_provided_explicitly | text, bool | |
+| code_challenge, code_challenge_method | text | only `S256` accepted (enforced by the mcp SDK itself) |
+| scope, resource | text | |
+| expires_at | timestamptz | 5 min from creation |
+| used | boolean | single-use, claimed atomically on exchange |
+
+#### Table: `mcp_tokens`
+
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid | primary key |
+| access_token_hash, refresh_token_hash | text | sha256; only hashes stored — these are bearer credentials |
+| client_id, user_id, scope | | |
+| access_token_expires_at | timestamptz | 30 min |
+| refresh_token_expires_at | timestamptz | 90 days |
+| revoked | boolean | |
+| rotated_from | uuid | self-FK; traces rotation lineage for theft detection |
+
+`user_id` columns have no FK to `auth.users` by design — this schema is independent of which Supabase project owns user identity, and keeps the OAuth tables simple to reason about in isolation.
+
+#### RPC: `mcp_exchange_refresh_token`
+
+Atomically rotates a refresh token in one Postgres function call: locks the old row, revokes it, inserts the new pair linked via `rotated_from`, and returns the old row's `access_token_hash` (so the Python layer can evict it from its in-process cache immediately). If the old refresh token was already revoked — i.e. reused after a prior rotation — revokes the entire token family reachable via `rotated_from` and reports `theft_detected = true` instead of issuing new tokens.
 
 ---
 
