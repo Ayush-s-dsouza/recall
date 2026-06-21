@@ -25,6 +25,7 @@ from mcp.server.auth.provider import (
 )
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from recall_core import (
@@ -287,6 +288,19 @@ mcp = FastMCP(
         revocation_options=RevocationOptions(enabled=True),
     ),
     streamable_http_path="/mcp",
+    # FastMCP auto-enables DNS-rebinding Host-header protection (with a
+    # localhost-only allowlist) whenever its `host` param isn't set, which
+    # defaults to "127.0.0.1" — even though that param only matters for
+    # FastMCP's own standalone dev server (mcp.run()), which we never use; we
+    # mount streamable_http_app() into our own uvicorn process instead. Left
+    # unset, every real request in production gets rejected with
+    # "421 Misdirected Request: Invalid Host header: <railway-domain>".
+    # DNS rebinding protection guards localhost-bound dev servers against
+    # malicious websites in the victim's own browser — not relevant for a
+    # public HTTPS API where OAuth bearer tokens are the actual access
+    # control, so disable it rather than maintain a Host/Origin allowlist
+    # across every client environment (local, Railway, Claude, ChatGPT).
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
