@@ -555,9 +555,20 @@ async def process_save(url: str, user_id: str) -> dict:
         og_title = og.get("og:title", "")
         og_description = og.get("og:description", "") or og.get("description", "")
 
-        # OG description is the post body (reliable); Jina adds depth for "See more" expansion
+        # LinkedIn's anonymous-access login wall returns generic marketing copy that's
+        # often long enough to beat a short-but-real og_description on length alone —
+        # check for it before letting jina_text win that comparison.
+        AUTHWALL_SIGNATURES = [
+            "agree & join linkedin", "login to linkedin to keep in touch",
+            "by clicking continue to join or sign in", "new to linkedin? join now",
+            "skip to main content", "linkedin login, sign in",
+        ]
+        jina_is_authwall = jina_text and any(sig in jina_text.lower() for sig in AUTHWALL_SIGNATURES)
+
+        # OG description is the post body (reliable); Jina adds depth for "See more" expansion —
+        # but never prefer it over a real (if shorter) og_description when it's just authwall noise.
         combined = og_description if og_description else ""
-        if jina_text and len(jina_text) > len(og_description):
+        if jina_text and not jina_is_authwall and len(jina_text) > len(og_description):
             combined = jina_text
 
         # Strip LinkedIn UI boilerplate that Jina extracts
@@ -568,19 +579,15 @@ async def process_save(url: str, user_id: str) -> dict:
         clean_text = re.sub(r'\s{2,}', ' ', combined).strip()
 
         title = og_title or jina_title or url
-        print(f"[linkedin] og_title={og_title!r} jina_title={jina_title!r} og_description_len={len(og_description)} clean_text_len={len(clean_text)} clean_text_preview={clean_text[:150]!r} url={url}", flush=True)
-        # LinkedIn's anonymous-access login wall returns generic marketing copy that's
-        # long enough to pass the length check — detect it by signature phrases instead.
-        AUTHWALL_SIGNATURES = [
-            "agree & join linkedin", "login to linkedin to keep in touch",
-            "by clicking continue to join or sign in", "new to linkedin? join now",
-            "skip to main content", "linkedin login, sign in",
-        ]
+        print(f"[linkedin] og_title={og_title!r} jina_title={jina_title!r} jina_is_authwall={jina_is_authwall} og_description_len={len(og_description)} clean_text_len={len(clean_text)} clean_text_preview={clean_text[:150]!r} url={url}", flush=True)
         lowered = (clean_text + " " + og_title).lower()
         if any(sig in lowered for sig in AUTHWALL_SIGNATURES):
             print(f"[linkedin] authwall signature detected, skipping url={url}", flush=True)
             return {"thin_content": True, "url": url}
-        if len(clean_text.strip()) < QUALITY_THRESHOLD:
+        # LinkedIn posts are often short (a one-liner, a quote) — use a lower bar than the
+        # generic article threshold, since the authwall check above already filters garbage.
+        LINKEDIN_QUALITY_THRESHOLD = 40
+        if len(clean_text.strip()) < LINKEDIN_QUALITY_THRESHOLD:
             return {"thin_content": True, "url": url}
     else:
         # Run Jina Reader and raw OG fetch concurrently for speed
