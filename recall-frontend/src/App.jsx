@@ -276,6 +276,8 @@ export default function App() {
     const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d
   })
   const [selectedCalendarDay, setSelectedCalendarDay] = useState(null)
+  const [libraryFeedCount, setLibraryFeedCount] = useState(10)
+  const libraryFeedSentinelRef = useRef(null)
 
   // Ask step messaging + insufficient detail
   const [askStep, setAskStep] = useState("")
@@ -349,6 +351,20 @@ export default function App() {
       fetchCalendarSaves()
     }
   }, [view, user])
+
+  useEffect(() => {
+    if (view !== "library" || selectedCalendarDay) return
+    const sentinel = libraryFeedSentinelRef.current
+    if (!sentinel) return
+    const totalDays = Object.keys(calendarSaves).length
+    const observer = new IntersectionObserver(entries => {
+      if (entries[0]?.isIntersecting) {
+        setLibraryFeedCount(c => Math.min(c + 10, totalDays))
+      }
+    })
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [view, selectedCalendarDay, calendarSaves, libraryFeedCount])
 
   useEffect(() => {
     if (!loading) { setLoadingStep(0); return }
@@ -1230,6 +1246,7 @@ export default function App() {
         grouped[key].push(save)
       })
       setCalendarSaves(grouped)
+      setLibraryFeedCount(10)
     }
     setCalendarLoading(false)
   }
@@ -2214,6 +2231,8 @@ export default function App() {
 
         const selectedDaySaves = selectedCalendarDay ? (calendarSaves[selectedCalendarDay] || []) : []
         const hasAnySaves = Object.keys(calendarSaves).length > 0
+        const allDayKeys = Object.keys(calendarSaves).sort((a, b) => b.localeCompare(a))
+        const visibleDayKeys = allDayKeys.slice(0, libraryFeedCount)
 
         return (
           <div style={styles.section}>
@@ -2300,6 +2319,35 @@ export default function App() {
                   <div style={styles.emptyState}>
                     <p style={styles.emptyStateHint}>Nothing saved yet.</p>
                     <button style={styles.emptyStateCta} onClick={() => setView("save")}>Save your first link →</button>
+                  </div>
+                )}
+
+                {/* Chronological infinite-scroll feed (default view; hidden while a calendar day is selected) */}
+                {hasAnySaves && !selectedCalendarDay && (
+                  <div style={styles.libraryFeed}>
+                    <span style={styles.libraryFeedLabel}>All saves</span>
+                    {visibleDayKeys.map(dateKey => {
+                      const daySaves = calendarSaves[dateKey] || []
+                      return (
+                        <div key={dateKey} style={styles.libraryFeedDay}>
+                          <span style={styles.calDayPanelTitle}>
+                            {new Date(dateKey + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+                          </span>
+                          {daySaves.map(save => (
+                            <a key={save.id} href={save.url} target="_blank" rel="noopener noreferrer" style={styles.calSaveCard}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <span style={{ ...styles.tagPill, background: "#222", color: "#888", fontSize: 11, padding: "2px 8px" }}>{save.tag}</span>
+                                <span style={styles.calSaveTitle}>{save.title}</span>
+                              </div>
+                              <span style={styles.calSaveSource}>{getSourceLabel(save.url)}</span>
+                            </a>
+                          ))}
+                        </div>
+                      )
+                    })}
+                    {visibleDayKeys.length < allDayKeys.length && (
+                      <div ref={libraryFeedSentinelRef} style={{ height: 1 }} />
+                    )}
                   </div>
                 )}
               </>
@@ -2629,6 +2677,9 @@ const styles = {
   calSaveCard: { display: "flex", flexDirection: "column", gap: 4, padding: "12px 0", borderTop: "1px solid #1f1f1f", textDecoration: "none", color: "inherit" },
   calSaveTitle: { fontSize: 13, fontWeight: 500, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
   calSaveSource: { fontSize: 11, color: "#555" },
+  libraryFeed: { display: "flex", flexDirection: "column", gap: 20, marginTop: 24, paddingTop: 20, borderTop: "1px solid #222" },
+  libraryFeedLabel: { fontSize: 11, color: "#555", textTransform: "uppercase", letterSpacing: "1px" },
+  libraryFeedDay: { display: "flex", flexDirection: "column", gap: 0 },
   // Ask step text
   askStepText: { color: "#666", fontSize: "13px", textAlign: "center", margin: "2px 0 0" },
   // Search card trash button + title link
