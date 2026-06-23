@@ -27,11 +27,20 @@ const BOOKMARKLET_SCRIPT = `(function(){
   overlay.style.cssText='position:fixed;top:10px;right:10px;background:#000;color:#4ade80;padding:10px 16px;border-radius:8px;font-family:monospace;font-size:14px;z-index:999999;border:1px solid #4ade80';
   document.body.appendChild(overlay);
   function update(){ overlay.textContent='ReCall: collected '+ids.size+' bookmarks…'; }
+  function addFromHref(href){
+    var m=href.match(/status\\/(\\d+)/);
+    if(m) ids.add(m[1]);
+  }
   function scan(){
-    document.querySelectorAll('a[href*="/status/"]').forEach(function(a){
-      var m=a.href.match(/status\\/(\\d+)/);
-      if(m) ids.add(m[1]);
-    });
+    var articles=document.querySelectorAll('article[data-testid="tweet"]');
+    if(articles.length===0){
+      document.querySelectorAll('a[href*="/status/"]').forEach(function(a){ addFromHref(a.href); });
+    } else {
+      articles.forEach(function(article){
+        var a=article.querySelector('a[href*="/status/"]');
+        if(a) addFromHref(a.href);
+      });
+    }
     update();
   }
   function finish(){
@@ -44,8 +53,12 @@ const BOOKMARKLET_SCRIPT = `(function(){
   function step(){
     try{ window.focus(); }catch(e){}
     scan();
-    if(ids.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=ids.size; }
-    if(stableRounds>=5 || ids.size>=500){ finish(); return; }
+    if(ids.size>=500){ finish(); return; }
+    var nearBottom=(window.innerHeight+window.scrollY)>=(document.body.scrollHeight-100);
+    if(nearBottom){
+      if(ids.size===lastCount){ stableRounds++; } else { stableRounds=0; lastCount=ids.size; }
+      if(stableRounds>=5){ finish(); return; }
+    }
     window.scrollTo(0, document.body.scrollHeight);
     setTimeout(step, 800);
   }
@@ -1518,6 +1531,7 @@ export default function App() {
               <p style={styles.overlayNote}>
                 Drag this button to your bookmarks bar (don't click it here). Then open{" "}
                 <strong>x.com/i/bookmarks</strong> in a new tab and click it there — it collects your bookmarks and opens ReCall to import them automatically.
+                Leave the tab alone while it's running — manually scrolling can interfere with how it collects your bookmarks.
                 {importJob?.status === "completed" && (
                   <> Last import: <strong>{importJob.succeeded}</strong> added, {importJob.duplicates} already saved, {importJob.skipped} skipped, {importJob.failed} failed.</>
                 )}
