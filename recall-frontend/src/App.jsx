@@ -256,6 +256,10 @@ export default function App() {
   const [deletingAccount, setDeletingAccount] = useState(false)
   const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false)
   const [tokenCopied, setTokenCopied] = useState(false)
+  const [xCodeCopied, setXCodeCopied] = useState(false)
+  const [linkedinCodeCopied, setLinkedinCodeCopied] = useState(false)
+  const [xBookmarkletHelpOpen, setXBookmarkletHelpOpen] = useState(false)
+  const [linkedinBookmarkletHelpOpen, setLinkedinBookmarkletHelpOpen] = useState(false)
   const [message, setMessage] = useState("")
   const [isError, setIsError] = useState(false)
   const [selectedSource, setSelectedSource] = useState(null)
@@ -1546,13 +1550,30 @@ export default function App() {
                 onChange={handleImportFileChange}
                 style={{ display: "none" }}
               />
-              <button
-                onClick={() => importFileInputRef.current?.click()}
-                style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
-                disabled={importUploading}
-              >
-                {importUploading ? "Uploading…" : "or upload a file export instead"}
-              </button>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
+                <button
+                  onClick={() => importFileInputRef.current?.click()}
+                  style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                  disabled={importUploading}
+                >
+                  {importUploading ? "Uploading…" : "or upload a file export instead"}
+                </button>
+                <button
+                  onClick={() => { navigator.clipboard.writeText(BOOKMARKLET_CODE); setXCodeCopied(true); setTimeout(() => setXCodeCopied(false), 2000) }}
+                  style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                >
+                  {xCodeCopied ? "Copied!" : "or copy the bookmarklet code"}
+                </button>
+                <button onClick={() => setXBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}>
+                  {xBookmarkletHelpOpen ? "Hide Safari/Arc help" : "Drag not working? (Safari/Arc)"}
+                </button>
+              </div>
+              {xBookmarkletHelpOpen && (
+                <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
+                  <p style={styles.overlayStep}><strong>Safari:</strong> make sure your Favorites bar is visible first — View → Show Favorites Bar (⌘⇧B) — then drag the button again. Still stuck? Copy the code above, create any bookmark, and paste the code into its address field.</p>
+                  <p style={styles.overlayStep}><strong>Arc:</strong> Arc doesn't support dragging bookmarklets. Copy the code above, open <strong>x.com/i/bookmarks</strong>, click the Boost icon next to the address bar → New Boost → paste the code into the Custom JS box → Save. It'll run automatically on that page from then on.</p>
+                </div>
+              )}
             </>
           ) : (
             <>
@@ -1606,6 +1627,23 @@ export default function App() {
                   <> Last import stalled ({importJob.processed}/{importJob.total} done). Run it again to retry — already-imported posts are skipped.</>
                 )}
               </p>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
+                <button
+                  onClick={() => { navigator.clipboard.writeText(LINKEDIN_BOOKMARKLET_CODE); setLinkedinCodeCopied(true); setTimeout(() => setLinkedinCodeCopied(false), 2000) }}
+                  style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                >
+                  {linkedinCodeCopied ? "Copied!" : "or copy the bookmarklet code"}
+                </button>
+                <button onClick={() => setLinkedinBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}>
+                  {linkedinBookmarkletHelpOpen ? "Hide Safari/Arc help" : "Drag not working? (Safari/Arc)"}
+                </button>
+              </div>
+              {linkedinBookmarkletHelpOpen && (
+                <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
+                  <p style={styles.overlayStep}><strong>Safari:</strong> make sure your Favorites bar is visible first — View → Show Favorites Bar (⌘⇧B) — then drag the button again. Still stuck? Copy the code above, create any bookmark, and paste the code into its address field.</p>
+                  <p style={styles.overlayStep}><strong>Arc:</strong> Arc doesn't support dragging bookmarklets. Copy the code above, open <strong>linkedin.com/my-items/saved-posts/</strong>, click the Boost icon next to the address bar → New Boost → paste the code into the Custom JS box → Save. It'll run automatically on that page from then on.</p>
+                </div>
+              )}
             </>
           )}
 
