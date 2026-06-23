@@ -182,6 +182,15 @@ function TrashIcon({ size = 14 }) {
   )
 }
 
+function SearchIcon({ size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  )
+}
+
 export default function App() {
   const [user, setUser] = useState(null)
   const [query, setQuery] = useState("")
@@ -1659,7 +1668,7 @@ export default function App() {
               style={styles.searchBarButton}
               disabled={loading || askLoading}
               aria-label={askMode ? "Ask" : "Search"}
-            >{askMode ? "✦" : "🔍"}</button>
+            >{askMode ? "✦" : <SearchIcon />}</button>
           </div>
           {/* Ask / Search mode toggle */}
           <div style={styles.modeToggle}>
@@ -2509,7 +2518,7 @@ const styles = {
   // Unified search bar
   searchBarWrapper: { position: "relative", display: "flex", alignItems: "center", width: "100%", boxSizing: "border-box" },
   searchBarInput: { width: "100%", padding: "14px 52px 14px 16px", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", color: "#fff", fontSize: "16px", boxSizing: "border-box", outline: "none" },
-  searchBarButton: { position: "absolute", right: "10px", background: "none", border: "none", cursor: "pointer", fontSize: "18px", padding: "4px", lineHeight: 1, color: "#888" },
+  searchBarButton: { position: "absolute", right: "10px", background: "none", border: "none", cursor: "pointer", fontSize: "18px", padding: "4px", lineHeight: 1, color: "#888", display: "flex", alignItems: "center" },
 
   // Recent searches
   recentSearchesBox: { background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", padding: "12px 16px", display: "flex", flexDirection: "column", gap: "8px" },
