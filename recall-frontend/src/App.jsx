@@ -1131,7 +1131,7 @@ export default function App() {
     try {
       const token = await getToken()
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 20000)
+      const timeoutId = setTimeout(() => controller.abort(), 45000)
       let res
       try {
         res = await fetch(`${BACKEND}/save`, {
@@ -1190,7 +1190,7 @@ export default function App() {
     } catch (err) {
       setSaveReceipt(null)
       if (err?.name === "AbortError") {
-        setMessage("ReCall is taking longer than usual — please try again in a moment.")
+        setMessage("This is taking longer than usual — it may still finish saving in the background. Check Today's saves before retrying.")
       } else {
         setMessage(`Failed to save from ${getSourceLabel(url)}. Try again.`)
       }
