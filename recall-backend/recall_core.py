@@ -454,6 +454,14 @@ async def process_save(url: str, user_id: str) -> dict:
                         headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
                     r = await client.get(target)
                     resolved = str(r.url)
+                # lnkd.in shortlinks return a 200 "this link isn't on LinkedIn"
+                # interstitial instead of an HTTP redirect, so follow_redirects never
+                # reaches the real destination — it's embedded in the page's
+                # external_url_click anchor instead.
+                if "lnkd.in" in resolved or "linkedin.com" in resolved:
+                    m = re.search(r'external_url_click"[^>]*href="([^"]+)"', r.text)
+                    if m:
+                        resolved = html_entities.unescape(m.group(1))
                 validate_url(resolved)
                 url = resolved
         except Exception:
