@@ -353,6 +353,7 @@ async def _fetch_tweet_api(url: str) -> tuple[str, str, str]:
         author = ((data.get("includes") or {}).get("users") or [{}])[0].get("name", "")
         urls = (tweet.get("entities") or {}).get("urls") or []
         expanded_url = next((u.get("expanded_url", "") for u in urls if u.get("expanded_url")), "")
+        print(f"[tweet-api] success: text_len={len(text)} author={repr(author)} expanded_url={repr(expanded_url)} url={url}", flush=True)
         return text, author, expanded_url
     except Exception as e:
         print(f"[tweet-api] exception: {e!r} url={url}", flush=True)
