@@ -1014,7 +1014,7 @@ export default function App() {
       response_type: 'code',
       client_id: TWITTER_CLIENT_ID,
       redirect_uri: redirectUri,
-      scope: 'bookmark.read users.read',
+      scope: 'bookmark.read tweet.read users.read',
       state,
       code_challenge: challenge,
       code_challenge_method: 'S256',
