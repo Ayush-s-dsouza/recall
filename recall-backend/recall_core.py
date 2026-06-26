@@ -553,10 +553,16 @@ async def process_save(url: str, user_id: str) -> dict:
                         fetch_og_html(final_url)
                     )
                     article_og_title = extract_og_tags(article_og_html).get("og:title", "")
-                    if article_jina_text:
+                    # x.com's article pages often render as a "JavaScript is disabled" noscript
+                    # interstitial when Jina can't execute the page's JS — that's still >150 chars
+                    # so fetch_with_jina's own length check doesn't catch it, and it was silently
+                    # overwriting the original tweet's already-good clean_text with boilerplate.
+                    js_disabled_signatures = ["javascript is not available", "javascript is disabled"]
+                    article_is_js_disabled = any(sig in article_jina_text.lower() for sig in js_disabled_signatures)
+                    if article_jina_text and not article_is_js_disabled:
                         clean_text = article_jina_text
                     article_title = article_og_title or article_jina_title
-                    print(f"[tweet] X Article — og_title={repr(article_og_title)} jina_title={repr(article_jina_title)} content_len={len(clean_text)}", flush=True)
+                    print(f"[tweet] X Article — og_title={repr(article_og_title)} jina_title={repr(article_jina_title)} js_disabled={article_is_js_disabled} content_len={len(clean_text)}", flush=True)
                 elif "twitter.com" not in final_url and "x.com" not in final_url:
                     if not final_html:
                         final_html = await fetch_og_html(final_url)
