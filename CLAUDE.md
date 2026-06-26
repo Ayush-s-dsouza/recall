@@ -32,6 +32,7 @@ ReCall is a PWA (Progressive Web App) for semantic search over saved internet co
 | Auth | Supabase Auth with Google OAuth |
 | Embeddings | Gemini `gemini-embedding-001` (768 dims, via direct REST — NOT the SDK) |
 | AI tagging | Gemini `gemini-2.5-flash` (via `google-genai` SDK) |
+| X/Twitter content | X API v2 (OAuth 2.0 PKCE for bookmark import; app-only Bearer token for single-tweet reads), pay-per-use billing |
 | Analytics | PostHog (`posthog-js` — frontend only) |
 | Error monitoring | Sentry (`@sentry/react` frontend, `sentry-sdk[fastapi]` backend) |
 | Rate limiting | slowapi (per-IP, on `/save` and `/search`) |
@@ -84,9 +85,10 @@ VITE_SUPABASE_ANON_KEY=<anon key — safe for client>
 VITE_BACKEND_URL=http://127.0.0.1:8000          # local dev; set to Railway URL in Vercel dashboard
 VITE_SENTRY_DSN=<Sentry frontend DSN — safe for client>
 VITE_POSTHOG_KEY=<PostHog project API key — safe for client>
+VITE_TWITTER_CLIENT_ID=<X OAuth 2.0 app Client ID — safe for client, used to build the authorize URL>
 ```
 
-**On Vercel**, set `VITE_BACKEND_URL` to `https://recall-production-9941.up.railway.app` via the Vercel environment variable dashboard — do NOT hardcode it. `VITE_SENTRY_DSN` and `VITE_POSTHOG_KEY` are also set in Vercel dashboard. Both are public-safe by design.
+**On Vercel**, set `VITE_BACKEND_URL` to `https://recall-production-9941.up.railway.app` via the Vercel environment variable dashboard — do NOT hardcode it. `VITE_SENTRY_DSN`, `VITE_POSTHOG_KEY`, and `VITE_TWITTER_CLIENT_ID` are also set in Vercel dashboard. All are public-safe by design.
 
 ### Backend — `recall-backend/.env`
 
@@ -98,9 +100,12 @@ SENTRY_DSN=<Sentry backend DSN>
 CORS_ORIGINS=https://recall-iota-six.vercel.app,http://localhost:5173
 BACKEND_PUBLIC_URL=https://recall-production-9941.up.railway.app   # mcp_server.py OAuth issuer/resource URL; defaults to http://localhost:8000 for local dev
 FRONTEND_URL=https://recall-iota-six.vercel.app                    # where mcp_server.py's authorize() redirects for consent; defaults to http://localhost:5173
+TWITTER_CLIENT_ID=<X OAuth 2.0 app Client ID — bookmark import>
+TWITTER_CLIENT_SECRET=<X OAuth 2.0 app Client Secret — NEVER expose to client>
+TWITTER_BEARER_TOKEN=<X API app-only Bearer token — single-tweet save lookups>
 ```
 
-**On Railway**, these are set as environment variables in the Railway dashboard. `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes.
+**On Railway**, these are set as environment variables in the Railway dashboard. `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes. The three X API vars are all from the same X Developer Portal app; if unset, both import paths fall back gracefully (bookmark import shows a 503 + bookmarklet fallback; single-tweet save degrades to Jina/OG/syndication-API fallbacks — see Import X Bookmarks (#14) and Known Issue #23).
 
 ---
 
@@ -151,7 +156,7 @@ The 6 MCP tools (`recall_search`, `recall_save`, `recall_suggestions`, `recall_u
 **Backend (`main.py` → `POST /save`)**
 1. Verifies JWT → `user_id`
 2. **Duplicate check first**: queries `saves` table for matching `url + user_id`. If found, returns `{ duplicate: True, id, title, tag, created_at }` immediately — no pipeline work.
-3. **If tweet** (`x.com`/`twitter.com`): oEmbed API at `publish.twitter.com/oembed` — strips HTML to get plain text + author. No auth required.
+3. **If tweet** (`x.com`/`twitter.com`): `fetch_tweet()` (`recall_core.py`) fans out in parallel to the official X API v2 `GET /2/tweets/:id` (app-only Bearer token, `recall_core.py:_fetch_tweet_api` — structured text/author/`entities.urls[].expanded_url`, primary source), Jina Reader (enrichment for quoted tweets/"read more" content), OG tags, and the auth-free syndication-API card-title hack (X Article titles). Degrades gracefully to the Jina/OG/card-title fallbacks if `TWITTER_BEARER_TOKEN` is unset or the API call fails — see Known Issues.
    **If Instagram** (`instagram.com`): fetches `instagram.com/p/SHORTCODE/embed/captioned/` with mobile UA. Extracts visible text, strips UI boilerplate, extracts author from JSON/href. Instagram CDN blocks image fetches so vision is skipped. Public posts only.
 4. **Otherwise**: fetches page with `httpx` (browser UA), strips `<script>`/`<style>`, extracts plain text (≤5000 chars) and `<title>`
 5. Calls `extract_og_tags()`: parses `<meta>` tags for `og:title`, `og:description`, `og:image`, `description`
@@ -320,6 +325,16 @@ Once built (either path), sharing a link → Shortcuts row → "Save to ReCall" 
 **Important — use `?text=`, not `?url=`.** See Known Issue #21: the `url` query param has no regex fallback in `extractSharedUrl`, so it only works if the value is a bare `http...` string with nothing appended. The `text`/`title` params tolerate extra content (Safari Web Page / Text share types, embedded URLs) via a regex fallback. Any future share-target URL construction must use `?text=`.
 
 **Maintaining the iCloud shortcut link** — if the "Save to ReCall" shortcut is ever rebuilt or renamed, regenerate its iCloud link (Shortcuts app → long-press → Share → Copy iCloud Link) and update `SAVE_TO_RECALL_SHORTCUT_URL` in App.jsx.
+
+### 14. Import X Bookmarks
+
+Three import paths, all funneling into the same source-agnostic `run_import_job` background pipeline (`main.py:458-496`) and `import_jobs` table (status/progress polling, `App.jsx` `pollImportStatus`):
+
+1. **X OAuth (primary)** — one-tap "Connect X to import bookmarks" button (`App.jsx`, `connectXForImport`/`generatePKCE`) redirects to X's OAuth 2.0 PKCE consent screen (`scope=bookmark.read users.read`). On callback, the frontend POSTs `{code, code_verifier, redirect_uri}` to `POST /import/x-connect` (`main.py:576-662`), which exchanges the code server-side, calls `GET /2/users/{id}/bookmarks` (paginated, capped at `MAX_IMPORT_ITEMS`=500), and kicks off the import job. No X token is persisted — it's used once in-memory for that request and discarded, so reconnecting re-prompts consent each time. Requires `TWITTER_CLIENT_ID`/`TWITTER_CLIENT_SECRET` (backend) and `VITE_TWITTER_CLIENT_ID` (frontend).
+2. **Bookmarklet (fallback)** — collapsed behind "Can't or won't connect your account?" in Settings. A draggable bookmarklet DOM-scrapes `x.com/i/bookmarks` (works around needing OAuth at all), passes collected tweet IDs via URL hash (`#import_tweets=...`, never sent over the network) to `POST /import/x-scraped` (`main.py:665-697`). Requires manual scrolling (no auto-pagination) and has Safari/Arc-specific drag workarounds. Kept because the OAuth path's reliability depends on the X dev app's billing/API-tier access being correctly configured — if that ever lapses, this still works for free.
+3. **File upload (fallback)** — `handleImportFileChange` accepts an X bookmarks export file.
+
+**Why both OAuth and a scraping fallback exist**: the OAuth flow was originally built first (`14c3420`), then immediately shelved (`f37b62a`) because X's legacy API tier gated bookmark reads behind a $200+/mo plan and the integration 403'd. The bookmarklet was added as the free workaround and became the primary CTA, leaving the OAuth code in the repo but unreferenced by any UI element. X's Feb 2026 move to pay-per-use pricing (~$0.005/read, no monthly minimum) removed that blocker, so OAuth was restored as primary — but the bookmarklet stays as a no-API-access-required fallback in case the dev account's billing/tier ever doesn't cover bookmark reads.
 
 ---
 
@@ -531,6 +546,10 @@ A lightning bolt / cursor-shaped path:
 
 22. **`isIOS` also matches iPadOS Safari in desktop mode** — `isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)`. iPadOS Safari has sent a desktop ("Macintosh") User-Agent by default since iPadOS 13, so the UA regex alone misses iPads — without the `MacIntel` + `maxTouchPoints` check, iPad users fell through to `isDesktop`/Android-flavored copy (e.g. "Tap ⋮ in Chrome"), which is wrong for Safari and was the actual cause of a tester seeing Chrome-specific instructions. `isAndroid`/`isDesktop` derive from `isIOS`, so this fix propagates everywhere (install banner copy, onboarding overlay, Settings Shortcut guide).
 
+23. **X API integration depends on the X dev app's billing/tier, which isn't verifiable from the repo** — `TWITTER_CLIENT_ID`/`SECRET`/`BEARER_TOKEN` only work if the X Developer Portal app is on pay-per-use (or another tier with read access) and bookmark/tweet-read scopes are actually enabled. If billing lapses or access is revoked, `/import/x-connect` 503s/400s (frontend falls back to the bookmarklet) and `_fetch_tweet_api` silently returns empty (single-tweet save degrades to the Jina/OG/syndication-API fallback chain) — both paths are designed to degrade gracefully rather than break saves/imports outright. Also: per X's Developer Policy, cached tweet content is expected to be removed if the source tweet is later deleted on X — ReCall doesn't currently enforce this (same as before the API migration; not new).
+
+24. **Bookmark import OAuth doesn't persist X tokens** — `/import/x-connect` exchanges the code, uses the access token once in-memory to paginate bookmarks, then discards it. This is a one-tap import, not a background sync — reconnecting always re-prompts the X consent screen. Don't add token storage/refresh-rotation infra for this unless the feature changes to continuous sync.
+
 ---
 
 ## Current Status
@@ -572,6 +591,7 @@ A lightning bolt / cursor-shaped path:
 - **Privacy Policy + Terms of Service** — inline legal view at `/privacy` and `/terms`; footer links on all views; content is factual and minimal
 - **Install banner + bottom-of-page fallback button** — persistent, dismissible "Install ReCall" banner below the header on all views; once dismissed, replaced by a small button near the footer. Uses `beforeinstallprompt`/`appinstalled` where available, falls back to platform-specific "Add to Home Screen" instructions on iOS/others
 - **iOS Share Sheet via Shortcuts guide** — Settings panel walks iOS users through building a "Save to ReCall" Shortcut that feeds the existing share-sheet URL handling
+- **X API integration** — bookmark import via OAuth 2.0 PKCE (primary, restored June 2026 once X moved to pay-per-use pricing), with bookmarklet + file-upload as fallbacks; single-tweet save now reads `GET /2/tweets/:id` via an app-only Bearer token instead of the legacy oEmbed scrape, with Jina/OG/syndication-API enrichment unchanged
 
 ### Not Yet Built
 - Offline support / service worker caching

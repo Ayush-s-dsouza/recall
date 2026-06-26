@@ -322,35 +322,47 @@ async def fetch_youtube(url: str):
     except:
         return "", ""
 
-async def _fetch_tweet_oembed(url: str) -> tuple[str, str, str]:
-    """oEmbed gives reliable author name + basic tweet text + first linked URL."""
+def _extract_tweet_id(tweet_url: str) -> str:
+    m = re.search(r'/status/(\d+)', tweet_url)
+    return m.group(1) if m else ""
+
+async def _fetch_tweet_api(url: str) -> tuple[str, str, str]:
+    """Official X API v2 tweet lookup (app-only Bearer token) — structured text/author/entities,
+    replaces the legacy oEmbed scrape. entities.urls[].expanded_url already gives the unwound
+    link behind any t.co, so callers don't need a separate redirect-follow for the common case."""
+    bearer = os.getenv("TWITTER_BEARER_TOKEN")
+    tweet_id = _extract_tweet_id(url)
+    if not bearer or not tweet_id:
+        return "", "", ""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10, headers={"Authorization": f"Bearer {bearer}"}) as client:
             res = await client.get(
-                "https://publish.twitter.com/oembed",
-                params={"url": url, "omit_script": "true"},
-                follow_redirects=True
+                f"https://api.twitter.com/2/tweets/{tweet_id}",
+                params={
+                    "tweet.fields": "text,entities",
+                    "expansions": "author_id",
+                    "user.fields": "name",
+                },
             )
         if res.status_code != 200:
-            print(f"[oembed] non-200: {res.status_code} body={res.text[:200]!r} url={url}", flush=True)
+            print(f"[tweet-api] non-200: {res.status_code} body={res.text[:200]!r} url={url}", flush=True)
             return "", "", ""
         data = res.json()
-        author = data.get("author_name", "")
-        raw_html = data.get("html", "")
-        tco_urls = re.findall(r'href="(https://t\.co/[^"]+)"', raw_html)
-        text = re.sub(r'<[^>]+>', ' ', raw_html)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text, author, tco_urls[0] if tco_urls else ""
+        tweet = data.get("data") or {}
+        text = tweet.get("text", "")
+        author = ((data.get("includes") or {}).get("users") or [{}])[0].get("name", "")
+        urls = (tweet.get("entities") or {}).get("urls") or []
+        expanded_url = next((u.get("expanded_url", "") for u in urls if u.get("expanded_url")), "")
+        return text, author, expanded_url
     except Exception as e:
-        print(f"[oembed] exception: {e!r} url={url}", flush=True)
+        print(f"[tweet-api] exception: {e!r} url={url}", flush=True)
         return "", "", ""
 
 async def _fetch_tweet_card_title(tweet_url: str) -> str:
     """Twitter syndication API — returns tweet card title (article title for X Articles) without auth."""
-    m = re.search(r'/status/(\d+)', tweet_url)
-    if not m:
+    tweet_id = _extract_tweet_id(tweet_url)
+    if not tweet_id:
         return ""
-    tweet_id = m.group(1)
     try:
         val = math.floor(int(tweet_id) / 1e15 * math.pi)
         chars = "0123456789abcdefghijklmnopqrstuvwxyz"
@@ -376,20 +388,21 @@ async def _fetch_tweet_card_title(tweet_url: str) -> str:
         return "", ""
 
 async def fetch_tweet(url: str):
-    """Jina Reader for richer content (quoted tweets, linked previews); oEmbed as author source + text fallback."""
-    (jina_text, jina_title), (oembed_text, author, tco_url), og_html, (card_title, card_preview) = await asyncio.gather(
+    """X API v2 tweet lookup for structured text/author/entities; Jina Reader as enrichment
+    for richer content (quoted tweets, linked previews) the plain tweet lookup doesn't carry."""
+    (jina_text, jina_title), (api_text, author, expanded_url), og_html, (card_title, card_preview) = await asyncio.gather(
         fetch_with_jina(url),
-        _fetch_tweet_oembed(url),
+        _fetch_tweet_api(url),
         fetch_og_html(url),
         _fetch_tweet_card_title(url)
     )
     og_title = extract_og_tags(og_html).get("og:title", "")
     if " on X" in og_title or og_title.endswith("on Twitter"):
         og_title = ""
-    content = jina_text if len(jina_text) > len(oembed_text) else oembed_text
+    content = jina_text if len(jina_text) > len(api_text) else api_text
     if card_preview and len(card_preview) > len(content):
         content = card_preview
-    return content, author, card_title or jina_title or og_title, tco_url
+    return content, author, card_title or jina_title or og_title, expanded_url
 
 async def fetch_with_jina(url: str) -> tuple[str, str]:
     """Fetch clean article content via Jina Reader (handles JS rendering, 'read more', etc).
@@ -519,14 +532,19 @@ async def process_save(url: str, user_id: str) -> dict:
     extra_context = ""
 
     if is_tweet:
-        clean_text, tweet_author, jina_title, tco_url = await fetch_tweet(url)
-        print(f"[tweet] author={repr(tweet_author)} jina_title={repr(jina_title)} tco_url={repr(tco_url)} clean_text_len={len(clean_text)} clean_text_preview={repr(clean_text[:150])}", flush=True)
+        clean_text, tweet_author, jina_title, expanded_url = await fetch_tweet(url)
+        print(f"[tweet] author={repr(tweet_author)} jina_title={repr(jina_title)} expanded_url={repr(expanded_url)} clean_text_len={len(clean_text)} clean_text_preview={repr(clean_text[:150])}", flush=True)
         article_title = ""
-        if tco_url and is_safe_url(tco_url):
+        if expanded_url and is_safe_url(expanded_url):
             try:
-                async with httpx.AsyncClient(timeout=8, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-                    r = await client.get(tco_url)
-                    final_url = str(r.url)
+                final_url = expanded_url
+                final_html = ""
+                if "t.co/" in final_url:
+                    # API gave no resolved entity (rare) — fall back to following the raw t.co link
+                    async with httpx.AsyncClient(timeout=8, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+                        r = await client.get(final_url)
+                        final_url = str(r.url)
+                        final_html = r.text[:5000]
                 if "x.com/i/article/" in final_url or "twitter.com/i/article/" in final_url:
                     # X Article — try OG tags and Jina in parallel
                     (article_jina_text, article_jina_title), article_og_html = await asyncio.gather(
@@ -539,11 +557,13 @@ async def process_save(url: str, user_id: str) -> dict:
                     article_title = article_og_title or article_jina_title
                     print(f"[tweet] X Article — og_title={repr(article_og_title)} jina_title={repr(article_jina_title)} content_len={len(clean_text)}", flush=True)
                 elif "twitter.com" not in final_url and "x.com" not in final_url:
-                    og = extract_og_tags(r.text[:5000])
+                    if not final_html:
+                        final_html = await fetch_og_html(final_url)
+                    og = extract_og_tags(final_html)
                     article_title = og.get("og:title", "")
                     print(f"[tweet] external link — final_url={repr(final_url)} article_title={repr(article_title)}", flush=True)
             except Exception as e:
-                print(f"[tweet] tco resolution failed: {e}", flush=True)
+                print(f"[tweet] expanded_url resolution failed: {e}", flush=True)
         stub_only = not clean_text or clean_text.strip().startswith("https://t.co/") or len(clean_text) < 80
         title = article_title or jina_title or (clean_text[:100].strip() if not stub_only else "") or tweet_author or url
         if title == url:

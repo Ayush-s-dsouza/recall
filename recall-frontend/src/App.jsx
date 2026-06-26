@@ -337,6 +337,7 @@ export default function App() {
   const [importJob, setImportJob] = useState(null)
   const [importUploading, setImportUploading] = useState(false)
   const [xConnecting, setXConnecting] = useState(false)
+  const [xBookmarkletFallback, setXBookmarkletFallback] = useState(false)
 
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
@@ -699,11 +700,17 @@ export default function App() {
                 setView('save')
                 setShowSettings(true)
               } else {
-                setMessage(data.detail || 'X import failed — try again')
+                setMessage((data.detail || 'X import failed') + ' — try the bookmarklet import below instead.')
                 setIsError(true)
+                setXBookmarkletFallback(true)
               }
             })
-            .catch(() => { setXConnecting(false); setMessage('X import failed — try again'); setIsError(true) })
+            .catch(() => {
+              setXConnecting(false)
+              setMessage('X import failed — try the bookmarklet import below instead.')
+              setIsError(true)
+              setXBookmarkletFallback(true)
+            })
           )
         }
         // Resume any in-progress bookmark import
@@ -1524,18 +1531,15 @@ export default function App() {
           <p style={styles.settingsSectionHeading}>Import your X bookmarks</p>
           {!importJob || importJob.status === "completed" || importJob.status === "stalled" ? (
             <>
-              <a
-                ref={xBookmarkletRef}
-                onClick={e => e.preventDefault()}
-                draggable="true"
-                style={{ ...styles.shortcutAddButton, display: "inline-block", cursor: "grab" }}
+              <button
+                onClick={connectXForImport}
+                disabled={xConnecting}
+                style={{ ...styles.shortcutAddButton, border: "none" }}
               >
-                📑 Import X Bookmarks
-              </a>
+                {xConnecting ? "Connecting…" : "𝕏 Connect X to import bookmarks"}
+              </button>
               <p style={styles.overlayNote}>
-                Drag this button to your bookmarks bar (don't click it here). Then open{" "}
-                <strong>x.com/i/bookmarks</strong> in a new tab and click it there — it collects your bookmarks and opens ReCall to import them automatically.
-                Leave the tab alone while it's running — manually scrolling can interfere with how it collects your bookmarks.
+                One tap — log into X, approve access, and ReCall imports your bookmarks automatically.
                 {importJob?.status === "completed" && (
                   <> Last import: <strong>{importJob.succeeded}</strong> added, {importJob.duplicates} already saved, {importJob.skipped} skipped, {importJob.failed} failed.</>
                 )}
@@ -1550,28 +1554,51 @@ export default function App() {
                 onChange={handleImportFileChange}
                 style={{ display: "none" }}
               />
-              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
-                <button
-                  onClick={() => importFileInputRef.current?.click()}
-                  style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
-                  disabled={importUploading}
-                >
-                  {importUploading ? "Uploading…" : "or upload a file export instead"}
-                </button>
-                <button
-                  onClick={() => { navigator.clipboard.writeText(BOOKMARKLET_CODE); setXCodeCopied(true); setTimeout(() => setXCodeCopied(false), 2000) }}
-                  style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
-                >
-                  {xCodeCopied ? "Copied!" : "or copy the bookmarklet code"}
-                </button>
-                <button onClick={() => setXBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}>
-                  {xBookmarkletHelpOpen ? "Hide Safari/Arc help" : "Drag not working? (Safari/Arc)"}
-                </button>
-              </div>
-              {xBookmarkletHelpOpen && (
+              <button
+                onClick={() => setXBookmarkletFallback(o => !o)}
+                style={{ ...styles.settingsLink, fontSize: 12, color: "#555", alignSelf: "flex-start", marginTop: "4px" }}
+              >
+                {xBookmarkletFallback ? "Hide other import options" : "Can't or won't connect your account?"}
+              </button>
+              {xBookmarkletFallback && (
                 <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
-                  <p style={styles.overlayStep}><strong>Safari:</strong> make sure your Favorites bar is visible first — View → Show Favorites Bar (⌘⇧B) — then drag the button again. Still stuck? Copy the code above, create any bookmark, and paste the code into its address field.</p>
-                  <p style={styles.overlayStep}><strong>Arc:</strong> Arc doesn't support dragging bookmarklets. Copy the code above, open <strong>x.com/i/bookmarks</strong>, click the Boost icon next to the address bar → New Boost → paste the code into the Custom JS box → Save. It'll run automatically on that page from then on.</p>
+                  <a
+                    ref={xBookmarkletRef}
+                    onClick={e => e.preventDefault()}
+                    draggable="true"
+                    style={{ ...styles.shortcutAddButton, display: "inline-block", cursor: "grab" }}
+                  >
+                    📑 Import X Bookmarks
+                  </a>
+                  <p style={styles.overlayNote}>
+                    Drag this button to your bookmarks bar (don't click it here). Then open{" "}
+                    <strong>x.com/i/bookmarks</strong> in a new tab and click it there — it collects your bookmarks and opens ReCall to import them automatically.
+                    Leave the tab alone while it's running — manually scrolling can interfere with how it collects your bookmarks.
+                  </p>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
+                    <button
+                      onClick={() => importFileInputRef.current?.click()}
+                      style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                      disabled={importUploading}
+                    >
+                      {importUploading ? "Uploading…" : "or upload a file export instead"}
+                    </button>
+                    <button
+                      onClick={() => { navigator.clipboard.writeText(BOOKMARKLET_CODE); setXCodeCopied(true); setTimeout(() => setXCodeCopied(false), 2000) }}
+                      style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                    >
+                      {xCodeCopied ? "Copied!" : "or copy the bookmarklet code"}
+                    </button>
+                    <button onClick={() => setXBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}>
+                      {xBookmarkletHelpOpen ? "Hide Safari/Arc help" : "Drag not working? (Safari/Arc)"}
+                    </button>
+                  </div>
+                  {xBookmarkletHelpOpen && (
+                    <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
+                      <p style={styles.overlayStep}><strong>Safari:</strong> make sure your Favorites bar is visible first — View → Show Favorites Bar (⌘⇧B) — then drag the button again. Still stuck? Copy the code above, create any bookmark, and paste the code into its address field.</p>
+                      <p style={styles.overlayStep}><strong>Arc:</strong> Arc doesn't support dragging bookmarklets. Copy the code above, open <strong>x.com/i/bookmarks</strong>, click the Boost icon next to the address bar → New Boost → paste the code into the Custom JS box → Save. It'll run automatically on that page from then on.</p>
+                    </div>
+                  )}
                 </div>
               )}
             </>
