@@ -423,6 +423,12 @@ async def _fetch_tweet_card_title(tweet_url: str) -> str:
         print(f"[syndication] exception: {e}", flush=True)
         return "", ""
 
+X_AUTHWALL_SIGNATURES = [
+    "see what's happening", "continue with google", "continue with apple",
+    "continue with phone", "by continuing, you agree to our terms of service",
+    "don't miss what's happening", "log in to x",
+]
+
 async def fetch_tweet(url: str):
     """X API v2 tweet lookup for structured text/author/entities; Jina Reader as enrichment
     for richer content (quoted tweets, linked previews) the plain tweet lookup doesn't carry."""
@@ -435,7 +441,17 @@ async def fetch_tweet(url: str):
     og_title = extract_og_tags(og_html).get("og:title", "")
     if " on X" in og_title or og_title.endswith("on Twitter"):
         og_title = ""
-    content = jina_text if len(jina_text) > len(api_text) else api_text
+    # Logged-out fetches of some tweets (e.g. /i/status/ links, or ones X otherwise
+    # gates) get served X's own signup/login wall instead of the tweet — that's still
+    # >150 chars so fetch_with_jina's length check doesn't catch it, and it was silently
+    # overwriting real api_text/jina_title with login-wall boilerplate.
+    jina_is_authwall = jina_text and any(sig in jina_text.lower() for sig in X_AUTHWALL_SIGNATURES)
+    if jina_is_authwall:
+        print(f"[tweet] jina login-wall signature detected, discarding jina content url={url}", flush=True)
+        content = api_text
+        jina_title = ""
+    else:
+        content = jina_text if len(jina_text) > len(api_text) else api_text
     if card_preview and len(card_preview) > len(content):
         content = card_preview
     return content, author, card_title or jina_title or og_title, expanded_url
