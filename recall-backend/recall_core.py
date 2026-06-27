@@ -4,6 +4,7 @@ mcp_server.py's ASGI app without a circular import.
 """
 import os
 import re
+import json
 import math
 import socket
 import ipaddress
@@ -18,6 +19,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 from google import genai
 from google.genai import types
+from pywebpush import webpush, WebPushException
 
 load_dotenv()
 
@@ -103,6 +105,39 @@ def get_source_label(url: str) -> str:
         return host.capitalize() if host else "Page"
     except:
         return "Page"
+
+def send_save_ready_push(user_id: str, title: str, source_label: str):
+    """Best-effort Web Push notification that a backgrounded save finished enriching.
+    Never raises — a push failure must never affect the save itself."""
+    vapid_private_key = os.getenv("VAPID_PRIVATE_KEY")
+    if not vapid_private_key:
+        return
+    try:
+        subs = supabase.table("push_subscriptions") \
+            .select("id, endpoint, p256dh, auth").eq("user_id", user_id).execute().data
+    except Exception:
+        return
+    for sub in subs:
+        try:
+            webpush(
+                subscription_info={
+                    "endpoint": sub["endpoint"],
+                    "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]}
+                },
+                data=json.dumps({"title": f'Saved "{title}"', "body": f"from {source_label}"}),
+                vapid_private_key=vapid_private_key,
+                vapid_claims={"sub": os.getenv("VAPID_SUBJECT", "mailto:noreply@example.com")}
+            )
+        except WebPushException as e:
+            body = e.response.text if e.response is not None else ""
+            print(f"[push] WebPushException status={e.response.status_code if e.response is not None else None} body={body!r}", flush=True)
+            if e.response is not None and e.response.status_code in (404, 410):
+                try:
+                    supabase.table("push_subscriptions").delete().eq("id", sub["id"]).execute()
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[push] send failed: {e!r}", flush=True)
 
 async def get_embedding(text: str):
     api_key = os.getenv("GEMINI_API_KEY")
@@ -447,8 +482,46 @@ async def fetch_og_html(url: str) -> str:
     except Exception:
         return ""
 
-async def process_save(url: str, user_id: str) -> dict:
-    """Core save pipeline shared by /save, the bookmark import job, and the recall_save MCP tool.
+async def resolve_linkedin_redirect(url: str) -> str:
+    """Resolve LinkedIn's safety/go wrapper (and the lnkd.in interstitial behind it)
+    to the actual destination URL. Returns the original url on any failure."""
+    if "linkedin.com/safety/go" not in url:
+        return url
+    try:
+        params = parse_qs(urlparse(url).query)
+        target = params.get("url", [""])[0]
+        if not target:
+            return url
+        async with httpx.AsyncClient(timeout=8, follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+            r = await client.get(target)
+            resolved = str(r.url)
+        # lnkd.in shortlinks return a 200 "this link isn't on LinkedIn"
+        # interstitial instead of an HTTP redirect, so follow_redirects never
+        # reaches the real destination — it's embedded in the page's
+        # external_url_click anchor instead.
+        if "lnkd.in" in resolved or "linkedin.com" in resolved:
+            m = re.search(r'external_url_click"[^>]*href="([^"]+)"', r.text)
+            if m:
+                resolved = html_entities.unescape(m.group(1))
+        validate_url(resolved)
+        return resolved
+    except Exception:
+        return url
+
+def _finalize_placeholder(placeholder_id: str | None):
+    """Flip a pending placeholder row to 'ready' without changing its title — used when
+    enrichment bails out early (thin content / authwall) so the row never stays stuck pending."""
+    if not placeholder_id:
+        return
+    try:
+        supabase.table("saves").update({"status": "ready"}).eq("id", placeholder_id).execute()
+    except Exception:
+        pass
+
+async def process_save(url: str, user_id: str, placeholder_id: str | None = None) -> dict:
+    """Core save pipeline shared by /save's background enrichment, the bookmark import job,
+    and the recall_save MCP tool.
     Returns one of:
       {"duplicate": True, "id", "title", "tag", "created_at"}
       {"thin_content": True, "url"}
@@ -457,38 +530,21 @@ async def process_save(url: str, user_id: str) -> dict:
       {"error": True, "url", "detail"}
     Never raises for save-pipeline-internal failures — but get_embedding can still raise
     HTTPException (503) on a Gemini outage; callers should be prepared to catch that too.
-    """
-    # Resolve LinkedIn safety redirects to the actual destination URL
-    if "linkedin.com/safety/go" in url:
-        try:
-            params = parse_qs(urlparse(url).query)
-            target = params.get("url", [""])[0]
-            if target:
-                async with httpx.AsyncClient(timeout=8, follow_redirects=True,
-                        headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-                    r = await client.get(target)
-                    resolved = str(r.url)
-                # lnkd.in shortlinks return a 200 "this link isn't on LinkedIn"
-                # interstitial instead of an HTTP redirect, so follow_redirects never
-                # reaches the real destination — it's embedded in the page's
-                # external_url_click anchor instead.
-                if "lnkd.in" in resolved or "linkedin.com" in resolved:
-                    m = re.search(r'external_url_click"[^>]*href="([^"]+)"', r.text)
-                    if m:
-                        resolved = html_entities.unescape(m.group(1))
-                validate_url(resolved)
-                url = resolved
-        except Exception:
-            pass
 
-    existing = supabase.table("saves") \
-        .select("id, title, tag, created_at") \
-        .eq("user_id", user_id).eq("url", url) \
-        .limit(1).execute()
-    if existing.data:
-        row = existing.data[0]
-        return {"duplicate": True, "id": row["id"], "title": row["title"],
-                "tag": row["tag"], "created_at": row["created_at"]}
+    `placeholder_id`: when set, this is enriching a row inserted by `process_save_fast` —
+    skip the duplicate check (already done) and UPDATE that row instead of inserting a new one.
+    """
+    url = await resolve_linkedin_redirect(url)
+
+    if not placeholder_id:
+        existing = supabase.table("saves") \
+            .select("id, title, tag, created_at") \
+            .eq("user_id", user_id).eq("url", url) \
+            .limit(1).execute()
+        if existing.data:
+            row = existing.data[0]
+            return {"duplicate": True, "id": row["id"], "title": row["title"],
+                    "tag": row["tag"], "created_at": row["created_at"]}
 
     # --- Media URL detection: lightweight save, skip full Gemini pipeline ---
     for pattern, ctype, label in MEDIA_URLS:
@@ -509,20 +565,23 @@ async def process_save(url: str, user_id: str) -> dict:
                     raw_title = url
             embedding = await get_embedding(raw_title)
             _, tag = await extract_save_metadata_async(raw_title, "", "")
+            payload = {
+                "user_id": user_id, "url": url, "title": raw_title,
+                "content_text": "", "embedding": embedding, "tag": tag,
+                "content_type": ctype, "status": "ready"
+            }
             try:
-                result = supabase.table("saves").insert({
-                    "user_id": user_id,
-                    "url": url,
-                    "title": raw_title,
-                    "content_text": "",
-                    "embedding": embedding,
-                    "tag": tag,
-                    "content_type": ctype
-                }).execute()
-                inserted_id = result.data[0]["id"]
+                if placeholder_id:
+                    supabase.table("saves").update(payload).eq("id", placeholder_id).execute()
+                    inserted_id = placeholder_id
+                else:
+                    result = supabase.table("saves").insert(payload).execute()
+                    inserted_id = result.data[0]["id"]
             except Exception as e:
                 print(f"[media save] DB insert failed: {e}", flush=True)
                 return {"error": True, "url": url, "detail": "DB insert failed"}
+            if placeholder_id:
+                send_save_ready_push(user_id, raw_title, get_source_label(url))
             return {"success": True, "media": True, "content_type": ctype,
                     "label": label, "title": raw_title, "tag": tag, "id": inserted_id}
 
@@ -576,6 +635,7 @@ async def process_save(url: str, user_id: str) -> dict:
         if title == url:
             # Nothing usable came back at all (deleted/protected/unfetchable tweet) — skip
             # rather than insert a row whose only "title" is the URL itself.
+            _finalize_placeholder(placeholder_id)
             return {"thin_content": True, "url": url}
         if tweet_author:
             extra_context = f"Author: {tweet_author}"
@@ -627,11 +687,13 @@ async def process_save(url: str, user_id: str) -> dict:
         lowered = (clean_text + " " + og_title).lower()
         if any(sig in lowered for sig in AUTHWALL_SIGNATURES):
             print(f"[linkedin] authwall signature detected, skipping url={url}", flush=True)
+            _finalize_placeholder(placeholder_id)
             return {"thin_content": True, "url": url}
         # LinkedIn posts are often short (a one-liner, a quote) — use a lower bar than the
         # generic article threshold, since the authwall check above already filters garbage.
         LINKEDIN_QUALITY_THRESHOLD = 40
         if len(clean_text.strip()) < LINKEDIN_QUALITY_THRESHOLD:
+            _finalize_placeholder(placeholder_id)
             return {"thin_content": True, "url": url}
     else:
         # Run Jina Reader and raw OG fetch concurrently for speed
@@ -691,22 +753,24 @@ async def process_save(url: str, user_id: str) -> dict:
             clean_text = (clean_text + "\n\n" + extra_context)[:5000]
 
         if len((clean_text + extra_context).strip()) < QUALITY_THRESHOLD:
+            _finalize_placeholder(placeholder_id)
             return {"thin_content": True, "url": url}
 
     title, tag = await extract_save_metadata_async(title, clean_text, extra_context)
     embedding = await get_embedding(f"{title} {clean_text}")
 
+    payload = {
+        "user_id": user_id, "url": url, "title": title,
+        "content_text": clean_text, "embedding": embedding, "tag": tag,
+        "content_type": "article", "status": "ready"
+    }
     try:
-        result = supabase.table("saves").insert({
-            "user_id": user_id,
-            "url": url,
-            "title": title,
-            "content_text": clean_text,
-            "embedding": embedding,
-            "tag": tag,
-            "content_type": "article"
-        }).execute()
-        inserted_id = result.data[0]["id"]
+        if placeholder_id:
+            supabase.table("saves").update(payload).eq("id", placeholder_id).execute()
+            inserted_id = placeholder_id
+        else:
+            result = supabase.table("saves").insert(payload).execute()
+            inserted_id = result.data[0]["id"]
     except Exception as e:
         print(f"[save] DB insert failed: {e}", flush=True)
         return {"error": True, "url": url, "detail": "DB insert failed"}
@@ -727,7 +791,56 @@ async def process_save(url: str, user_id: str) -> dict:
     except Exception:
         pass  # Silently skip if RPC/column not yet set up in Supabase
 
+    if placeholder_id:
+        send_save_ready_push(user_id, title, get_source_label(url))
     return {"success": True, "title": title, "tag": tag, "id": inserted_id, "related_ids": related_ids}
+
+async def process_save_fast(url: str, user_id: str) -> dict:
+    """Fast path for the interactive REST /save flow: do only the cheap synchronous work
+    (LinkedIn redirect resolution, duplicate check, a no-network media-type guess), insert
+    a 'pending' placeholder row, and return immediately. The expensive page-fetch/Gemini
+    pipeline runs in the background via process_save() and updates the row when done.
+    Bookmark import and the MCP recall_save tool intentionally skip this — they call
+    process_save() directly and keep today's fully-synchronous behavior."""
+    url = await resolve_linkedin_redirect(url)
+
+    existing = supabase.table("saves") \
+        .select("id, title, tag, created_at") \
+        .eq("user_id", user_id).eq("url", url) \
+        .limit(1).execute()
+    if existing.data:
+        row = existing.data[0]
+        return {"duplicate": True, "id": row["id"], "title": row["title"],
+                "tag": row["tag"], "created_at": row["created_at"]}
+
+    content_type, label = "article", None
+    for pattern, ctype, lbl in MEDIA_URLS:
+        if pattern in url:
+            content_type, label = ctype, lbl
+            break
+
+    placeholder_title = get_source_label(url)
+    try:
+        result = supabase.table("saves").insert({
+            "user_id": user_id, "url": url, "title": placeholder_title,
+            "content_text": "", "embedding": None, "tag": None,
+            "content_type": content_type, "status": "pending"
+        }).execute()
+        placeholder_id = result.data[0]["id"]
+    except Exception as e:
+        print(f"[save_fast] DB insert failed: {e}", flush=True)
+        return {"error": True, "url": url, "detail": "DB insert failed"}
+
+    asyncio.create_task(_enrich_in_background(url, user_id, placeholder_id))
+    return {"success": True, "pending": True, "id": placeholder_id,
+            "title": placeholder_title, "url": url, "content_type": content_type, "label": label}
+
+async def _enrich_in_background(url: str, user_id: str, placeholder_id: str):
+    try:
+        await process_save(url, user_id, placeholder_id=placeholder_id)
+    except Exception as e:
+        print(f"[enrich] background save failed for {placeholder_id}: {e}", flush=True)
+        _finalize_placeholder(placeholder_id)
 
 async def expand_search_query(query: str) -> str:
     """Expand a short query with related synonyms/concepts to improve semantic recall."""
@@ -772,6 +885,7 @@ async def do_search(query: str, user_id: str) -> dict:
             .select("id, url, title, tag, created_at, content_text") \
             .eq("user_id", user_id) \
             .eq("content_type", "article") \
+            .eq("status", "ready") \
             .filter("content_text", "fts", query) \
             .limit(20) \
             .execute()
@@ -784,8 +898,10 @@ async def do_search(query: str, user_id: str) -> dict:
     scores = {}
     metadata = {}
 
-    # Post-filter semantic results to exclude media saves
-    semantic_rows = [r for r in semantic_result.data if r.get("content_type", "article") == "article"]
+    # Post-filter semantic results to exclude media saves and still-pending placeholders
+    semantic_rows = [r for r in semantic_result.data
+                      if r.get("content_type", "article") == "article"
+                      and r.get("status", "ready") == "ready"]
 
     for rank, row in enumerate(semantic_rows):
         rid = row["id"]
@@ -825,6 +941,7 @@ def do_suggestions(user_id: str) -> dict:
     result = supabase.table("saves") \
         .select("tag, url") \
         .eq("user_id", user_id) \
+        .eq("status", "ready") \
         .execute()
 
     if not result.data:

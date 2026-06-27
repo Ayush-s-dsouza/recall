@@ -161,6 +161,15 @@ function getAppScheme(url) {
   }
 }
 
+// Standard Web Push boilerplate: PushManager.subscribe() needs the VAPID public key
+// as a Uint8Array, not the base64url string it's distributed as.
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - base64String.length % 4) % 4)
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/")
+  const rawData = atob(base64)
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)))
+}
+
 function formatDate(isoString) {
   if (!isoString) return ""
   try {
@@ -339,6 +348,8 @@ export default function App() {
   const [xConnecting, setXConnecting] = useState(false)
   const [xBookmarkletFallback, setXBookmarkletFallback] = useState(false)
 
+  const [pushEnabled, setPushEnabled] = useState(false)
+  const finalizeSaveRef = useRef(null)
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
   const importFileInputRef = useRef(null)
@@ -410,6 +421,50 @@ export default function App() {
     const id = setInterval(() => setLoadingStep(s => Math.min(s + 1, 3)), 1050)
     return () => clearInterval(id)
   }, [loading])
+
+  // Pushes background-enrichment completions (real title/tag) to the active receipt and
+  // Today's list the instant a save flips from 'pending' to 'ready' — see finalizeSave.
+  useEffect(() => {
+    if (!user) return
+    const channel = supabase
+      .channel(`saves-${user.id}`)
+      .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'saves', filter: `user_id=eq.${user.id}` },
+        payload => {
+          if (payload.new.status !== 'ready') return
+          finalizeSaveRef.current?.({
+            id: payload.new.id, title: payload.new.title,
+            tag: payload.new.tag, related_ids: payload.new.related_ids
+          })
+        })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [user?.id])
+
+  // If notification permission was already granted in a prior session, silently re-confirm
+  // (and re-POST, in the rare case the subscription itself expired) without re-prompting.
+  useEffect(() => {
+    if (!user || !pushSupported || typeof Notification === "undefined") return
+    if (Notification.permission !== "granted") return
+    (async () => {
+      const registration = await navigator.serviceWorker.register("/sw.js")
+      await navigator.serviceWorker.ready
+      let subscription = await registration.pushManager.getSubscription()
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(import.meta.env.VITE_VAPID_PUBLIC_KEY)
+        })
+        const token = await getToken()
+        await fetch(`${BACKEND}/push/subscribe`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, subscription: subscription.toJSON() })
+        })
+      }
+      setPushEnabled(true)
+    })().catch(e => console.error("[push] resubscribe check failed", e))
+  }, [user?.id])
 
   useEffect(() => {
     if (!askLoading) { setAskStep(""); return }
@@ -487,7 +542,7 @@ export default function App() {
     today.setHours(0, 0, 0, 0)
     const { data } = await supabase
       .from("saves")
-      .select("id, url, title, tag, content_type")
+      .select("id, url, title, tag, content_type, status")
       .gte("created_at", today.toISOString())
       .order("created_at", { ascending: false })
       .limit(20)
@@ -954,6 +1009,37 @@ export default function App() {
     return session?.access_token
   }
 
+  // Web Push only works on iOS 16.4+ when the PWA is installed to the home screen —
+  // offering it on a plain iOS Safari tab would prompt for permission and then silently
+  // fail to ever deliver anything, so gate it the same way the install banner does.
+  const pushSupported = "serviceWorker" in navigator && "PushManager" in window && (!isIOS || isStandalone)
+
+  const enableSaveNotifications = async () => {
+    if (!pushSupported) return
+    try {
+      const permission = await Notification.requestPermission()
+      if (permission !== "granted") return
+      const registration = await navigator.serviceWorker.register("/sw.js")
+      await navigator.serviceWorker.ready
+      let subscription = await registration.pushManager.getSubscription()
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(import.meta.env.VITE_VAPID_PUBLIC_KEY)
+        })
+      }
+      const token = await getToken()
+      await fetch(`${BACKEND}/push/subscribe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, subscription: subscription.toJSON() })
+      })
+      setPushEnabled(true)
+    } catch (e) {
+      console.error("[push] subscribe failed", e)
+    }
+  }
+
   const pollImportStatus = (jobId) => {
     if (importPollRef.current) clearInterval(importPollRef.current)
     const tick = async () => {
@@ -1152,47 +1238,24 @@ export default function App() {
       }
       if (!res.ok) throw new Error()
       const data = await res.json()
-      if (data.media) {
-        setSaveReceipt({ media: true, content_type: data.content_type, label: data.label, title: data.title, tag: data.tag, id: data.id, url, fromShareSheet })
-        fetchTodaySaves()
-        fetchLibraryFilters()
-        posthog.capture('url_saved', { tag: data.tag, type: data.content_type })
-        setLoading(false)
-        return
-      }
-      if (data.thin_content) {
-        setSaveReceipt({ thin_content: true, url })
-        setLoading(false)
-        return
-      }
       if (data.duplicate) {
         setSaveReceipt({ ...data, url, duplicate: true })
-      } else {
+      } else if (data.pending) {
         setUrlInput("")
         setRelatedSaves([])
         setTotalSaveCount(prev => (prev ?? 0) + 1)
-        const newCount = first5Count < 5 ? first5Count + 1 : first5Count
-        if (first5Count < 5) setFirst5Count(newCount)
-        setSaveReceipt({ title: data.title, tag: data.tag, id: data.id, url, fromShareSheet, milestoneCount: first5Count < 5 ? newCount : null })
-        if (data.related_ids?.length) fetchRelatedSaves(data.related_ids)
+        const isMedia = data.content_type && data.content_type !== "article"
+        setSaveReceipt(isMedia
+          ? { media: true, pending: true, content_type: data.content_type, label: data.label, title: data.title, tag: null, id: data.id, url, fromShareSheet }
+          : { id: data.id, url, title: data.title, tag: null, pending: true, fromShareSheet, content_type: data.content_type })
         fetchTodaySaves()
-        fetchLibraryFilters()
-        posthog.capture('url_saved', { tag: data.tag })
-        playSuccessChime()
-        if (newCount === 5 && first5Count < 5) {
-          setTimeout(() => playSuccessChime(), 200)
-          navigator.vibrate?.([50, 80, 50, 80, 100])
-          setIsFreshReceipt(true)
-          setTimeout(() => setIsFreshReceipt(false), 3000)
-        } else {
-          navigator.vibrate?.([50])
-          setIsFreshReceipt(true)
-          setTimeout(() => setIsFreshReceipt(false), first5Count >= 2 ? 2000 : 1500)
-        }
-        if (onboardingStep === 'firstSave') {
-          setFirstSaveSheetOpen(false)
-          setTimeout(() => advanceOnboarding('firstSave'), 600)
-        }
+        // Realtime (see the saves-<uid> subscription effect) resolves this the instant
+        // enrichment finishes. This is just a safety net in case Realtime is misconfigured/off.
+        setTimeout(async () => {
+          const { data: row } = await supabase.from("saves")
+            .select("id, title, tag, related_ids, status").eq("id", data.id).single()
+          if (row?.status === "ready") finalizeSaveRef.current(row)
+        }, 20000)
       }
     } catch (err) {
       setSaveReceipt(null)
@@ -1304,6 +1367,42 @@ export default function App() {
       .in("id", ids)
     if (data) setRelatedSaves(data)
   }
+
+  // Resolves a pending save once background enrichment finishes (real title/tag/embedding
+  // are in). Always patches the matching Today's-list row; only fires the celebratory
+  // chime/vibrate/milestone/posthog side effects if this is still the receipt on screen.
+  const finalizeSave = (row) => {
+    setTodaySaves(prev => prev.map(s => s.id === row.id ? { ...s, title: row.title, tag: row.tag, status: "ready" } : s))
+    if (!(saveReceipt?.id === row.id && saveReceipt?.pending)) return
+    const { fromShareSheet, url, media, content_type, label } = saveReceipt
+    const newCount = first5Count < 5 ? first5Count + 1 : first5Count
+    if (first5Count < 5) setFirst5Count(newCount)
+    setSaveReceipt(media
+      ? { media: true, content_type, label, title: row.title, tag: row.tag, id: row.id, url, fromShareSheet }
+      : { title: row.title, tag: row.tag, id: row.id, url, fromShareSheet, milestoneCount: first5Count < 5 ? newCount : null })
+    if (row.related_ids?.length) fetchRelatedSaves(row.related_ids)
+    fetchLibraryFilters()
+    posthog.capture('url_saved', { tag: row.tag, type: content_type })
+    playSuccessChime()
+    if (newCount === 5 && first5Count < 5) {
+      setTimeout(() => playSuccessChime(), 200)
+      navigator.vibrate?.([50, 80, 50, 80, 100])
+      setIsFreshReceipt(true)
+      setTimeout(() => setIsFreshReceipt(false), 3000)
+    } else {
+      navigator.vibrate?.([50])
+      setIsFreshReceipt(true)
+      setTimeout(() => setIsFreshReceipt(false), first5Count >= 2 ? 2000 : 1500)
+    }
+    if (onboardingStep === 'firstSave') {
+      setFirstSaveSheetOpen(false)
+      setTimeout(() => advanceOnboarding('firstSave'), 600)
+    }
+  }
+  // finalizeSave closes over state that changes every render (saveReceipt, first5Count,
+  // onboardingStep) — the long-lived Realtime subscription below must always call through
+  // this ref so it never acts on a stale closure from when the channel was first opened.
+  finalizeSaveRef.current = finalizeSave
 
   if (authLoading) return null
 
@@ -1674,6 +1773,26 @@ export default function App() {
             </>
           )}
 
+          {pushSupported && (
+            <>
+              <div style={styles.settingsDivider} />
+
+              {/* Notify me when a save finishes enriching — only relevant since saves now
+                  resolve their title/tag in the background after the initial "Saved ✓" */}
+              <p style={styles.settingsSectionHeading}>Notifications</p>
+              {pushEnabled ? (
+                <p style={styles.tokenWarning}>You'll get notified when a save finishes processing — even if you've closed the app.</p>
+              ) : (
+                <>
+                  <button onClick={enableSaveNotifications} style={styles.settingsLink}>
+                    Notify me when saves finish →
+                  </button>
+                  <p style={styles.tokenWarning}>Useful since the title/tag now fill in a moment after you save — close the app and we'll let you know when it's ready.</p>
+                </>
+              )}
+            </>
+          )}
+
           {isIOS && (
             <>
               <div style={styles.settingsDivider} />
@@ -2029,7 +2148,9 @@ export default function App() {
                 <span style={{ color: "#aaa", fontSize: 13, fontWeight: 600 }}>Saved to library</span>
               </div>
               <div style={styles.receiptTitleRow}>
-                {editingTitle ? (
+                {saveReceipt.pending ? (
+                  <span className="shimmer" style={styles.shimmerTitle} />
+                ) : editingTitle ? (
                   <>
                     <input
                       style={styles.receiptTitleInput}
@@ -2056,6 +2177,13 @@ export default function App() {
                   </>
                 )}
               </div>
+              {saveReceipt.pending && (
+                <p style={{ color: "#666", fontSize: 12, margin: "8px 0 0" }}>
+                  {pushEnabled
+                    ? "Finishing the title now. Feel free to close the app, we'll notify you when it's ready."
+                    : "Finishing the title now — go on with your day, it'll update here on its own."}
+                </p>
+              )}
             </div>
           )}
 
@@ -2081,6 +2209,22 @@ export default function App() {
                   <div style={styles.receiptTitleRow}>
                     <span className="shimmer" style={styles.shimmerTitle} />
                   </div>
+                </>
+              ) : saveReceipt.pending ? (
+                <>
+                  <span className="shimmer" style={styles.shimmerPill} />
+                  <div style={styles.receiptTitleRow}>
+                    <span className="shimmer" style={styles.shimmerTitle} />
+                  </div>
+                  <div style={styles.receiptFooter}>
+                    <span style={styles.receiptUrl}>{saveReceipt.url}</span>
+                    <span style={styles.receiptSaved}>Saved ✓</span>
+                  </div>
+                  <p style={{ color: "#666", fontSize: 12, margin: "8px 0 0" }}>
+                    {pushEnabled
+                      ? "Finishing the title now. Feel free to close the app, we'll notify you when it's ready."
+                      : "Finishing the title now — go on with your day, it'll update here on its own."}
+                  </p>
                 </>
               ) : saveReceipt.duplicate ? (
                 <>
@@ -2245,6 +2389,17 @@ export default function App() {
                             style={styles.deleteConfirmNo}
                           >Cancel</button>
                         </div>
+                      ) : s.status === "pending" ? (
+                        <>
+                          <span className="shimmer" style={styles.todayTagShimmer} />
+                          <span className="shimmer" style={styles.todayTitleShimmer} />
+                          <span style={styles.todaySource}>{getSourceLabel(s.url)}</span>
+                          <button
+                            onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(s.id) }}
+                            style={styles.deleteButton}
+                            aria-label="Delete"
+                          ><TrashIcon /></button>
+                        </>
                       ) : (
                         <>
                           {s.content_type === "video" ? (
@@ -2587,6 +2742,8 @@ const styles = {
   todayCard: { display: "flex", alignItems: "center", gap: "10px", background: "#1a1a1a", border: "1px solid #222", borderRadius: "10px", padding: "10px 14px", textDecoration: "none", color: "#fff", overflow: "hidden" },
   todayTag: { fontSize: "10px", color: "#555", textTransform: "uppercase", letterSpacing: "0.5px", flexShrink: 0 },
   todayTitle: { fontSize: "13px", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  todayTagShimmer: { height: "10px", width: "32px", borderRadius: "3px", background: "#2a2a2a", display: "block", flexShrink: 0 },
+  todayTitleShimmer: { height: "13px", width: "60%", borderRadius: "3px", background: "#2a2a2a", display: "block", flex: 1 },
   todaySource: { fontSize: "11px", color: "#444", flexShrink: 0 },
   deleteButton: { background: "none", border: "none", color: "#444", cursor: "pointer", padding: "0 0 0 8px", flexShrink: 0, display: "flex", alignItems: "center" },
   deleteConfirm: { display: "flex", alignItems: "center", gap: "8px", width: "100%" },

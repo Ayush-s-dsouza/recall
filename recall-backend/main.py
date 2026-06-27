@@ -26,6 +26,7 @@ from recall_core import (
     validate_url,
     get_embedding,
     process_save,
+    process_save_fast,
     do_search,
     do_suggestions,
     do_update_tag,
@@ -144,6 +145,18 @@ class ScrapedUrlsImportRequest(BaseModel):
     token: str
     urls: list[str]
 
+class PushSubscription(BaseModel):
+    endpoint: str
+    keys: dict
+
+class PushSubscribeRequest(BaseModel):
+    token: str
+    subscription: PushSubscription
+
+class PushUnsubscribeRequest(BaseModel):
+    token: str
+    endpoint: str
+
 
 @app.post("/save")
 @limiter.limit("10/minute")
@@ -155,10 +168,34 @@ async def save_url(req: SaveRequest, request: Request):
 
     validate_url(req.url)
 
-    result = await process_save(req.url, user_id)
+    result = await process_save_fast(req.url, user_id)
     if result.get("error"):
         raise HTTPException(status_code=500, detail=result["detail"])
     return result
+
+@app.post("/push/subscribe")
+async def push_subscribe(req: PushSubscribeRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    supabase.table("push_subscriptions").upsert({
+        "user_id": user_id,
+        "endpoint": req.subscription.endpoint,
+        "p256dh": req.subscription.keys.get("p256dh", ""),
+        "auth": req.subscription.keys.get("auth", "")
+    }, on_conflict="endpoint").execute()
+    return {"success": True}
+
+@app.post("/push/unsubscribe")
+async def push_unsubscribe(req: PushUnsubscribeRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    supabase.table("push_subscriptions").delete() \
+        .eq("user_id", user_id).eq("endpoint", req.endpoint).execute()
+    return {"success": True}
 
 @app.post("/search")
 @limiter.limit("30/minute")
