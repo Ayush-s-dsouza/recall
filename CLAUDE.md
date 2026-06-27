@@ -86,9 +86,10 @@ VITE_BACKEND_URL=http://127.0.0.1:8000          # local dev; set to Railway URL 
 VITE_SENTRY_DSN=<Sentry frontend DSN — safe for client>
 VITE_POSTHOG_KEY=<PostHog project API key — safe for client>
 VITE_TWITTER_CLIENT_ID=<X OAuth 2.0 app Client ID — safe for client, used to build the authorize URL>
+VITE_VAPID_PUBLIC_KEY=<same value as backend's VAPID_PUBLIC_KEY — public-safe, used by PushManager.subscribe()>
 ```
 
-**On Vercel**, set `VITE_BACKEND_URL` to `https://recall-production-9941.up.railway.app` via the Vercel environment variable dashboard — do NOT hardcode it. `VITE_SENTRY_DSN`, `VITE_POSTHOG_KEY`, and `VITE_TWITTER_CLIENT_ID` are also set in Vercel dashboard. All are public-safe by design.
+**On Vercel**, set `VITE_BACKEND_URL` to `https://recall-production-9941.up.railway.app` via the Vercel environment variable dashboard — do NOT hardcode it. `VITE_SENTRY_DSN`, `VITE_POSTHOG_KEY`, `VITE_TWITTER_CLIENT_ID`, and `VITE_VAPID_PUBLIC_KEY` are also set in Vercel dashboard. All are public-safe by design.
 
 ### Backend — `recall-backend/.env`
 
@@ -103,9 +104,12 @@ FRONTEND_URL=https://recall-iota-six.vercel.app                    # where mcp_s
 TWITTER_CLIENT_ID=<X OAuth 2.0 app Client ID — bookmark import>
 TWITTER_CLIENT_SECRET=<X OAuth 2.0 app Client Secret — NEVER expose to client>
 TWITTER_BEARER_TOKEN=<X API app-only Bearer token — single-tweet save lookups>
+VAPID_PUBLIC_KEY=<Web Push VAPID public key — also mirrored to frontend as VITE_VAPID_PUBLIC_KEY>
+VAPID_PRIVATE_KEY=<Web Push VAPID private key — NEVER expose to client>
+VAPID_SUBJECT=mailto:<contact email, required by the Web Push spec>
 ```
 
-**On Railway**, these are set as environment variables in the Railway dashboard. `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes. The three X API vars are all from the same X Developer Portal app; if unset, both import paths fall back gracefully (bookmark import shows a 503 + bookmarklet fallback; single-tweet save degrades to Jina/OG/syndication-API fallbacks — see Import X Bookmarks (#14) and Known Issue #23).
+**On Railway**, these are set as environment variables in the Railway dashboard. `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes. The three X API vars are all from the same X Developer Portal app; if unset, both import paths fall back gracefully (bookmark import shows a 503 + bookmarklet fallback; single-tweet save degrades to Jina/OG/syndication-API fallbacks — see Import X Bookmarks (#14) and Known Issue #23). The three VAPID vars power Web Push (see "Web Push notifications" #1c) — generate once with `npx web-push generate-vapid-keys`; if unset, `send_save_ready_push()` silently no-ops (no save behavior is affected either way).
 
 ---
 
@@ -113,13 +117,15 @@ TWITTER_BEARER_TOKEN=<X API app-only Bearer token — single-tweet save lookups>
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/save` | Save a URL (full pipeline) |
+| `POST` | `/save` | Save a URL — returns a pending placeholder almost instantly; real title/tag land via background enrichment (see "Background save enrichment") |
 | `POST` | `/search` | Hybrid semantic + FTS search |
 | `POST` | `/suggestions` | Personalised search chip suggestions |
 | `PATCH` | `/save/{id}/title` | Update a save's display title |
 | `PATCH` | `/save/{id}/tag` | Update a save's category tag |
 | `DELETE` | `/save/{id}` | Delete a save |
 | `DELETE` | `/account` | Delete all user saves + auth account |
+| `POST` | `/push/subscribe` | Register a Web Push subscription for the signed-in user |
+| `POST` | `/push/unsubscribe` | Remove a Web Push subscription |
 | `GET` | `/` | Health check |
 
 All mutating endpoints verify the Supabase JWT and enforce `user_id` ownership before touching any row.
@@ -144,30 +150,52 @@ The 6 MCP tools (`recall_search`, `recall_save`, `recall_suggestions`, `recall_u
 
 ### 1. Save a URL
 
+`/save` returns almost instantly with a placeholder row; the expensive fetch/Gemini/embedding pipeline runs in the background and the real title/tag land moments later via Realtime (or a polling fallback) — see "Background save enrichment" (#1b) below for the full mechanics. Summary of the immediate request/response:
+
 **Frontend (`App.jsx` → `handleSave(url, fromShareSheet = false)`)**
 1. Validates URL starts with `http://` or `https://`; shows error and returns early if not
 2. Immediately sets an optimistic `saveReceipt` with `{ url, optimistic: true }` — renders a shimmer card at once
 3. Button text cycles through `["Fetching...", "Reading...", "Analyzing...", "Almost there..."]` every 800 ms via a `useEffect` on `loading`
-4. POSTs `{ url, token }` to `BACKEND/save`
+4. POSTs `{ url, token }` to `BACKEND/save` (45s client-side `AbortController` timeout — a safety net, not the normal path, since the response itself comes back in well under a second)
 5. **On duplicate** (`data.duplicate === true`): sets receipt to `{ ...data, duplicate: true }` — shows amber "Already in ReCall" card with original save date. No chime, no re-save.
-6. **On success**: clears input, sets full receipt `{ title, tag, id, url, fromShareSheet }`, refreshes Today list, plays chime + vibrates, flashes green box-shadow glow for 1.5 s
+6. **On pending** (`data.pending === true`, the normal case): clears input, sets `saveReceipt` to a pending state — shows "Saved ✓" immediately with the title/tag area shimmering, plus copy telling the user they can leave ("Feel free to close the app, we'll notify you when it's ready" if push is enabled, otherwise "go on with your day, it'll update here on its own"). Bumps `totalSaveCount` right away since the row exists in the DB. Chime/vibrate/milestone-tracking/posthog `url_saved` are deferred until enrichment actually finishes (`finalizeSave`, #1b).
 7. **On failure**: clears receipt, shows red error message
 
-**Backend (`main.py` → `POST /save`)**
+**Backend (`main.py` → `POST /save` → `process_save_fast`)**
 1. Verifies JWT → `user_id`
-2. **Duplicate check first**: queries `saves` table for matching `url + user_id`. If found, returns `{ duplicate: True, id, title, tag, created_at }` immediately — no pipeline work.
-3. **If tweet** (`x.com`/`twitter.com`): `fetch_tweet()` (`recall_core.py`) fans out in parallel to the official X API v2 `GET /2/tweets/:id` (app-only Bearer token, `recall_core.py:_fetch_tweet_api` — structured text/author/`entities.urls[].expanded_url`, primary source), Jina Reader (enrichment for quoted tweets/"read more" content), OG tags, and the auth-free syndication-API card-title hack (X Article titles). Degrades gracefully to the Jina/OG/card-title fallbacks if `TWITTER_BEARER_TOKEN` is unset or the API call fails — see Known Issues.
-   **If Instagram** (`instagram.com`): fetches `instagram.com/p/SHORTCODE/embed/captioned/` with mobile UA. Extracts visible text, strips UI boilerplate, extracts author from JSON/href. Instagram CDN blocks image fetches so vision is skipped. Public posts only.
-4. **Otherwise**: fetches page with `httpx` (browser UA), strips `<script>`/`<style>`, extracts plain text (≤5000 chars) and `<title>`
-5. Calls `extract_og_tags()`: parses `<meta>` tags for `og:title`, `og:description`, `og:image`, `description`
-6. **Image analysis** (when `len(clean_text) < 400` and `og:image` exists): passes image bytes to `gemini-2.5-flash` vision for a 2–3 sentence description
-7. Calls `extract_save_metadata()`: sends title + content + extra context to `gemini-2.5-flash` → returns exactly 3 lines: concise title, author, category tag. Display title formatted as `"Title · Author"` (or just title if Unknown)
-8. Calls `get_embedding()`: direct REST POST to `gemini-embedding-001`, returns 768-dim float array
-9. Inserts into `saves` table, captures `result.data[0]["id"]`, returns `{ success, title, tag, id }`
+2. Resolves any LinkedIn `safety/go` redirect (`resolve_linkedin_redirect`, see Known Issue #25)
+3. **Duplicate check**: queries `saves` for matching `url + user_id`. If found, returns `{ duplicate: True, id, title, tag, created_at }` immediately — no pipeline work, no placeholder row.
+4. Cheap no-network media-type guess from `MEDIA_URLS` (string match only, e.g. YouTube/TikTok/Instagram Reel patterns)
+5. Inserts a placeholder row (`status: "pending"`, title = `get_source_label(url)`, `tag: null`, `embedding: null`) and returns `{ success: True, pending: True, id, title, url, content_type, label }` — this is the response the frontend actually sees
+6. Kicks off `_enrich_in_background(url, user_id, placeholder_id)` as an `asyncio.create_task` — fire-and-forget, keeps running after the response is sent (same pattern as the bookmark import job's `run_import_job`)
+
+### 1b. Background save enrichment
+
+`_enrich_in_background` calls `process_save(url, user_id, placeholder_id=...)` — the **same function** that does the actual heavy lifting (tweet/Instagram/LinkedIn/article fetch, Gemini vision, `extract_save_metadata`, `get_embedding`), unchanged from before this feature existed. The only difference when `placeholder_id` is set:
+- Skips the duplicate check (already done by `process_save_fast`)
+- `UPDATE`s the placeholder row instead of `INSERT`ing a new one, setting `status: "ready"` once real data lands
+- The four "thin content" early-return points (deleted/protected tweet, LinkedIn authwall, LinkedIn/generic quality threshold) now finalize the placeholder as `status: "ready"` with its best-effort title before returning, **instead of silently rejecting the save** — every link the user saves now ends up as a real row, even a weak one they can delete manually. (Deliberate behavior change from the old reject-outright thin-content handling.)
+- On success, calls `send_save_ready_push()` (see #1c) — only for this fast-path flow, not bookmark import or MCP saves, to avoid notification spam on a 500-item import
+
+`process_save` (no `placeholder_id`) is still called directly, unchanged, by the bookmark import job (`main.py`) and the `recall_save` MCP tool (`mcp_server.py`) — both want a final answer in one synchronous round trip and have no progressive UI to show a pending state, so they intentionally skip the fast path.
+
+**Realtime resolution (`App.jsx`)**: one `saves-<uid>` Supabase Realtime channel (subscribed once per signed-in session) listens for `UPDATE` events on `saves` where `status` flips to `ready`, and calls `finalizeSave(row)` — which patches the matching Today's-list row in place, and additionally fires the chime/vibrate/milestone/posthog/related-saves logic *only if* that row is still the active receipt on screen. `finalizeSave` is accessed through `finalizeSaveRef` (a "latest ref" pattern) so the long-lived channel subscription never acts on a stale closure of `saveReceipt`/`first5Count`/`onboardingStep`. A one-shot 20s `setTimeout` fallback re-fetches the row directly in case Realtime is ever misconfigured/off — requires the `saves` table to have Realtime enabled in the Supabase dashboard (Database → Publications → `supabase_realtime` → add `saves`).
+
+**`do_search`/`do_suggestions`** both filter out `status != "ready"` rows so a still-enriching placeholder never surfaces in search results or tag/source suggestion tallies.
+
+### 1c. Web Push notifications
+
+Since saves now resolve their title in the background, ReCall also offers a Web Push notification (`Saved "<title>"` / `from <source>`) for when enrichment finishes — useful if the user has closed the app entirely, which the in-app Realtime update obviously can't reach.
+
+- **First service worker in this project** — `recall-frontend/public/sw.js`. Handles `push` (shows the notification) and `notificationclick` (focuses an existing ReCall window or opens a new one).
+- **Opt-in**: Settings (⚙) → "Notify me when saves finish" (`enableSaveNotifications` in `App.jsx`). Requests `Notification.requestPermission()`, registers the SW, subscribes via `PushManager`, POSTs the subscription to `/push/subscribe`. A separate effect silently re-confirms/re-subscribes on every load if permission was already granted in a prior session, without re-prompting.
+- **iOS gate**: Apple only supports Web Push on iOS 16.4+ for PWAs already added to the Home Screen (`isStandalone`) — a plain Safari tab can never receive push, full stop. `pushSupported = "serviceWorker" in navigator && "PushManager" in window && (!isIOS || isStandalone)` hides the toggle entirely rather than offering a prompt that can't work.
+- **Backend** (`recall_core.py` → `send_save_ready_push`): looks up the user's `push_subscriptions` rows, sends via `pywebpush` with VAPID auth, deletes the subscription row on a `404`/`410` (expired). Wrapped in try/except everywhere — a push failure must never affect the save itself.
+- **Windows gotcha discovered during testing**: Windows has its own per-app notification toggle (Settings → System → Notifications) independent of the browser's own `Notification.permission` state. If that's off, Chrome never shows anything — not a toast, not even silently in the Action Center — regardless of whether the push was sent successfully server-side. The DevTools Application → Service Workers → "Push" test button (simulates a push with no network involved) is the fastest way to isolate "our code is broken" from "this machine's OS/browser notification pipeline is misconfigured."
 
 ### 2. Save Receipt Card
 
-After a successful save, a card replaces the input area showing:
+While `status` is `pending`, the tag pill and title area show a shimmer placeholder instead of any text — **never a real-looking title that later changes**, since that reads as a bug rather than progressive loading. Once enrichment resolves, the card shows:
 - **Tag pill** — tappable; opens a 7-pill inline picker to change the category. Selecting a new tag PATCHes `/save/{id}/tag` and updates the Today list in-place.
 - **Title** — editable via ✎ pencil icon → input + green ✓ button. Confirming PATCHes `/save/{id}/title`, updates the Today list, plays chime + vibrates.
 - **URL** + **"Saved ✓"** footer
@@ -179,11 +207,11 @@ Receipt clears when the user starts typing a new URL into the input.
 
 A scrollable list below the save form showing all saves from the current calendar day. Fetched directly from Supabase (anon key + RLS) — no backend endpoint needed:
 ```js
-supabase.from("saves").select("id, url, title, tag")
+supabase.from("saves").select("id, url, title, tag, content_type, status")
   .gte("created_at", today.toISOString())
   .order("created_at", { ascending: false }).limit(20)
 ```
-Refreshed on: user sign-in, after each successful save.
+Refreshed on: user sign-in, after each successful save (immediately on the pending placeholder, then again in-place via the `saves-<uid>` Realtime channel once `status` flips to `ready` — see "Background save enrichment"). Rows with `status === "pending"` render a shimmer in place of the title/tag text instead of the real values.
 
 Each card shows tag + title + source label. Trash icon (🗑) expands the card to a confirmation row ("Remove from ReCall?" + Delete/Cancel). Deleting calls `DELETE /save/{id}`, filters from state, and clears the receipt if it matches.
 
@@ -353,9 +381,22 @@ Three import paths, all funneling into the same source-agnostic `run_import_job`
 | tag | text | Tech / Product / Business / Finance / Health / Personal / Other |
 | content_type | text | `article` (default) or `video` / `image` for media URLs |
 | related_ids | uuid[] | IDs of semantically related saves (best-effort, may be null) |
+| status | text | `'pending'` until background enrichment finishes, then `'ready'` (default `'ready'` — only the fast-path `/save` flow ever inserts a row as `'pending'`) |
 | created_at | timestamptz | auto |
 
 RLS is enabled — policies restrict all access to `user_id = auth.uid()`.
+
+### Table: `push_subscriptions`
+
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid | primary key |
+| user_id | uuid | no FK — only the backend (service role) touches this table, no RLS needed |
+| endpoint | text | unique; the browser's push service URL (e.g. `fcm.googleapis.com/fcm/send/...` for Chrome) |
+| p256dh, auth | text | the subscription's public key + auth secret, as returned by `PushManager.subscribe()` |
+| created_at | timestamptz | auto |
+
+One row per device/browser a user has enabled notifications on. Rows are deleted automatically by `send_save_ready_push()` when a push attempt comes back `404`/`410` (subscription expired/revoked).
 
 ### RPC: `match_saves`
 
@@ -514,9 +555,9 @@ A lightning bolt / cursor-shaped path:
 
 6. **Clipboard API silently fails** — requires page focus and user permission. The `try/catch` around `checkClipboard()` is correct and intentional — don't remove it.
 
-7. **Tweet fetching uses oEmbed (no auth)** — only works for public tweets. The HTML-to-text stripping is regex-based (not a full parser), intentional for simplicity.
+7. **(Superseded by #23)** Tweet fetching used to use oEmbed; it now goes through the official X API v2 (`_fetch_tweet_api`) with Jina/OG/syndication-API as enrichment/fallback layers — see #23.
 
-8. **`vite-plugin-pwa` is NOT installed** — PWA is manual (manifest.json only). No service worker exists. The app is installable but not offline-capable.
+8. **`vite-plugin-pwa` is NOT installed** — PWA install (manifest.json) is still manual, and there's still no offline support/caching. There **is** now a service worker (`recall-frontend/public/sw.js`, added for Web Push — see "Web Push notifications" #1c) — it only handles `push`/`notificationclick`, nothing else. Don't assume offline capability just because a service worker exists now.
 
 9. **`App.css` is not used by the app** — it's leftover Vite boilerplate. All styles are inline in `App.jsx` via the `styles` object at the bottom of the file.
 
@@ -550,6 +591,16 @@ A lightning bolt / cursor-shaped path:
 
 24. **Bookmark import OAuth doesn't persist X tokens** — `/import/x-connect` exchanges the code, uses the access token once in-memory to paginate bookmarks, then discards it. This is a one-tap import, not a background sync — reconnecting always re-prompts the X consent screen. Don't add token storage/refresh-rotation infra for this unless the feature changes to continuous sync.
 
+25. **LinkedIn `safety/go` redirect resolution lives in `resolve_linkedin_redirect()`** (`recall_core.py`) — `lnkd.in` shortlinks return a 200 "this link isn't on LinkedIn" interstitial instead of an HTTP redirect, so the real destination has to be scraped out of the page's `external_url_click` anchor rather than trusted from the final response URL. Called from both `process_save_fast` and the top of `process_save` (harmless no-op the second time, since the URL is already resolved by then).
+
+26. **Never display a save title that later changes** — since `/save` returns a placeholder before the real title is known (see "Background save enrichment" #1b), the UI rule is: show either a shimmer placeholder or the final resolved title, never a plausible-but-wrong title that gets silently swapped. A title that visibly changes reads as a bug, not as progressive loading. Don't "optimize" the pending state by guessing a better placeholder title — keep it as a shimmer.
+
+27. **`status` column gates what counts as a "real" save** — `saves.status` is `'pending'` until background enrichment finishes, then `'ready'`. Any new query against `saves` that aggregates/displays results to the user (search, suggestions, library filters, etc.) should filter to `status = 'ready'` (see `do_search`/`do_suggestions`) — otherwise a still-enriching row with a null tag/embedding can show up half-formed.
+
+28. **Push notifications only fire for the interactive fast-path save, not bookmark import or MCP saves** — `send_save_ready_push()` is only called when `placeholder_id` is set in `process_save`. Calling it unconditionally would spam one push per item during a multi-hundred-item bookmark import. If a future use case wants import-completion notifications, that should be a single "import finished" push, not per-item.
+
+29. **Windows blocks browser notifications at the OS level, independent of `Notification.permission`** — Windows Settings → System → Notifications has a per-app toggle for Chrome that, if off, silently drops every web push notification (no toast, nothing in Action Center either) even though `Notification.requestPermission()` reports "granted" and the backend's `webpush()` call succeeds with no error. When push notifications "don't work" during testing, check this before assuming the code is broken — DevTools → Application → Service Workers → "Push" test button simulates a push with no network involved and is the fastest way to isolate the two.
+
 ---
 
 ## Current Status
@@ -563,6 +614,8 @@ A lightning bolt / cursor-shaped path:
 - Auto-categorization into 7 tags (Tech, Product, Business, Finance, Health, Personal, Other)
 - Duplicate URL detection — shows "Already in ReCall" with original save date, no re-save
 - Optimistic UI — shimmer receipt appears instantly on save tap
+- **Background save enrichment** — `/save` returns a confirmed pending placeholder in well under a second; the real title/tag/embedding land moments later via Supabase Realtime (with a polling fallback), resolved in place rather than ever swapping a visible title
+- **Web Push notifications** — opt-in (Settings → "Notify me when saves finish"); notifies the user when a save finishes enriching even if the app is fully closed; gated correctly on iOS (requires Home Screen install, iOS 16.4+)
 - Cycling loading button text during save ("Fetching..." → "Analyzing..." etc.)
 - Green glow flash on successful save receipt
 - Chime + haptic on successful save, title edit, and tag edit
