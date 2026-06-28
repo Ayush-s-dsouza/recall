@@ -2,10 +2,12 @@ import { useState, useEffect, useRef } from "react"
 import { createClient } from "@supabase/supabase-js"
 import posthog from 'posthog-js'
 
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
-)
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
+const HAS_SUPABASE_CONFIG = !!(SUPABASE_URL && SUPABASE_ANON_KEY)
+const supabase = HAS_SUPABASE_CONFIG
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL
 const TWITTER_CLIENT_ID = import.meta.env.VITE_TWITTER_CLIENT_ID
@@ -192,6 +194,39 @@ function getSourceLabel(url) {
   }
 }
 
+function getPreviewTag(url) {
+  if (!url) return "Other"
+  if (url.includes("linkedin.com")) return "Business"
+  if (url.includes("twitter.com") || url.includes("x.com")) return "Tech"
+  if (url.includes("youtube.com") || url.includes("youtu.be")) return "Product"
+  if (url.includes("substack.com")) return "Business"
+  if (url.includes("reddit.com")) return "Personal"
+  return "Other"
+}
+
+function buildLandingPreview(url) {
+  const source = getSourceLabel(url)
+  const tag = getPreviewTag(url)
+  let host = source
+  try {
+    host = new URL(url).hostname.replace("www.", "")
+  } catch {
+    host = source
+  }
+
+  return {
+    source,
+    tag,
+    title: `${source} link ready to save`,
+    summary: `ReCall will extract the key ideas from ${host}, give it a clean title, tag it under ${tag}, and make it searchable later in plain English.`,
+    relatedTopics: [
+      `${tag.toLowerCase()} reads`,
+      `things from ${source}`,
+      "similar links you saved before",
+    ],
+  }
+}
+
 function TrashIcon({ size = 14 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -305,6 +340,25 @@ export default function App() {
   const [first5Count, setFirst5Count] = useState(5)
   const [firstSaveSheetOpen, setFirstSaveSheetOpen] = useState(false)
   const [authLoading, setAuthLoading] = useState(true)
+  const [preAuthUrl, setPreAuthUrl] = useState(() => sessionStorage.getItem("recall_pre_auth_url") || "")
+  const [landingPreview, setLandingPreview] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem("recall_landing_preview")
+      return saved ? JSON.parse(saved) : null
+    } catch {
+      return null
+    }
+  })
+  const [landingPreviewError, setLandingPreviewError] = useState("")
+  const [landingSavedArticles, setLandingSavedArticles] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem("recall_landing_saved_articles")
+      return saved ? JSON.parse(saved) : []
+    } catch {
+      return []
+    }
+  })
+  const [showLandingSignInPrompt, setShowLandingSignInPrompt] = useState(false)
 
   // Ask mode (wiki Q&A)
   const [askMode, setAskMode] = useState(false)
@@ -587,6 +641,10 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!supabase) {
+      setAuthLoading(false)
+      return
+    }
     const params = new URLSearchParams(window.location.search)
 
     // Bookmarklet-scraped tweet IDs, passed via URL hash (never sent over the network)
@@ -664,6 +722,16 @@ export default function App() {
         fetchLibraryFilters()
         fetchSuggestions()
         fetchSaveCount()
+        const preAuthSavedUrl = sessionStorage.getItem("recall_pre_auth_url")
+        if (preAuthSavedUrl) {
+          setView("save")
+          setUrlInput(preAuthSavedUrl)
+          setMessage("Your link is ready. Save it to start building your library.")
+          setIsError(false)
+          sessionStorage.removeItem("recall_pre_auth_url")
+          sessionStorage.removeItem("recall_landing_preview")
+          setLandingPreview(null)
+        }
         // Bookmarklet import — consume scraped tweet IDs
         const scrapedPending = sessionStorage.getItem('x_scraped_pending')
         if (scrapedPending) {
@@ -834,6 +902,16 @@ export default function App() {
         fetchLibraryFilters()
         fetchSuggestions()
         fetchSaveCount()
+        const preAuthSavedUrl = sessionStorage.getItem("recall_pre_auth_url")
+        if (preAuthSavedUrl) {
+          setView("save")
+          setUrlInput(preAuthSavedUrl)
+          setMessage("Your link is ready. Save it to start building your library.")
+          setIsError(false)
+          sessionStorage.removeItem("recall_pre_auth_url")
+          sessionStorage.removeItem("recall_landing_preview")
+          setLandingPreview(null)
+        }
         // Skipped on /mcp/consent — see matching guard above for why.
         if (!localStorage.getItem('recall_onboarded') && window.location.pathname !== '/mcp/consent') {
           const isStandalone = window.matchMedia('(display-mode: standalone)').matches
@@ -854,7 +932,16 @@ export default function App() {
     })
   }, [])
 
-  const signIn = async () => {
+  const signIn = async (pendingUrl = "") => {
+    if (!supabase) {
+      setMessage("Local auth env is missing. Add recall-frontend/.env to enable Google sign-in.")
+      setIsError(true)
+      return
+    }
+    const trimmed = pendingUrl.trim()
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+      sessionStorage.setItem("recall_pre_auth_url", trimmed)
+    }
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: window.location.origin }
@@ -867,6 +954,10 @@ export default function App() {
   // query string via redirectTo, so the params are restored from sessionStorage on return
   // instead of relying on them surviving in the URL (see mcpConsentParams above).
   const signInForMcpConsent = async () => {
+    if (!supabase) {
+      setMcpConsentError("Local auth env is missing. Add recall-frontend/.env to enable sign-in.")
+      return
+    }
     sessionStorage.setItem('mcp_consent_params', JSON.stringify(mcpConsentParams))
     await supabase.auth.signInWithOAuth({
       provider: "google",
@@ -1007,7 +1098,38 @@ export default function App() {
     }
   }
 
+  const saveLandingUrl = () => {
+    const trimmed = preAuthUrl.trim()
+    let preview = landingPreview
+    if (trimmed) {
+      if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+        setLandingPreviewError("Paste a full link before saving it.")
+        return
+      }
+      preview = buildLandingPreview(trimmed)
+      setLandingPreview(preview)
+      sessionStorage.setItem("recall_pre_auth_url", trimmed)
+      sessionStorage.setItem("recall_landing_preview", JSON.stringify(preview))
+    }
+    const article = {
+      id: trimmed || "sample-quiet-web",
+      source: preview?.source || "nytimes.com",
+      title: preview?.title || "The Quiet Return of the Personal Website",
+      summary: preview?.summary || "A new wave of writers and designers are rebuilding their own corners of the web: part rebellion against algorithmic feeds, part return to slower, more intentional reading.",
+      topics: preview?.relatedTopics || ["personal web", "design", "essays", "internet culture"],
+      savedAt: "saved just now",
+    }
+    setLandingSavedArticles(prev => {
+      const updated = [article, ...prev.filter(a => a.id !== article.id)].slice(0, 4)
+      sessionStorage.setItem("recall_landing_saved_articles", JSON.stringify(updated))
+      return updated
+    })
+    setLandingPreviewError("")
+    setShowLandingSignInPrompt(true)
+  }
+
   const getToken = async () => {
+    if (!supabase) return null
     const { data: { session } } = await supabase.auth.getSession()
     return session?.access_token
   }
@@ -1503,33 +1625,213 @@ export default function App() {
   }
 
   if (!user) {
+    const featureItems = [
+      { title: "Semantic search", body: "Find saves by meaning, not just exact words.", tone: "mint" },
+      { title: "Auto tags", body: "Every save gets a title, author, and category.", tone: "peach" },
+      { title: "Ask mode", body: "Turn a pile of links into a synthesized answer.", tone: "lavender" },
+      { title: "LLM connector", body: "Let Claude, ChatGPT, or any MCP-compatible client search and manage your ReCall library.", tone: "blue" },
+      { title: "Share Sheet", body: "Save from Android apps without breaking your flow.", tone: "cream" },
+      { title: "Private library", body: "Your saves stay tied to your account, not a public feed.", tone: "white" },
+    ]
+    const howSteps = [
+      {
+        n: "01",
+        title: "Paste or share",
+        body: "Drop in a link before signing up, or save from the mobile Share Sheet later.",
+      },
+      {
+        n: "02",
+        title: "Search your memory",
+        body: "Start with familiar search, then ask questions once the library has a little shape.",
+      },
+      {
+        n: "03",
+        title: "Connect an LLM",
+        body: "Make the connector a milestone after a few saves, not a settings chore on day one.",
+      },
+    ]
+    const defaultLandingArticles = [
+      {
+        id: "quiet-web",
+        source: "nytimes.com",
+        title: "The Quiet Return of the Personal Website",
+        summary: "A new wave of writers and designers are rebuilding their own corners of the web: part rebellion against algorithmic feeds, part return to slower, more intentional reading.",
+        topics: ["personal web", "design", "essays", "internet culture"],
+        savedAt: "saved 2m ago",
+      },
+      {
+        id: "trust-defaults",
+        source: "alistapart.com",
+        title: "Designing for Trust When Defaults Do the Work",
+        summary: "A practical look at how defaults shape product behavior, user confidence, and the small moments where onboarding either earns attention or loses it.",
+        topics: ["product design", "trust", "onboarding"],
+        savedAt: "saved 12m ago",
+      },
+      {
+        id: "attention-reading",
+        source: "nautil.us",
+        title: "What Attention Feels Like When Reading Gets Slow",
+        summary: "Researchers and writers trace why deeper reading feels rarer online, and how deliberate capture systems can turn scattered browsing into durable memory.",
+        topics: ["attention", "reading", "memory"],
+        savedAt: "saved 21m ago",
+      },
+    ]
+    const landingArticles = landingSavedArticles.length > 0 ? landingSavedArticles : defaultLandingArticles
+
     return (
-      <div style={styles.container}>
-        <div style={styles.hero}>
-          <h1 style={styles.logo}>ReCall</h1>
-          <p style={styles.heroTagline}>Your saved internet,<br />on recall.</p>
-          <p style={styles.heroBody}>Save links from any app. Search them later in plain English.</p>
-          <div style={styles.mockCards}>
-            {[
-              { tag: "TECH", title: "The science of deep work · Cal Newport" },
-              { tag: "PRODUCT", title: "Why Apple is betting on spatial computing" },
-              { tag: "BUSINESS", title: "How to raise a seed round · First Round Capital" },
-            ].map(c => (
-              <div key={c.tag} style={styles.mockCard}>
-                <span style={styles.mockCardTag}>{c.tag}</span>
-                <span style={styles.mockCardTitle}>{c.title}</span>
+      <div style={styles.lovablePage}>
+        <header style={styles.lovableNav}>
+          <a href="#" style={styles.lovableBrand}>
+            <span style={styles.lovableBrandMark}>R</span>
+            <span style={styles.lovableBrandText}>ReCall</span>
+          </a>
+          <nav style={styles.lovableNavLinks}>
+            <a href="#how" style={styles.lovableNavLink}>How it works</a>
+            <a href="#features" style={styles.lovableNavLink}>Features</a>
+          </nav>
+          <div style={styles.lovableNavActions}>
+            <button onClick={() => signIn()} style={styles.lovablePlainButton}>Sign in</button>
+            <button onClick={() => signIn(preAuthUrl)} style={styles.lovableDarkButton}>Start free</button>
+          </div>
+        </header>
+
+        <main>
+          <section style={styles.lovableHero}>
+            <div style={styles.lovableHeroBackdrop} />
+            <div style={styles.lovableHeroInner}>
+              <div style={styles.lovableHeroCopy}>
+                <div style={styles.lovablePill}>
+                  <span style={styles.lovablePillDot} />
+                  Memory layer for the modern reader
+                </div>
+                <h1 style={styles.lovableHeroTitle}>
+                  Save every link. Remember everything. Hand it to any LLM.
+                </h1>
+                <p style={styles.lovableHeroText}>
+                  ReCall is a calm second brain for the things you read online: summarized, tagged, searchable in plain English, and ready to become context for the AI tools you already use.
+                </p>
               </div>
-            ))}
+
+              <div style={styles.lovableComposerWrap}>
+                <div style={styles.lovableComposer}>
+                  <span style={styles.lovableComposerIcon}>link</span>
+                  <input
+                    type="url"
+                    placeholder="Paste a link - try it before signing up"
+                    style={styles.lovableComposerInput}
+                    value={preAuthUrl}
+                    onChange={e => {
+                      setPreAuthUrl(e.target.value)
+                      setLandingPreviewError("")
+                    }}
+                    onKeyDown={e => { if (e.key === "Enter") saveLandingUrl() }}
+                  />
+                  <button onClick={saveLandingUrl} style={styles.lovableComposerButton}>
+                    Save
+                  </button>
+                </div>
+                {landingPreviewError && <p style={styles.lovableError}>{landingPreviewError}</p>}
+                <p style={styles.lovableComposerNote}>Save a first link here. Sign in when you want to use the saved context across search and AI apps.</p>
+              </div>
+
+              <div style={styles.lovablePreviewStack}>
+                <div style={styles.lovableFloatBadge}>auto-tagged</div>
+                <div style={styles.lovableArticleList}>
+                  {landingArticles.map((article, index) => (
+                    <article key={article.id} style={index === 0 ? styles.lovablePreviewCard : styles.lovablePreviewCardCompact}>
+                      <div style={styles.lovablePreviewMeta}>
+                        <span style={styles.lovableSourceTile} />
+                        <span>{article.source}</span>
+                        <span>{article.savedAt}</span>
+                      </div>
+                      <h3 style={styles.lovablePreviewTitle}>
+                        {article.title}
+                      </h3>
+                      <p style={styles.lovablePreviewBody}>
+                        {article.summary}
+                      </p>
+                      <div style={styles.lovableTagRow}>
+                        {article.topics.map(topic => (
+                          <span key={topic} style={styles.lovableTag}>{topic}</span>
+                        ))}
+                      </div>
+                      {index === 0 && (
+                        <div style={styles.lovablePreviewFooter}>
+                          <span>{landingSavedArticles.length > 0 ? "Saved locally in your preview library" : "3 related saves in your library"}</span>
+                          <button onClick={saveLandingUrl} style={styles.lovableTextButton}>Save this link</button>
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section id="how" style={styles.lovableSection}>
+            <div style={styles.lovableSectionIntro}>
+              <p style={styles.lovableKicker}>How it works</p>
+              <h2 style={styles.lovableSectionTitle}>Three quiet steps. One growing memory.</h2>
+            </div>
+            <div style={styles.lovableStepsGrid}>
+              {howSteps.map(step => (
+                <div key={step.n} style={styles.lovableStepCard}>
+                  <div style={styles.lovableStepTop}>
+                    <span style={styles.lovableStepNumber}>{step.n}</span>
+                    <span style={styles.lovableStepIcon}>{step.n === "01" ? "save" : step.n === "02" ? "ask" : "mcp"}</span>
+                  </div>
+                  <h3 style={styles.lovableCardTitle}>{step.title}</h3>
+                  <p style={styles.lovableCardBody}>{step.body}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section id="features" style={styles.lovableSection}>
+            <div style={styles.lovableSectionIntro}>
+              <p style={styles.lovableKicker}>Features</p>
+              <h2 style={styles.lovableSectionTitle}>Built for people who read more than they post.</h2>
+            </div>
+            <div style={styles.lovableFeatureGrid}>
+              {featureItems.map(item => (
+                <div key={item.title} style={{ ...styles.lovableFeatureCard, ...(styles[`lovableTone_${item.tone}`] || {}) }}>
+                  <h3 style={styles.lovableCardTitle}>{item.title}</h3>
+                  <p style={styles.lovableCardBody}>{item.body}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section id="cta" style={styles.lovableFinalCta}>
+            <h2 style={styles.lovableFinalTitle}>Start your memory.</h2>
+            <p style={styles.lovableHeroText}>Free to try. No card. Your saved internet, finally searchable.</p>
+            <button onClick={() => signIn(preAuthUrl)} style={styles.lovableFinalButton}>Get started with Google</button>
+          </section>
+        </main>
+
+        <footer style={styles.lovableFooter}>
+          <span>ReCall - a quieter way to remember the web</span>
+          <div style={styles.lovableFooterLinks}>
+            <button onClick={() => { setLegalSection('privacy'); setView('legal') }} style={styles.lovableFooterLink}>Privacy</button>
+            <button onClick={() => { setLegalSection('terms'); setView('legal') }} style={styles.lovableFooterLink}>Terms</button>
           </div>
-          <button onClick={signIn} style={styles.button}>
-            Sign in with Google
-          </button>
-          <div style={styles.legalFooter}>
-            <button onClick={() => { setLegalSection('privacy'); setView('legal') }} style={styles.legalFooterLink}>Privacy Policy</button>
-            <span style={{ color: "#333" }}>·</span>
-            <button onClick={() => { setLegalSection('terms'); setView('legal') }} style={styles.legalFooterLink}>Terms</button>
+        </footer>
+
+        {showLandingSignInPrompt && (
+          <div style={styles.lovableModalOverlay}>
+            <div style={styles.lovableModal}>
+              <p style={styles.lovableKicker}>Saved to your preview library</p>
+              <h2 style={styles.lovableModalTitle}>Sign in to use this saved context.</h2>
+              <p style={styles.lovableCardBody}>
+                Your first link is visible here. Create an account to search it, ask questions over it, and connect it to your AI apps.
+              </p>
+              <div style={styles.lovableModalActions}>
+                <button onClick={() => signIn(preAuthUrl)} style={styles.lovableFinalButton}>Sign in with Google</button>
+                <button onClick={() => setShowLandingSignInPrompt(false)} style={styles.lovablePlainButton}>Keep browsing</button>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     )
   }
@@ -1605,7 +1907,7 @@ export default function App() {
             </>
           )}
 
-          {/* Connect to Claude/ChatGPT + Connected apps — collapsible */}
+          {/* Connect to LLM apps + Connected apps — collapsible */}
           <button
             onClick={() => {
               const opening = openSettingsSection !== 'connect'
@@ -1614,7 +1916,7 @@ export default function App() {
             }}
             style={styles.settingsAccordionHeader}
           >
-            <span>Connect to Claude / ChatGPT</span>
+            <span>Connect to an LLM app</span>
             <span style={styles.settingsAccordionChevron}>{openSettingsSection === 'connect' ? "▾" : "▸"}</span>
           </button>
           {openSettingsSection === 'connect' && (
@@ -1628,7 +1930,7 @@ export default function App() {
                   >{tokenCopied ? "Copied!" : "Copy"}</button>
                 </div>
                 <p style={styles.tokenWarning}>
-                  Paste this URL into Claude's or ChatGPT's "Add custom connector" dialog. You'll sign in with Google and approve access — no token to copy.
+                  Paste this URL into Claude, ChatGPT, or any MCP-compatible client's custom connector dialog. You'll sign in with Google and approve access — no token to copy.
                 </p>
               </div>
 
@@ -2734,6 +3036,9 @@ export default function App() {
 const styles = {
   container: { minHeight: "100vh", maxWidth: "100vw", overflowX: "hidden", background: "#0f0f0f", color: "#fff", fontFamily: "system-ui, sans-serif", padding: "0 16px", boxSizing: "border-box" },
   hero: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", gap: "16px" },
+  heroLanding: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", gap: "18px", padding: "48px 0 24px" },
+  heroCopy: { display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", width: "100%" },
+  heroEyebrow: { fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.12em", color: "#7f8ea3" },
   logo: { fontSize: "48px", fontWeight: "700", margin: 0, letterSpacing: "-2px" },
   logoSmall: { fontSize: "24px", fontWeight: "700", margin: 0, letterSpacing: "-1px" },
   tagline: { color: "#888", fontSize: "16px", margin: 0 },
@@ -2746,24 +3051,24 @@ const styles = {
   button: { width: "100%", padding: "14px", background: "#fff", color: "#000", border: "none", borderRadius: "12px", fontSize: "16px", fontWeight: "600", cursor: "pointer" },
   signOut: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "8px", cursor: "pointer", fontSize: "13px" },
   results: { display: "flex", flexDirection: "column", gap: "12px", marginTop: "8px" },
-  card: { display: "block", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", padding: "16px", textDecoration: "none", color: "#fff", overflow: "hidden" },
-  cardTag: { fontSize: "11px", color: "#888", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" },
+  card: { display: "block", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", borderRadius: "24px", padding: "22px", textDecoration: "none", color: "#2f2a22", overflow: "hidden", boxShadow: "0 24px 70px -52px rgba(60,40,20,0.55)" },
+  cardTag: { fontSize: "11px", color: "#756b5d", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" },
   success: { color: "#4ade80", fontSize: "14px", margin: 0 },
   error: { color: "#ef4444", fontSize: "14px", margin: 0 },
   neutral: { color: "#888", fontSize: "14px", margin: 0 },
-  receiptCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px", transition: "box-shadow 0.8s ease" },
+  receiptCard: { background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", borderRadius: "24px", padding: "22px", display: "flex", flexDirection: "column", gap: "12px", transition: "box-shadow 0.8s ease", color: "#2f2a22", boxShadow: "0 24px 70px -52px rgba(60,40,20,0.55)" },
   receiptTagButton: { background: "none", border: "none", color: "#888", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: "4px", alignSelf: "flex-start" },
-  receiptTag: { fontSize: "11px", color: "#888", textTransform: "uppercase", letterSpacing: "1px" },
+  receiptTag: { fontSize: "11px", color: "#756b5d", textTransform: "uppercase", letterSpacing: "1px" },
   tagPicker: { display: "flex", flexWrap: "wrap", gap: "6px" },
-  tagPill: { background: "none", border: "1px solid #333", color: "#888", borderRadius: "20px", padding: "4px 12px", fontSize: "12px", cursor: "pointer" },
-  tagPillActive: { background: "#fff", border: "1px solid #fff", color: "#000", borderRadius: "20px", padding: "4px 12px", fontSize: "12px", cursor: "pointer", fontWeight: "600" },
+  tagPill: { background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.16)", color: "#756b5d", borderRadius: "20px", padding: "4px 12px", fontSize: "12px", cursor: "pointer" },
+  tagPillActive: { background: "#332d24", border: "1px solid #332d24", color: "#fbf8ef", borderRadius: "20px", padding: "4px 12px", fontSize: "12px", cursor: "pointer", fontWeight: "600" },
   receiptTitleRow: { display: "flex", alignItems: "center", gap: "8px" },
-  receiptTitle: { fontSize: "15px", fontWeight: "600", flex: 1, lineHeight: 1.4 },
+  receiptTitle: { fontSize: "22px", fontWeight: "500", flex: 1, lineHeight: 1.25, color: "#2f2a22", fontFamily: "Georgia, 'Times New Roman', serif" },
   receiptTitleInput: { flex: 1, background: "#222", border: "1px solid #555", borderRadius: "8px", color: "#fff", fontSize: "15px", fontWeight: "600", padding: "4px 8px", outline: "none" },
   editButton: { background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: "15px", padding: "2px 4px", lineHeight: 1, flexShrink: 0 },
   confirmButton: { background: "#4ade80", border: "none", color: "#000", cursor: "pointer", fontSize: "14px", fontWeight: "700", padding: "4px 10px", borderRadius: "8px", flexShrink: 0 },
   receiptFooter: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" },
-  receiptUrl: { fontSize: "12px", color: "#444", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 },
+  receiptUrl: { fontSize: "12px", color: "#756b5d", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 },
   receiptSaved: { fontSize: "13px", color: "#4ade80", fontWeight: "600", flexShrink: 0 },
   duplicateHeader: { fontSize: "13px", color: "#fbbf24", fontWeight: "600" },
   shimmerPill: { height: "14px", width: "48px", borderRadius: "4px", background: "#2a2a2a", display: "block" },
@@ -2772,12 +3077,12 @@ const styles = {
   todaySection: { marginTop: "4px", display: "flex", flexDirection: "column", gap: "8px" },
   todayHeader: { fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "1px", margin: 0 },
   todayList: { display: "flex", flexDirection: "column", gap: "6px", maxHeight: "320px", overflowY: "auto" },
-  todayCard: { display: "flex", alignItems: "center", gap: "10px", background: "#1a1a1a", border: "1px solid #222", borderRadius: "10px", padding: "10px 14px", textDecoration: "none", color: "#fff", overflow: "hidden" },
-  todayTag: { fontSize: "10px", color: "#555", textTransform: "uppercase", letterSpacing: "0.5px", flexShrink: 0 },
-  todayTitle: { fontSize: "13px", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  todayCard: { display: "flex", alignItems: "center", gap: "10px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", borderRadius: "18px", padding: "13px 16px", textDecoration: "none", color: "#2f2a22", overflow: "hidden" },
+  todayTag: { fontSize: "10px", color: "#756b5d", textTransform: "uppercase", letterSpacing: "0.5px", flexShrink: 0 },
+  todayTitle: { fontSize: "14px", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#2f2a22", fontFamily: "Georgia, 'Times New Roman', serif" },
   todayTagShimmer: { height: "10px", width: "32px", borderRadius: "3px", background: "#2a2a2a", display: "block", flexShrink: 0 },
   todayTitleShimmer: { height: "13px", width: "60%", borderRadius: "3px", background: "#2a2a2a", display: "block", flex: 1 },
-  todaySource: { fontSize: "11px", color: "#444", flexShrink: 0 },
+  todaySource: { fontSize: "11px", color: "#756b5d", flexShrink: 0 },
   deleteButton: { background: "none", border: "none", color: "#444", cursor: "pointer", padding: "0 0 0 8px", flexShrink: 0, display: "flex", alignItems: "center" },
   deleteConfirm: { display: "flex", alignItems: "center", gap: "8px", width: "100%" },
   deleteConfirmText: { fontSize: "12px", color: "#888", flex: 1 },
@@ -2812,9 +3117,9 @@ const styles = {
   zeroResultsSub: { fontSize: "13px", color: "#555", margin: 0, textAlign: "center" },
 
   cardMeta: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", gap: "8px", width: "100%" },
-  cardDate: { fontSize: "11px", color: "#555", marginLeft: "auto" },
-  cardTitle: { fontSize: "15px", fontWeight: "600", marginBottom: "4px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
-  cardSource: { fontSize: "12px", color: "#555" },
+  cardDate: { fontSize: "11px", color: "#756b5d", marginLeft: "auto" },
+  cardTitle: { fontSize: "24px", fontWeight: "400", marginBottom: "8px", color: "#2f2a22", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em", lineHeight: 1.15 },
+  cardSource: { fontSize: "12px", color: "#756b5d" },
 
   // Show more
   showMoreButton: { background: "none", border: "1px solid #333", color: "#888", padding: "10px 20px", borderRadius: "20px", cursor: "pointer", fontSize: "14px", alignSelf: "center" },
@@ -2831,15 +3136,126 @@ const styles = {
   filterDropdown: { appearance: "none", WebkitAppearance: "none", background: "#1a1a1a", border: "1px solid #333", color: "#888", padding: "7px 32px 7px 12px", borderRadius: "20px", fontSize: "13px", cursor: "pointer", backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23555'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center" },
 
   // Card excerpt
-  cardExcerpt: { fontSize: "13px", color: "#666", lineHeight: 1.5, marginBottom: "6px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" },
+  cardExcerpt: { fontSize: "14px", color: "#756b5d", lineHeight: 1.6, marginBottom: "10px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" },
 
   // Hero redesign
   heroTagline: { fontSize: "28px", fontWeight: "700", textAlign: "center", lineHeight: 1.25, margin: 0, letterSpacing: "-0.5px", color: "#fff" },
   heroBody: { fontSize: "15px", color: "#888", textAlign: "center", margin: 0, maxWidth: "280px" },
+  heroBodyWide: { fontSize: "15px", color: "#9098a7", textAlign: "center", margin: 0, maxWidth: "620px", lineHeight: 1.6 },
+  heroMicrocopy: { fontSize: "12px", color: "#586273", textAlign: "center" },
+  landingShell: { width: "100%", maxWidth: "760px", display: "flex", flexDirection: "column", gap: "14px", padding: "18px", borderRadius: "24px", background: "linear-gradient(180deg, rgba(20,29,43,0.95) 0%, rgba(14,16,21,0.98) 100%)", border: "1px solid rgba(148,163,184,0.18)", boxShadow: "0 24px 80px rgba(0,0,0,0.35)" },
+  landingComposer: { display: "flex", flexDirection: "column", gap: "10px", padding: "4px 2px" },
+  landingLabel: { fontSize: "12px", color: "#8d98aa", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 },
+  landingInputRow: { display: "flex", gap: "10px", alignItems: "stretch", flexWrap: "wrap" },
+  landingInput: { flex: "1 1 320px", minWidth: 0, padding: "15px 16px", background: "rgba(8,10,14,0.9)", border: "1px solid #273244", borderRadius: "14px", color: "#fff", fontSize: "15px", boxSizing: "border-box" },
+  landingPreviewButton: { background: "#d9f99d", border: "none", color: "#18210b", borderRadius: "14px", padding: "0 18px", minHeight: "52px", fontSize: "14px", fontWeight: "700", cursor: "pointer" },
+  landingHint: { fontSize: "13px", color: "#6d7788", margin: 0, lineHeight: 1.5 },
+  landingProgressRail: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "8px" },
+  landingProgressStep: { display: "flex", alignItems: "center", gap: "8px", padding: "12px 14px", borderRadius: "14px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" },
+  landingProgressDot: { width: "22px", height: "22px", borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "11px", color: "#7c8798", background: "#1b2330", flexShrink: 0 },
+  landingProgressDotActive: { width: "22px", height: "22px", borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "11px", color: "#17210c", background: "#d9f99d", flexShrink: 0, fontWeight: "700" },
+  landingProgressText: { fontSize: "13px", color: "#c5cfdd", lineHeight: 1.4 },
   mockCards: { display: "flex", flexDirection: "column", gap: "8px", width: "100%", maxWidth: "340px", opacity: 0.55, pointerEvents: "none" },
   mockCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "10px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "4px", textAlign: "left" },
   mockCardTag: { fontSize: "10px", color: "#555", textTransform: "uppercase", letterSpacing: "1px" },
   mockCardTitle: { fontSize: "14px", fontWeight: "600", color: "#ccc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  previewPanel: { display: "flex", flexDirection: "column", gap: "14px", padding: "18px", borderRadius: "20px", background: "linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.02) 100%)", border: "1px solid rgba(170,184,204,0.16)" },
+  previewHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" },
+  previewLabel: { fontSize: "11px", color: "#7f8ea3", textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 6px" },
+  previewTitle: { fontSize: "20px", fontWeight: "700", color: "#f8fafc", margin: 0, lineHeight: 1.2 },
+  previewTag: { borderRadius: "999px", background: "#dbeafe", color: "#172554", padding: "6px 10px", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.06em", flexShrink: 0 },
+  previewSummary: { fontSize: "15px", color: "#d3d9e3", lineHeight: 1.65, margin: 0 },
+  previewMetaRow: { display: "flex", gap: "10px", flexWrap: "wrap" },
+  previewSource: { fontSize: "12px", color: "#7f8ea3" },
+  previewTopics: { display: "flex", gap: "8px", flexWrap: "wrap" },
+  previewTopic: { fontSize: "12px", color: "#d3d9e3", background: "#1b2330", border: "1px solid #2f3a4d", borderRadius: "999px", padding: "7px 10px" },
+
+  // Lovable landing page port
+  lovablePage: { minHeight: "100vh", background: "#fbf8ef", color: "#332d24", fontFamily: "Georgia, 'Times New Roman', serif", overflowX: "hidden" },
+  lovableNav: { position: "sticky", top: 0, zIndex: 40, minHeight: "64px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", padding: "10px 24px", background: "rgba(251,248,239,0.82)", borderBottom: "1px solid rgba(94,77,53,0.16)", backdropFilter: "blur(14px)", flexWrap: "wrap" },
+  lovableBrand: { display: "flex", alignItems: "center", gap: "9px", color: "#332d24", textDecoration: "none", flexShrink: 0 },
+  lovableBrandMark: { width: "28px", height: "28px", borderRadius: "50%", background: "#332d24", color: "#fbf8ef", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "15px", lineHeight: 1 },
+  lovableBrandText: { fontSize: "22px", letterSpacing: "-0.01em" },
+  lovableNavLinks: { display: "flex", alignItems: "center", gap: "18px", flexWrap: "wrap" },
+  lovableNavLink: { color: "#756b5d", textDecoration: "none", fontSize: "14px", fontFamily: "system-ui, sans-serif" },
+  lovableNavActions: { display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 },
+  lovablePlainButton: { background: "transparent", border: "none", color: "#756b5d", cursor: "pointer", fontSize: "14px", fontFamily: "system-ui, sans-serif" },
+  lovableDarkButton: { background: "#332d24", border: "none", color: "#fbf8ef", borderRadius: "999px", padding: "9px 16px", cursor: "pointer", fontSize: "14px", fontFamily: "system-ui, sans-serif" },
+  lovableHero: { position: "relative", overflow: "hidden" },
+  lovableHeroBackdrop: { position: "absolute", inset: 0, pointerEvents: "none", background: "radial-gradient(circle at 12% 8%, rgba(248,206,190,0.72), transparent 32%), radial-gradient(circle at 92% 18%, rgba(224,210,245,0.68), transparent 30%), radial-gradient(circle at 52% 88%, rgba(205,233,217,0.62), transparent 34%)" },
+  lovableHeroInner: { position: "relative", maxWidth: "1120px", margin: "0 auto", padding: "72px 24px 110px", display: "flex", flexDirection: "column", alignItems: "center" },
+  lovableHeroCopy: { maxWidth: "860px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center" },
+  lovablePill: { display: "inline-flex", alignItems: "center", gap: "8px", padding: "6px 12px", borderRadius: "999px", background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.18)", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif", marginBottom: "24px" },
+  lovablePillDot: { width: "6px", height: "6px", borderRadius: "50%", background: "#332d24", flexShrink: 0 },
+  lovableHeroTitle: { fontSize: "clamp(48px, 9vw, 88px)", lineHeight: 1.02, letterSpacing: "-0.04em", margin: 0, maxWidth: "880px", fontWeight: 400, color: "#2f2a22" },
+  lovableHeroText: { margin: "22px auto 0", color: "#756b5d", fontSize: "18px", lineHeight: 1.65, maxWidth: "620px", fontFamily: "system-ui, sans-serif", textAlign: "center" },
+  lovableComposerWrap: { marginTop: "40px", maxWidth: "700px", width: "100%" },
+  lovableComposer: { display: "flex", alignItems: "center", gap: "10px", padding: "8px", borderRadius: "22px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", boxShadow: "0 24px 70px -45px rgba(60,40,20,0.45)" },
+  lovableComposerIcon: { paddingLeft: "10px", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif", textTransform: "uppercase", letterSpacing: "0.08em", flexShrink: 0 },
+  lovableComposerInput: { flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", color: "#332d24", fontSize: "15px", padding: "13px 4px", fontFamily: "system-ui, sans-serif" },
+  lovableComposerButton: { border: "none", borderRadius: "14px", background: "#332d24", color: "#fbf8ef", padding: "12px 16px", fontSize: "14px", fontFamily: "system-ui, sans-serif", cursor: "pointer", flexShrink: 0 },
+  lovableComposerNote: { margin: "12px 0 0 8px", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableError: { margin: "10px 0 0 8px", color: "#b45309", fontSize: "13px", fontFamily: "system-ui, sans-serif" },
+  lovablePreviewStack: { position: "relative", maxWidth: "760px", margin: "62px auto 0", width: "100%" },
+  lovableFloatBadge: { position: "absolute", top: "-22px", left: "-12px", transform: "rotate(-2deg)", borderRadius: "12px", background: "rgba(248,206,190,0.9)", border: "1px solid rgba(94,77,53,0.16)", padding: "8px 12px", fontSize: "12px", color: "#332d24", fontFamily: "system-ui, sans-serif", boxShadow: "0 12px 32px -22px rgba(60,40,20,0.7)" },
+  lovablePreviewCard: { borderRadius: "30px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", padding: "28px", boxShadow: "0 30px 90px -55px rgba(60,40,20,0.55)" },
+  lovableArticleList: { display: "flex", flexDirection: "column", gap: "14px" },
+  lovablePreviewCardCompact: { borderRadius: "24px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", padding: "22px", boxShadow: "0 22px 64px -54px rgba(60,40,20,0.55)" },
+  lovablePreviewMeta: { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableSourceTile: { width: "20px", height: "20px", borderRadius: "6px", background: "#f7cfc0", flexShrink: 0 },
+  lovablePreviewTitle: { margin: "14px 0 0", fontSize: "30px", lineHeight: 1.15, letterSpacing: "-0.02em", fontWeight: 400, color: "#2f2a22" },
+  lovablePreviewBody: { margin: "14px 0 0", color: "#756b5d", fontSize: "15px", lineHeight: 1.65, fontFamily: "system-ui, sans-serif" },
+  lovableTagRow: { display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "20px" },
+  lovableTag: { display: "inline-flex", alignItems: "center", borderRadius: "999px", background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.16)", color: "#756b5d", padding: "6px 10px", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovablePreviewFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", marginTop: "22px", paddingTop: "20px", borderTop: "1px solid rgba(94,77,53,0.16)", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableTextButton: { background: "transparent", border: "none", color: "#332d24", cursor: "pointer", fontWeight: 700, fontSize: "12px" },
+  lovableSection: { maxWidth: "1120px", margin: "0 auto", padding: "96px 24px" },
+  lovableSectionIntro: { maxWidth: "720px", margin: "0 auto 54px", textAlign: "center" },
+  lovableKicker: { margin: 0, color: "#756b5d", textTransform: "uppercase", letterSpacing: "0.14em", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableSectionTitle: { margin: "12px 0 0", fontSize: "clamp(36px, 5vw, 56px)", lineHeight: 1.08, letterSpacing: "-0.035em", fontWeight: 400, color: "#2f2a22" },
+  lovableStepsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "22px" },
+  lovableStepCard: { borderRadius: "28px", background: "rgba(255,253,248,0.76)", border: "1px solid rgba(94,77,53,0.16)", padding: "24px", display: "flex", flexDirection: "column", gap: "16px" },
+  lovableStepTop: { display: "flex", alignItems: "center", justifyContent: "space-between" },
+  lovableStepNumber: { color: "#756b5d", fontSize: "28px", lineHeight: 1 },
+  lovableStepIcon: { width: "34px", height: "34px", borderRadius: "50%", background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.16)", color: "#332d24", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "10px", fontFamily: "system-ui, sans-serif", textTransform: "uppercase" },
+  lovableCardTitle: { margin: 0, fontSize: "26px", lineHeight: 1.15, letterSpacing: "-0.025em", fontWeight: 400, color: "#2f2a22" },
+  lovableCardBody: { margin: "10px 0 0", color: "#756b5d", fontSize: "15px", lineHeight: 1.65, fontFamily: "system-ui, sans-serif" },
+  lovableFeatureGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: "18px" },
+  lovableFeatureCard: { borderRadius: "28px", border: "1px solid rgba(94,77,53,0.16)", padding: "24px", background: "#fffdf8", minHeight: "190px" },
+  lovableTone_mint: { background: "rgba(205,233,217,0.44)" },
+  lovableTone_peach: { background: "rgba(248,206,190,0.44)" },
+  lovableTone_lavender: { background: "rgba(224,210,245,0.44)" },
+  lovableTone_blue: { background: "rgba(212,228,242,0.56)" },
+  lovableTone_cream: { background: "#f3ecdd" },
+  lovableTone_white: { background: "#fffdf8" },
+  lovableMilestone: { position: "relative", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "48px", alignItems: "start", borderRadius: "34px", background: "linear-gradient(135deg, #f3ecdd 0%, #fbf8ef 56%, rgba(248,206,190,0.5) 100%)", border: "1px solid rgba(94,77,53,0.16)", padding: "clamp(26px, 5vw, 52px)", overflow: "hidden" },
+  lovableMilestoneList: { listStyle: "none", margin: "34px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: "16px" },
+  lovableMilestoneItem: { display: "flex", alignItems: "center", gap: "14px" },
+  lovableMilestoneDot: { width: "40px", height: "40px", borderRadius: "50%", background: "#fbf8ef", color: "#756b5d", border: "1px solid rgba(94,77,53,0.16)", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: "13px", fontFamily: "system-ui, sans-serif" },
+  lovableMilestoneDotDone: { width: "40px", height: "40px", borderRadius: "50%", background: "#332d24", color: "#fbf8ef", border: "1px solid #332d24", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: "11px", fontFamily: "system-ui, sans-serif" },
+  lovableMilestoneDotActive: { width: "40px", height: "40px", borderRadius: "50%", background: "#fffdf8", color: "#332d24", border: "1px solid #332d24", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: "13px", fontFamily: "system-ui, sans-serif" },
+  lovableMilestoneLabel: { margin: 0, color: "#332d24", fontSize: "15px", fontFamily: "system-ui, sans-serif", fontWeight: 700 },
+  lovableMilestoneCaption: { margin: "2px 0 0", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableClaudeMock: { borderRadius: "24px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", overflow: "hidden", boxShadow: "0 30px 90px -60px rgba(60,40,20,0.7)" },
+  lovableClaudeTop: { display: "flex", alignItems: "center", gap: "8px", padding: "14px 16px", borderBottom: "1px solid rgba(94,77,53,0.14)", background: "rgba(243,236,221,0.68)" },
+  lovableWindowDotPeach: { width: "8px", height: "8px", borderRadius: "50%", background: "#f7cfc0" },
+  lovableWindowDotMint: { width: "8px", height: "8px", borderRadius: "50%", background: "#cde9d9" },
+  lovableWindowDotLavender: { width: "8px", height: "8px", borderRadius: "50%", background: "#e0d2f5" },
+  lovableClaudeLabel: { marginLeft: "8px", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableClaudeBody: { padding: "22px", display: "flex", flexDirection: "column", gap: "16px", fontFamily: "system-ui, sans-serif", fontSize: "14px" },
+  lovableUserBubble: { alignSelf: "flex-end", maxWidth: "82%", borderRadius: "18px 18px 4px 18px", background: "#332d24", color: "#fbf8ef", padding: "12px 14px", lineHeight: 1.45 },
+  lovableAssistantBubble: { maxWidth: "88%", borderRadius: "18px 18px 18px 4px", background: "#f3ecdd", color: "#332d24", padding: "14px", lineHeight: 1.55 },
+  lovableCitation: { display: "block", marginTop: "10px", color: "#756b5d", fontSize: "12px" },
+  lovableFinalCta: { position: "relative", maxWidth: "860px", margin: "0 auto", padding: "110px 24px", textAlign: "center" },
+  lovableFinalTitle: { margin: 0, fontSize: "clamp(50px, 8vw, 86px)", lineHeight: 1.02, letterSpacing: "-0.04em", fontWeight: 400, color: "#2f2a22" },
+  lovableFinalButton: { marginTop: "34px", border: "none", borderRadius: "18px", background: "#332d24", color: "#fbf8ef", padding: "14px 20px", fontSize: "15px", fontFamily: "system-ui, sans-serif", cursor: "pointer" },
+  lovableModalOverlay: { position: "fixed", inset: 0, zIndex: 200, background: "rgba(47,42,34,0.42)", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px", backdropFilter: "blur(10px)" },
+  lovableModal: { width: "100%", maxWidth: "440px", borderRadius: "28px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", padding: "28px", boxShadow: "0 32px 90px -40px rgba(47,42,34,0.65)" },
+  lovableModalTitle: { margin: "10px 0 0", color: "#2f2a22", fontSize: "34px", lineHeight: 1.05, letterSpacing: "-0.035em", fontWeight: 400 },
+  lovableModalActions: { display: "flex", alignItems: "center", gap: "14px", flexWrap: "wrap", marginTop: "24px" },
+  lovableFooter: { borderTop: "1px solid rgba(94,77,53,0.16)", padding: "32px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", maxWidth: "1120px", margin: "0 auto", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableFooterLinks: { display: "flex", gap: "18px" },
+  lovableFooterLink: { background: "transparent", border: "none", color: "#756b5d", cursor: "pointer", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
 
   // Install overlay
   overlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.88)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: "24px", boxSizing: "border-box" },
@@ -2968,9 +3384,9 @@ const styles = {
   calDayPanel: { background: "#1a1a1a", borderRadius: 12, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 0, marginTop: 4, border: "1px solid #222" },
   calDayPanelHeader: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 },
   calDayPanelTitle: { fontSize: 14, fontWeight: 600, color: "#fff", textAlign: "left" },
-  calSaveCard: { display: "flex", flexDirection: "column", gap: 4, padding: "12px 0", borderTop: "1px solid #1f1f1f", textDecoration: "none", color: "inherit", textAlign: "left" },
-  calSaveTitle: { fontSize: 13, fontWeight: 500, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
-  calSaveSource: { fontSize: 11, color: "#555" },
+  calSaveCard: { display: "flex", flexDirection: "column", gap: 6, padding: "14px 16px", border: "1px solid rgba(94,77,53,0.16)", borderRadius: 18, background: "#fffdf8", textDecoration: "none", color: "#2f2a22", textAlign: "left", marginTop: 8 },
+  calSaveTitle: { fontSize: 15, fontWeight: 400, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", fontFamily: "Georgia, 'Times New Roman', serif", color: "#2f2a22" },
+  calSaveSource: { fontSize: 11, color: "#756b5d" },
   libraryFeed: { display: "flex", flexDirection: "column", gap: 20, marginTop: 24, paddingTop: 20, borderTop: "1px solid #222" },
   libraryFeedLabel: { fontSize: 11, color: "#555", textTransform: "uppercase", letterSpacing: "1px", textAlign: "left" },
   libraryFeedDay: { display: "flex", flexDirection: "column", gap: 0 },
