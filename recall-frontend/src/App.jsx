@@ -339,7 +339,10 @@ export default function App() {
   const [justInstalled, setJustInstalled] = useState(() => localStorage.getItem('recall_installed') === 'true')
   const [installStepsOpen, setInstallStepsOpen] = useState(false)
 
-  // iOS Share Sheet Shortcut setup guide (Settings)
+  // Settings panel accordion — which section ('connect' | 'import' | 'shortcuts') is expanded
+  const [openSettingsSection, setOpenSettingsSection] = useState(null)
+
+  // iOS Share Sheet Shortcut setup guide (Settings) — nested toggle within the 'shortcuts' accordion section
   const [shortcutGuideOpen, setShortcutGuideOpen] = useState(false)
 
   // Bookmark import (Settings)
@@ -1583,202 +1586,10 @@ export default function App() {
           </div>
           <div style={styles.settingsDivider} />
 
-          {/* Connect to Claude or ChatGPT — OAuth connector, no token to copy */}
-          <p style={styles.settingsSectionHeading}>Connect to Claude or ChatGPT</p>
-          <div style={styles.tokenSection}>
-            <div style={styles.tokenRow}>
-              <input readOnly value={`${BACKEND}/mcp`} style={styles.tokenInput} onFocus={e => e.target.select()} />
-              <button
-                onClick={() => { navigator.clipboard.writeText(`${BACKEND}/mcp`); setTokenCopied(true); setTimeout(() => setTokenCopied(false), 2000) }}
-                style={styles.tokenCopyButton}
-              >{tokenCopied ? "Copied!" : "Copy"}</button>
-            </div>
-            <p style={styles.tokenWarning}>
-              Paste this URL into Claude's or ChatGPT's "Add custom connector" dialog. You'll sign in with Google and approve access — no token to copy.
-            </p>
-          </div>
-
-          <div style={styles.settingsDivider} />
-
-          {/* Connected apps — list + revoke active OAuth connections */}
-          <p style={styles.settingsSectionHeading}>Connected apps</p>
-          {mcpConnections === null ? (
-            <button onClick={fetchMcpConnections} style={styles.settingsLink}>Show connected apps</button>
-          ) : mcpConnections.length === 0 ? (
-            <p style={styles.tokenWarning}>No apps connected yet.</p>
-          ) : (
-            <div style={styles.tokenSection}>
-              {mcpConnections.map(c => (
-                <div key={c.client_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
-                  <span style={{ fontSize: "13px", color: "#ccc" }}>
-                    {c.client_name || "Unnamed app"}
-                    <span style={{ color: "#666" }}> · connected {new Date(c.connected_at).toLocaleDateString()}</span>
-                  </span>
-                  <button
-                    onClick={() => disconnectMcpClient(c.client_id)}
-                    disabled={mcpDisconnectingId === c.client_id}
-                    style={styles.tokenHideButton}
-                  >{mcpDisconnectingId === c.client_id ? "Disconnecting…" : "Disconnect"}</button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div style={styles.settingsDivider} />
-
-          {/* Import X bookmarks */}
-          <p style={styles.settingsSectionHeading}>Import your X bookmarks</p>
-          {!importJob || importJob.status === "completed" || importJob.status === "stalled" ? (
-            <>
-              <button
-                onClick={connectXForImport}
-                disabled={xConnecting}
-                style={{ ...styles.shortcutAddButton, border: "none" }}
-              >
-                {xConnecting ? "Connecting…" : "𝕏 Connect X to import bookmarks"}
-              </button>
-              <p style={styles.overlayNote}>
-                One tap — log into X, approve access, and ReCall imports your bookmarks automatically.
-                {importJob?.status === "completed" && (
-                  <> Last import: <strong>{importJob.succeeded}</strong> added, {importJob.duplicates} already saved, {importJob.skipped} skipped, {importJob.failed} failed.</>
-                )}
-                {importJob?.status === "stalled" && (
-                  <> Last import stalled ({importJob.processed}/{importJob.total} done). Run it again to retry — already-imported bookmarks are skipped.</>
-                )}
-              </p>
-              <input
-                ref={importFileInputRef}
-                type="file"
-                accept=".json,.csv,.txt,.js,.zip"
-                onChange={handleImportFileChange}
-                style={{ display: "none" }}
-              />
-              <button
-                onClick={() => setXBookmarkletFallback(o => !o)}
-                style={{ ...styles.settingsLink, fontSize: 12, color: "#555", alignSelf: "flex-start", marginTop: "4px" }}
-              >
-                {xBookmarkletFallback ? "Hide other import options" : "Can't or won't connect your account?"}
-              </button>
-              {xBookmarkletFallback && (
-                <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
-                  <a
-                    ref={xBookmarkletRef}
-                    onClick={e => e.preventDefault()}
-                    draggable="true"
-                    style={{ ...styles.shortcutAddButton, display: "inline-block", cursor: "grab" }}
-                  >
-                    📑 Import X Bookmarks
-                  </a>
-                  <p style={styles.overlayNote}>
-                    Drag this button to your bookmarks bar (don't click it here). Then open{" "}
-                    <strong>x.com/i/bookmarks</strong> in a new tab and click it there — it collects your bookmarks and opens ReCall to import them automatically.
-                    Leave the tab alone while it's running — manually scrolling can interfere with how it collects your bookmarks.
-                  </p>
-                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
-                    <button
-                      onClick={() => importFileInputRef.current?.click()}
-                      style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
-                      disabled={importUploading}
-                    >
-                      {importUploading ? "Uploading…" : "or upload a file export instead"}
-                    </button>
-                    <button
-                      onClick={() => { navigator.clipboard.writeText(BOOKMARKLET_CODE); setXCodeCopied(true); setTimeout(() => setXCodeCopied(false), 2000) }}
-                      style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
-                    >
-                      {xCodeCopied ? "Copied!" : "or copy the bookmarklet code"}
-                    </button>
-                    <button onClick={() => setXBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}>
-                      {xBookmarkletHelpOpen ? "Hide Safari/Arc help" : "Drag not working? (Safari/Arc)"}
-                    </button>
-                  </div>
-                  {xBookmarkletHelpOpen && (
-                    <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
-                      <p style={styles.overlayStep}><strong>Safari:</strong> make sure your Favorites bar is visible first — View → Show Favorites Bar (⌘⇧B) — then drag the button again. Still stuck? Copy the code above, create any bookmark, and paste the code into its address field.</p>
-                      <p style={styles.overlayStep}><strong>Arc:</strong> Arc doesn't support dragging bookmarklets. Copy the code above, open <strong>x.com/i/bookmarks</strong>, click the Boost icon next to the address bar → New Boost → paste the code into the Custom JS box → Save. It'll run automatically on that page from then on.</p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              <p style={styles.overlayNote}>
-                Importing… {importJob.processed} / {importJob.total}
-                {importJob.duplicates > 0 || importJob.skipped > 0 || importJob.failed > 0
-                  ? ` (${[
-                      importJob.duplicates > 0 ? `${importJob.duplicates} duplicate${importJob.duplicates !== 1 ? "s" : ""}` : null,
-                      importJob.skipped > 0 ? `${importJob.skipped} skipped` : null,
-                      importJob.failed > 0 ? `${importJob.failed} failed` : null,
-                    ].filter(Boolean).join(", ")})`
-                  : ""}
-              </p>
-              <div style={{ height: 4, background: "#222", borderRadius: 2, margin: "4px 0 8px" }}>
-                <div style={{
-                  height: "100%",
-                  width: `${importJob.total > 0 ? Math.round((importJob.processed / importJob.total) * 100) : 0}%`,
-                  background: "#4ade80",
-                  borderRadius: 2,
-                  transition: "width 0.4s ease",
-                }} />
-              </div>
-            </>
-          )}
-
-          <div style={styles.settingsDivider} />
-
-          {/* Import LinkedIn saved posts */}
-          <p style={styles.settingsSectionHeading}>Import your LinkedIn saved posts</p>
-          {(!importJob || importJob.status === "completed" || importJob.status === "stalled") && (
-            <>
-              <a
-                ref={linkedinBookmarkletRef}
-                onClick={e => e.preventDefault()}
-                draggable="true"
-                style={{ ...styles.shortcutAddButton, display: "inline-block", cursor: "grab" }}
-              >
-                💼 Import LinkedIn Saved Posts
-              </a>
-              <p style={styles.overlayNote}>
-                Heads up: LinkedIn blocks most saved-post content from browsers that aren't logged in, so this typically recovers <strong>about 60% of your saves, sometimes more</strong> — we bring in everything that's publicly viewable and skip the rest automatically. Still way better than starting from zero.
-              </p>
-              <p style={styles.overlayNote}>
-                Drag this button to your bookmarks bar (don't click it here). Then open{" "}
-                <strong>linkedin.com/my-items/saved-posts/</strong>, scroll down a little so your posts load, and click it there.
-                It can take a couple of minutes (LinkedIn loads this page slowly) and then redirects that tab to ReCall automatically — leave it running in the background, don't close the tab.
-                {importJob?.status === "completed" && importJob.source === "url_scraped" && (
-                  <> Last import: <strong>{importJob.succeeded}</strong> public posts imported{importJob.duplicates > 0 ? `, ${importJob.duplicates} already saved` : ""}. The rest needed a LinkedIn login to view.</>
-                )}
-                {importJob?.status === "stalled" && importJob.source === "url_scraped" && (
-                  <> Last import stalled ({importJob.processed}/{importJob.total} done). Run it again to retry — already-imported posts are skipped.</>
-                )}
-              </p>
-              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
-                <button
-                  onClick={() => { navigator.clipboard.writeText(LINKEDIN_BOOKMARKLET_CODE); setLinkedinCodeCopied(true); setTimeout(() => setLinkedinCodeCopied(false), 2000) }}
-                  style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
-                >
-                  {linkedinCodeCopied ? "Copied!" : "or copy the bookmarklet code"}
-                </button>
-                <button onClick={() => setLinkedinBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}>
-                  {linkedinBookmarkletHelpOpen ? "Hide Safari/Arc help" : "Drag not working? (Safari/Arc)"}
-                </button>
-              </div>
-              {linkedinBookmarkletHelpOpen && (
-                <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
-                  <p style={styles.overlayStep}><strong>Safari:</strong> make sure your Favorites bar is visible first — View → Show Favorites Bar (⌘⇧B) — then drag the button again. Still stuck? Copy the code above, create any bookmark, and paste the code into its address field.</p>
-                  <p style={styles.overlayStep}><strong>Arc:</strong> Arc doesn't support dragging bookmarklets. Copy the code above, open <strong>linkedin.com/my-items/saved-posts/</strong>, click the Boost icon next to the address bar → New Boost → paste the code into the Custom JS box → Save. It'll run automatically on that page from then on.</p>
-                </div>
-              )}
-            </>
-          )}
-
+          {/* Notify me when a save finishes enriching — only relevant since saves now
+              resolve their title/tag in the background after the initial "Saved ✓" */}
           {pushSupported && (
             <>
-              <div style={styles.settingsDivider} />
-
-              {/* Notify me when a save finishes enriching — only relevant since saves now
-                  resolve their title/tag in the background after the initial "Saved ✓" */}
               <p style={styles.settingsSectionHeading}>Notifications</p>
               {pushEnabled ? (
                 <p style={styles.tokenWarning}>You'll get notified when a save finishes processing — even if you've closed the app.</p>
@@ -1790,34 +1601,256 @@ export default function App() {
                   <p style={styles.tokenWarning}>Useful since the title/tag now fill in a moment after you save — close the app and we'll let you know when it's ready.</p>
                 </>
               )}
+              <div style={styles.settingsDivider} />
             </>
+          )}
+
+          {/* Connect to Claude/ChatGPT + Connected apps — collapsible */}
+          <button
+            onClick={() => {
+              const opening = openSettingsSection !== 'connect'
+              setOpenSettingsSection(opening ? 'connect' : null)
+              if (opening && mcpConnections === null) fetchMcpConnections()
+            }}
+            style={styles.settingsAccordionHeader}
+          >
+            <span>Connect to Claude / ChatGPT</span>
+            <span style={styles.settingsAccordionChevron}>{openSettingsSection === 'connect' ? "▾" : "▸"}</span>
+          </button>
+          {openSettingsSection === 'connect' && (
+            <div style={styles.settingsAccordionBody}>
+              <div style={styles.tokenSection}>
+                <div style={styles.tokenRow}>
+                  <input readOnly value={`${BACKEND}/mcp`} style={styles.tokenInput} onFocus={e => e.target.select()} />
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(`${BACKEND}/mcp`); setTokenCopied(true); setTimeout(() => setTokenCopied(false), 2000) }}
+                    style={styles.tokenCopyButton}
+                  >{tokenCopied ? "Copied!" : "Copy"}</button>
+                </div>
+                <p style={styles.tokenWarning}>
+                  Paste this URL into Claude's or ChatGPT's "Add custom connector" dialog. You'll sign in with Google and approve access — no token to copy.
+                </p>
+              </div>
+
+              <p style={styles.settingsSectionHeading}>Connected apps</p>
+              {mcpConnections === null ? (
+                <p style={styles.tokenWarning}>Loading…</p>
+              ) : mcpConnections.length === 0 ? (
+                <p style={styles.tokenWarning}>No apps connected yet.</p>
+              ) : (
+                <div style={styles.tokenSection}>
+                  {mcpConnections.map(c => (
+                    <div key={c.client_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontSize: "13px", color: "#ccc" }}>
+                        {c.client_name || "Unnamed app"}
+                        <span style={{ color: "#666" }}> · connected {new Date(c.connected_at).toLocaleDateString()}</span>
+                      </span>
+                      <button
+                        onClick={() => disconnectMcpClient(c.client_id)}
+                        disabled={mcpDisconnectingId === c.client_id}
+                        style={styles.tokenHideButton}
+                      >{mcpDisconnectingId === c.client_id ? "Disconnecting…" : "Disconnect"}</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={styles.settingsDivider} />
+
+          {/* Import (X bookmarks + LinkedIn saved posts) — collapsible */}
+          <button
+            onClick={() => setOpenSettingsSection(s => s === 'import' ? null : 'import')}
+            style={styles.settingsAccordionHeader}
+          >
+            <span>Import</span>
+            <span style={styles.settingsAccordionChevron}>{openSettingsSection === 'import' ? "▾" : "▸"}</span>
+          </button>
+          {openSettingsSection === 'import' && (
+            <div style={styles.settingsAccordionBody}>
+              <p style={styles.settingsSectionHeading}>Import your X bookmarks</p>
+              {!importJob || importJob.status === "completed" || importJob.status === "stalled" ? (
+                <>
+                  <button
+                    onClick={connectXForImport}
+                    disabled={xConnecting}
+                    style={{ ...styles.shortcutAddButton, border: "none" }}
+                  >
+                    {xConnecting ? "Connecting…" : "𝕏 Connect X to import bookmarks"}
+                  </button>
+                  <p style={styles.overlayNote}>
+                    One tap — log into X, approve access, and ReCall imports your bookmarks automatically.
+                    {importJob?.status === "completed" && (
+                      <> Last import: <strong>{importJob.succeeded}</strong> added, {importJob.duplicates} already saved, {importJob.skipped} skipped, {importJob.failed} failed.</>
+                    )}
+                    {importJob?.status === "stalled" && (
+                      <> Last import stalled ({importJob.processed}/{importJob.total} done). Run it again to retry — already-imported bookmarks are skipped.</>
+                    )}
+                  </p>
+                  <input
+                    ref={importFileInputRef}
+                    type="file"
+                    accept=".json,.csv,.txt,.js,.zip"
+                    onChange={handleImportFileChange}
+                    style={{ display: "none" }}
+                  />
+                  <button
+                    onClick={() => setXBookmarkletFallback(o => !o)}
+                    style={{ ...styles.settingsLink, fontSize: 12, color: "#555", alignSelf: "flex-start", marginTop: "4px" }}
+                  >
+                    {xBookmarkletFallback ? "Hide other import options" : "Can't or won't connect your account?"}
+                  </button>
+                  {xBookmarkletFallback && (
+                    <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
+                      <a
+                        ref={xBookmarkletRef}
+                        onClick={e => e.preventDefault()}
+                        draggable="true"
+                        style={{ ...styles.shortcutAddButton, display: "inline-block", cursor: "grab" }}
+                      >
+                        📑 Import X Bookmarks
+                      </a>
+                      <p style={styles.overlayNote}>
+                        Drag this button to your bookmarks bar (don't click it here). Then open{" "}
+                        <strong>x.com/i/bookmarks</strong> in a new tab and click it there — it collects your bookmarks and opens ReCall to import them automatically.
+                        Leave the tab alone while it's running — manually scrolling can interfere with how it collects your bookmarks.
+                      </p>
+                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
+                        <button
+                          onClick={() => importFileInputRef.current?.click()}
+                          style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                          disabled={importUploading}
+                        >
+                          {importUploading ? "Uploading…" : "or upload a file export instead"}
+                        </button>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(BOOKMARKLET_CODE); setXCodeCopied(true); setTimeout(() => setXCodeCopied(false), 2000) }}
+                          style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                        >
+                          {xCodeCopied ? "Copied!" : "or copy the bookmarklet code"}
+                        </button>
+                        <button onClick={() => setXBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}>
+                          {xBookmarkletHelpOpen ? "Hide Safari/Arc help" : "Drag not working? (Safari/Arc)"}
+                        </button>
+                      </div>
+                      {xBookmarkletHelpOpen && (
+                        <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
+                          <p style={styles.overlayStep}><strong>Safari:</strong> make sure your Favorites bar is visible first — View → Show Favorites Bar (⌘⇧B) — then drag the button again. Still stuck? Copy the code above, create any bookmark, and paste the code into its address field.</p>
+                          <p style={styles.overlayStep}><strong>Arc:</strong> Arc doesn't support dragging bookmarklets. Copy the code above, open <strong>x.com/i/bookmarks</strong>, click the Boost icon next to the address bar → New Boost → paste the code into the Custom JS box → Save. It'll run automatically on that page from then on.</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p style={styles.overlayNote}>
+                    Importing… {importJob.processed} / {importJob.total}
+                    {importJob.duplicates > 0 || importJob.skipped > 0 || importJob.failed > 0
+                      ? ` (${[
+                          importJob.duplicates > 0 ? `${importJob.duplicates} duplicate${importJob.duplicates !== 1 ? "s" : ""}` : null,
+                          importJob.skipped > 0 ? `${importJob.skipped} skipped` : null,
+                          importJob.failed > 0 ? `${importJob.failed} failed` : null,
+                        ].filter(Boolean).join(", ")})`
+                      : ""}
+                  </p>
+                  <div style={{ height: 4, background: "#222", borderRadius: 2, margin: "4px 0 8px" }}>
+                    <div style={{
+                      height: "100%",
+                      width: `${importJob.total > 0 ? Math.round((importJob.processed / importJob.total) * 100) : 0}%`,
+                      background: "#4ade80",
+                      borderRadius: 2,
+                      transition: "width 0.4s ease",
+                    }} />
+                  </div>
+                </>
+              )}
+
+              <div style={styles.settingsDivider} />
+
+              <p style={styles.settingsSectionHeading}>Import your LinkedIn saved posts</p>
+              {(!importJob || importJob.status === "completed" || importJob.status === "stalled") && (
+                <>
+                  <a
+                    ref={linkedinBookmarkletRef}
+                    onClick={e => e.preventDefault()}
+                    draggable="true"
+                    style={{ ...styles.shortcutAddButton, display: "inline-block", cursor: "grab" }}
+                  >
+                    💼 Import LinkedIn Saved Posts
+                  </a>
+                  <p style={styles.overlayNote}>
+                    Heads up: LinkedIn blocks most saved-post content from browsers that aren't logged in, so this typically recovers <strong>about 60% of your saves, sometimes more</strong> — we bring in everything that's publicly viewable and skip the rest automatically. Still way better than starting from zero.
+                  </p>
+                  <p style={styles.overlayNote}>
+                    Drag this button to your bookmarks bar (don't click it here). Then open{" "}
+                    <strong>linkedin.com/my-items/saved-posts/</strong>, scroll down a little so your posts load, and click it there.
+                    It can take a couple of minutes (LinkedIn loads this page slowly) and then redirects that tab to ReCall automatically — leave it running in the background, don't close the tab.
+                    {importJob?.status === "completed" && importJob.source === "url_scraped" && (
+                      <> Last import: <strong>{importJob.succeeded}</strong> public posts imported{importJob.duplicates > 0 ? `, ${importJob.duplicates} already saved` : ""}. The rest needed a LinkedIn login to view.</>
+                    )}
+                    {importJob?.status === "stalled" && importJob.source === "url_scraped" && (
+                      <> Last import stalled ({importJob.processed}/{importJob.total} done). Run it again to retry — already-imported posts are skipped.</>
+                    )}
+                  </p>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
+                    <button
+                      onClick={() => { navigator.clipboard.writeText(LINKEDIN_BOOKMARKLET_CODE); setLinkedinCodeCopied(true); setTimeout(() => setLinkedinCodeCopied(false), 2000) }}
+                      style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                    >
+                      {linkedinCodeCopied ? "Copied!" : "or copy the bookmarklet code"}
+                    </button>
+                    <button onClick={() => setLinkedinBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}>
+                      {linkedinBookmarkletHelpOpen ? "Hide Safari/Arc help" : "Drag not working? (Safari/Arc)"}
+                    </button>
+                  </div>
+                  {linkedinBookmarkletHelpOpen && (
+                    <div style={{ ...styles.overlaySteps, marginTop: "8px" }}>
+                      <p style={styles.overlayStep}><strong>Safari:</strong> make sure your Favorites bar is visible first — View → Show Favorites Bar (⌘⇧B) — then drag the button again. Still stuck? Copy the code above, create any bookmark, and paste the code into its address field.</p>
+                      <p style={styles.overlayStep}><strong>Arc:</strong> Arc doesn't support dragging bookmarklets. Copy the code above, open <strong>linkedin.com/my-items/saved-posts/</strong>, click the Boost icon next to the address bar → New Boost → paste the code into the Custom JS box → Save. It'll run automatically on that page from then on.</p>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           )}
 
           {isIOS && (
             <>
               <div style={styles.settingsDivider} />
 
-              {/* Save from any app — iOS Share Sheet Shortcut guide */}
-              <p style={styles.settingsSectionHeading}>Save from any app</p>
-              {SAVE_TO_RECALL_SHORTCUT_URL && (
-                <>
-                  <a href={SAVE_TO_RECALL_SHORTCUT_URL} target="_blank" rel="noreferrer" style={styles.shortcutAddButton}>
-                    Add "Save to ReCall" Shortcut
-                  </a>
-                  <p style={styles.overlayNote}>After adding, open the Share Sheet on any link → scroll to the <strong>Shortcuts</strong> row (tap "More" if you don't see it) → tap <strong>Save to ReCall</strong>.</p>
-                </>
-              )}
-              <button onClick={() => setShortcutGuideOpen(o => !o)} style={styles.settingsLink}>
-                {shortcutGuideOpen ? "Hide manual setup" : SAVE_TO_RECALL_SHORTCUT_URL ? "Set it up manually instead →" : "Set up Share Sheet →"}
+              {/* Save from any app — iOS Share Sheet Shortcut guide — collapsible */}
+              <button
+                onClick={() => setOpenSettingsSection(s => s === 'shortcuts' ? null : 'shortcuts')}
+                style={styles.settingsAccordionHeader}
+              >
+                <span>Save from any app</span>
+                <span style={styles.settingsAccordionChevron}>{openSettingsSection === 'shortcuts' ? "▾" : "▸"}</span>
               </button>
-              {shortcutGuideOpen && (
-                <div style={styles.overlaySteps}>
-                  <p style={styles.overlayStep}>① Open the <strong>Shortcuts</strong> app → tap <strong>+</strong> to create a new shortcut</p>
-                  <p style={styles.overlayStep}>② Tap the <strong>ⓘ</strong> info button → enable <strong>"Use with Share Sheet"</strong>, set types to <strong>URLs, Safari Web Pages, Text</strong></p>
-                  <p style={styles.overlayStep}>③ Add action <strong>"URL"</strong> → set it to <strong>https://recall-iota-six.vercel.app/?text=</strong> followed by the Shortcut Input variable</p>
-                  <p style={styles.overlayStep}>④ Add action <strong>"Open URLs"</strong> → input = the URL from step ③</p>
-                  <p style={styles.overlayStep}>⑤ Name it <strong>"Save to ReCall"</strong> and tap Done</p>
-                  <p style={styles.overlayStep}>⑥ Share any link → scroll to the <strong>Shortcuts</strong> row → tap <strong>Save to ReCall</strong></p>
+              {openSettingsSection === 'shortcuts' && (
+                <div style={styles.settingsAccordionBody}>
+                  {SAVE_TO_RECALL_SHORTCUT_URL && (
+                    <>
+                      <a href={SAVE_TO_RECALL_SHORTCUT_URL} target="_blank" rel="noreferrer" style={styles.shortcutAddButton}>
+                        Add "Save to ReCall" Shortcut
+                      </a>
+                      <p style={styles.overlayNote}>After adding, open the Share Sheet on any link → scroll to the <strong>Shortcuts</strong> row (tap "More" if you don't see it) → tap <strong>Save to ReCall</strong>.</p>
+                    </>
+                  )}
+                  <button onClick={() => setShortcutGuideOpen(o => !o)} style={styles.settingsLink}>
+                    {shortcutGuideOpen ? "Hide manual setup" : SAVE_TO_RECALL_SHORTCUT_URL ? "Set it up manually instead →" : "Set up Share Sheet →"}
+                  </button>
+                  {shortcutGuideOpen && (
+                    <div style={styles.overlaySteps}>
+                      <p style={styles.overlayStep}>① Open the <strong>Shortcuts</strong> app → tap <strong>+</strong> to create a new shortcut</p>
+                      <p style={styles.overlayStep}>② Tap the <strong>ⓘ</strong> info button → enable <strong>"Use with Share Sheet"</strong>, set types to <strong>URLs, Safari Web Pages, Text</strong></p>
+                      <p style={styles.overlayStep}>③ Add action <strong>"URL"</strong> → set it to <strong>https://recall-iota-six.vercel.app/?text=</strong> followed by the Shortcut Input variable</p>
+                      <p style={styles.overlayStep}>④ Add action <strong>"Open URLs"</strong> → input = the URL from step ③</p>
+                      <p style={styles.overlayStep}>⑤ Name it <strong>"Save to ReCall"</strong> and tap Done</p>
+                      <p style={styles.overlayStep}>⑥ Share any link → scroll to the <strong>Shortcuts</strong> row → tap <strong>Save to ReCall</strong></p>
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -2862,6 +2895,9 @@ const styles = {
   settingsLink: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "20px", cursor: "pointer", fontSize: "13px" },
   settingsDivider: { height: "1px", background: "#2a2a2a" },
   settingsSectionHeading: { fontSize: "11px", fontWeight: "600", color: "#555", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 },
+  settingsAccordionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: "11px", fontWeight: "600", color: "#555", textTransform: "uppercase", letterSpacing: "0.08em" },
+  settingsAccordionChevron: { fontSize: "13px", color: "#555", textTransform: "none", letterSpacing: 0 },
+  settingsAccordionBody: { display: "flex", flexDirection: "column", gap: "10px", marginTop: "10px" },
   shortcutAddButton: { display: "inline-block", textAlign: "center", background: "#fff", border: "none", color: "#000", borderRadius: "10px", padding: "10px 16px", fontSize: "14px", fontWeight: "600", cursor: "pointer", textDecoration: "none" },
   tokenSection: { display: "flex", flexDirection: "column", gap: "8px" },
   tokenRow: { display: "flex", gap: "6px", alignItems: "center" },
