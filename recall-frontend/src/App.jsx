@@ -195,39 +195,6 @@ function getSourceLabel(url) {
   }
 }
 
-function getPreviewTag(url) {
-  if (!url) return "Other"
-  if (url.includes("linkedin.com")) return "Business"
-  if (url.includes("twitter.com") || url.includes("x.com")) return "Tech"
-  if (url.includes("youtube.com") || url.includes("youtu.be")) return "Product"
-  if (url.includes("substack.com")) return "Business"
-  if (url.includes("reddit.com")) return "Personal"
-  return "Other"
-}
-
-function buildLandingPreview(url) {
-  const source = getSourceLabel(url)
-  const tag = getPreviewTag(url)
-  let host = source
-  try {
-    host = new URL(url).hostname.replace("www.", "")
-  } catch {
-    host = source
-  }
-
-  return {
-    source,
-    tag,
-    title: `${source} link ready to save`,
-    summary: `ReCall will extract the key ideas from ${host}, give it a clean title, tag it under ${tag}, and make it searchable later in plain English.`,
-    relatedTopics: [
-      `${tag.toLowerCase()} reads`,
-      `things from ${source}`,
-      "similar links you saved before",
-    ],
-  }
-}
-
 function TrashIcon({ size = 14 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -343,16 +310,8 @@ export default function App() {
   const [firstSaveSheetOpen, setFirstSaveSheetOpen] = useState(false)
   const [authLoading, setAuthLoading] = useState(true)
   const [preAuthUrl, setPreAuthUrl] = useState(() => sessionStorage.getItem("recall_pre_auth_url") || "")
-  const [landingPreview, setLandingPreview] = useState(() => {
-    try {
-      const saved = sessionStorage.getItem("recall_landing_preview")
-      return saved ? JSON.parse(saved) : null
-    } catch {
-      return null
-    }
-  })
   const [landingPreviewError, setLandingPreviewError] = useState("")
-  const [landingSavedArticles, setLandingSavedArticles] = useState(() => {
+  const [landingSavedArticles] = useState(() => {
     try {
       const saved = sessionStorage.getItem("recall_landing_saved_articles")
       return saved ? JSON.parse(saved) : []
@@ -360,7 +319,6 @@ export default function App() {
       return []
     }
   })
-  const [showLandingSignInPrompt, setShowLandingSignInPrompt] = useState(false)
 
   // Ask mode (wiki Q&A)
   const [askMode, setAskMode] = useState(false)
@@ -732,7 +690,6 @@ export default function App() {
           setIsError(false)
           sessionStorage.removeItem("recall_pre_auth_url")
           sessionStorage.removeItem("recall_landing_preview")
-          setLandingPreview(null)
         }
         // Bookmarklet import — consume scraped tweet IDs
         const scrapedPending = sessionStorage.getItem('x_scraped_pending')
@@ -912,7 +869,6 @@ export default function App() {
           setIsError(false)
           sessionStorage.removeItem("recall_pre_auth_url")
           sessionStorage.removeItem("recall_landing_preview")
-          setLandingPreview(null)
         }
         // Skipped on /mcp/consent — see matching guard above for why.
         if (!localStorage.getItem('recall_onboarded') && window.location.pathname !== '/mcp/consent') {
@@ -1100,34 +1056,16 @@ export default function App() {
     }
   }
 
-  const saveLandingUrl = () => {
+  const startLandingSignIn = () => {
     const trimmed = preAuthUrl.trim()
-    let preview = landingPreview
     if (trimmed) {
       if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
-        setLandingPreviewError("Paste a full link before saving it.")
+        setLandingPreviewError("Paste a full link to start your library.")
         return
       }
-      preview = buildLandingPreview(trimmed)
-      setLandingPreview(preview)
-      sessionStorage.setItem("recall_pre_auth_url", trimmed)
-      sessionStorage.setItem("recall_landing_preview", JSON.stringify(preview))
     }
-    const article = {
-      id: trimmed || "sample-quiet-web",
-      source: preview?.source || "nytimes.com",
-      title: preview?.title || "The Quiet Return of the Personal Website",
-      summary: preview?.summary || "A new wave of writers and designers are rebuilding their own corners of the web: part rebellion against algorithmic feeds, part return to slower, more intentional reading.",
-      topics: preview?.relatedTopics || ["personal web", "design", "essays", "internet culture"],
-      savedAt: "saved just now",
-    }
-    setLandingSavedArticles(prev => {
-      const updated = [article, ...prev.filter(a => a.id !== article.id)].slice(0, 4)
-      sessionStorage.setItem("recall_landing_saved_articles", JSON.stringify(updated))
-      return updated
-    })
     setLandingPreviewError("")
-    setShowLandingSignInPrompt(true)
+    signIn(trimmed)
   }
 
   const getToken = async () => {
@@ -1628,33 +1566,30 @@ export default function App() {
 
   if (!user) {
     const featureItems = [
-      { title: "Semantic search", body: "Find saves by meaning, not just exact words.", tone: "mint" },
-      { title: "Auto tags", body: "Every save gets a title, author, and category.", tone: "peach" },
-      { title: "Ask mode", body: "Turn a pile of links into a synthesized answer.", tone: "lavender" },
-      { title: "LLM connector", body: "Let Claude, ChatGPT, or any MCP-compatible client search and manage your ReCall library.", tone: "blue" },
-      { title: "Share Sheet", body: "Save from Android apps without breaking your flow.", tone: "cream" },
-      { title: "Private library", body: "Your saves stay tied to your account, not a public feed.", tone: "white" },
+      { title: "Save", body: "Paste a link, or use Share via ReCall from your phone when you find something worth keeping.", tone: "mint" },
+      { title: "Browse", body: "Open your Library to skim everything you have saved, grouped by source, time, and topic.", tone: "peach" },
+      { title: "ReCall", body: "Search by meaning, ask questions over your saves, or connect the library to Claude, ChatGPT, or another LLM.", tone: "blue" },
     ]
     const howSteps = [
       {
         n: "01",
-        title: "Paste or share",
-        body: "Drop in a link before signing up, or save from the mobile Share Sheet later.",
+        title: "Save",
+        body: "Start with one link. Paste it here, or use Share via ReCall from your phone later.",
       },
       {
         n: "02",
-        title: "Search your memory",
-        body: "Start with familiar search, then ask questions once the library has a little shape.",
+        title: "Browse",
+        body: "Your Library becomes the place to look through everything you meant to come back to.",
       },
       {
         n: "03",
-        title: "Connect an LLM",
-        body: "Make the connector a milestone after a few saves, not a settings chore on day one.",
+        title: "ReCall",
+        body: "Find links semantically, use Ask mode, or let an LLM use your saved context.",
       },
     ]
     const defaultLandingArticles = [
       {
-        id: "quiet-web",
+        id: "personal-web",
         source: "nytimes.com",
         title: "The Quiet Return of the Personal Website",
         summary: "A new wave of writers and designers are rebuilding their own corners of the web: part rebellion against algorithmic feeds, part return to slower, more intentional reading.",
@@ -1684,7 +1619,7 @@ export default function App() {
       <div style={styles.lovablePage}>
         <header style={styles.lovableNav}>
           <a href="#" style={styles.lovableBrand}>
-            <span style={styles.lovableBrandMark}>R</span>
+            <img src="/icon.svg" alt="" style={styles.lovableBrandLogo} />
             <span style={styles.lovableBrandText}>ReCall</span>
           </a>
           <nav style={styles.lovableNavLinks}>
@@ -1710,30 +1645,30 @@ export default function App() {
                   Save every link. Remember everything. Hand it to any LLM.
                 </h1>
                 <p style={styles.lovableHeroText}>
-                  ReCall is a calm second brain for the things you read online: summarized, tagged, searchable in plain English, and ready to become context for the AI tools you already use.
+                  ReCall turns the things you read online into a private, searchable library you can browse, ask questions over, and use as context in the AI tools you already trust.
                 </p>
               </div>
 
               <div style={styles.lovableComposerWrap}>
+                <p style={styles.lovableComposerPrompt}>Start building your library - paste a link</p>
                 <div style={styles.lovableComposer}>
-                  <span style={styles.lovableComposerIcon}>link</span>
                   <input
                     type="url"
-                    placeholder="Paste a link - try it before signing up"
+                    placeholder="Paste any URL"
                     style={styles.lovableComposerInput}
                     value={preAuthUrl}
                     onChange={e => {
                       setPreAuthUrl(e.target.value)
                       setLandingPreviewError("")
                     }}
-                    onKeyDown={e => { if (e.key === "Enter") saveLandingUrl() }}
+                    onKeyDown={e => { if (e.key === "Enter") startLandingSignIn() }}
                   />
-                  <button onClick={saveLandingUrl} style={styles.lovableComposerButton}>
-                    Save
+                  <button onClick={startLandingSignIn} style={styles.lovableComposerButton}>
+                    Start free
                   </button>
                 </div>
                 {landingPreviewError && <p style={styles.lovableError}>{landingPreviewError}</p>}
-                <p style={styles.lovableComposerNote}>Save a first link here. Sign in when you want to use the saved context across search and AI apps.</p>
+                <p style={styles.lovableComposerNote}>Bring in one link first. ReCall opens with it ready to save after Google sign-in.</p>
               </div>
 
               <div style={styles.lovablePreviewStack}>
@@ -1760,7 +1695,7 @@ export default function App() {
                       {index === 0 && (
                         <div style={styles.lovablePreviewFooter}>
                           <span>{landingSavedArticles.length > 0 ? "Saved locally in your preview library" : "3 related saves in your library"}</span>
-                          <button onClick={saveLandingUrl} style={styles.lovableTextButton}>Save this link</button>
+                          <button onClick={startLandingSignIn} style={styles.lovableTextButton}>Start with a link</button>
                         </div>
                       )}
                     </article>
@@ -1773,14 +1708,14 @@ export default function App() {
           <section id="how" style={styles.lovableSection}>
             <div style={styles.lovableSectionIntro}>
               <p style={styles.lovableKicker}>How it works</p>
-              <h2 style={styles.lovableSectionTitle}>Three quiet steps. One growing memory.</h2>
+              <h2 style={styles.lovableSectionTitle}>Save, browse, and ReCall what mattered.</h2>
             </div>
             <div style={styles.lovableStepsGrid}>
               {howSteps.map(step => (
                 <div key={step.n} style={styles.lovableStepCard}>
                   <div style={styles.lovableStepTop}>
                     <span style={styles.lovableStepNumber}>{step.n}</span>
-                    <span style={styles.lovableStepIcon}>{step.n === "01" ? "save" : step.n === "02" ? "ask" : "mcp"}</span>
+                    <span style={styles.lovableStepIcon}>{step.n === "01" ? "save" : step.n === "02" ? "browse" : "recall"}</span>
                   </div>
                   <h3 style={styles.lovableCardTitle}>{step.title}</h3>
                   <p style={styles.lovableCardBody}>{step.body}</p>
@@ -1791,8 +1726,8 @@ export default function App() {
 
           <section id="features" style={styles.lovableSection}>
             <div style={styles.lovableSectionIntro}>
-              <p style={styles.lovableKicker}>Features</p>
-              <h2 style={styles.lovableSectionTitle}>Built for people who read more than they post.</h2>
+              <p style={styles.lovableKicker}>Flow</p>
+              <h2 style={styles.lovableSectionTitle}>Three ways your saved internet becomes useful again.</h2>
             </div>
             <div style={styles.lovableFeatureGrid}>
               {featureItems.map(item => (
@@ -1812,28 +1747,13 @@ export default function App() {
         </main>
 
         <footer style={styles.lovableFooter}>
-          <span>ReCall - a quieter way to remember the web</span>
+          <span>ReCall - your saved internet, finally searchable</span>
           <div style={styles.lovableFooterLinks}>
             <button onClick={() => { setLegalSection('privacy'); setView('legal') }} style={styles.lovableFooterLink}>Privacy</button>
             <button onClick={() => { setLegalSection('terms'); setView('legal') }} style={styles.lovableFooterLink}>Terms</button>
           </div>
         </footer>
 
-        {showLandingSignInPrompt && (
-          <div style={styles.lovableModalOverlay}>
-            <div style={styles.lovableModal}>
-              <p style={styles.lovableKicker}>Saved to your preview library</p>
-              <h2 style={styles.lovableModalTitle}>Sign in to use this saved context.</h2>
-              <p style={styles.lovableCardBody}>
-                Your first link is visible here. Create an account to search it, ask questions over it, and connect it to your AI apps.
-              </p>
-              <div style={styles.lovableModalActions}>
-                <button onClick={() => signIn(preAuthUrl)} style={styles.lovableFinalButton}>Sign in with Google</button>
-                <button onClick={() => setShowLandingSignInPrompt(false)} style={styles.lovablePlainButton}>Keep browsing</button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     )
   }
@@ -3205,28 +3125,28 @@ const styles = {
   previewTopic: { fontSize: "12px", color: "#d3d9e3", background: "#1b2330", border: "1px solid #2f3a4d", borderRadius: "999px", padding: "7px 10px" },
 
   // Lovable landing page port
-  lovablePage: { minHeight: "100vh", background: "#fbf8ef", color: "#332d24", fontFamily: "Georgia, 'Times New Roman', serif", overflowX: "hidden" },
-  lovableNav: { position: "sticky", top: 0, zIndex: 40, minHeight: "64px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", padding: "10px 24px", background: "rgba(251,248,239,0.82)", borderBottom: "1px solid rgba(94,77,53,0.16)", backdropFilter: "blur(14px)", flexWrap: "wrap" },
+  lovablePage: { minHeight: "100vh", width: "100%", background: "#fbf8ef", color: "#332d24", fontFamily: "Georgia, 'Times New Roman', serif", overflowX: "hidden" },
+  lovableNav: { position: "sticky", top: 0, zIndex: 40, minHeight: "64px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", padding: "10px clamp(18px, 4vw, 56px)", background: "rgba(251,248,239,0.9)", borderBottom: "1px solid rgba(94,77,53,0.16)", backdropFilter: "blur(14px)", flexWrap: "wrap" },
   lovableBrand: { display: "flex", alignItems: "center", gap: "9px", color: "#332d24", textDecoration: "none", flexShrink: 0 },
-  lovableBrandMark: { width: "28px", height: "28px", borderRadius: "50%", background: "#332d24", color: "#fbf8ef", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "15px", lineHeight: 1 },
-  lovableBrandText: { fontSize: "22px", letterSpacing: "-0.01em" },
+  lovableBrandLogo: { width: "30px", height: "30px", borderRadius: "8px", display: "block" },
+  lovableBrandText: { fontSize: "22px", letterSpacing: 0 },
   lovableNavLinks: { display: "flex", alignItems: "center", gap: "18px", flexWrap: "wrap" },
   lovableNavLink: { color: "#756b5d", textDecoration: "none", fontSize: "14px", fontFamily: "system-ui, sans-serif" },
   lovableNavActions: { display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 },
   lovablePlainButton: { background: "transparent", border: "none", color: "#756b5d", cursor: "pointer", fontSize: "14px", fontFamily: "system-ui, sans-serif" },
   lovableDarkButton: { background: "#332d24", border: "none", color: "#fbf8ef", borderRadius: "999px", padding: "9px 16px", cursor: "pointer", fontSize: "14px", fontFamily: "system-ui, sans-serif" },
-  lovableHero: { position: "relative", overflow: "hidden" },
+  lovableHero: { position: "relative", overflow: "hidden", minHeight: "calc(100vh - 64px)" },
   lovableHeroBackdrop: { position: "absolute", inset: 0, pointerEvents: "none", background: "radial-gradient(circle at 12% 8%, rgba(248,206,190,0.72), transparent 32%), radial-gradient(circle at 92% 18%, rgba(224,210,245,0.68), transparent 30%), radial-gradient(circle at 52% 88%, rgba(205,233,217,0.62), transparent 34%)" },
-  lovableHeroInner: { position: "relative", maxWidth: "1120px", margin: "0 auto", padding: "72px 24px 110px", display: "flex", flexDirection: "column", alignItems: "center" },
+  lovableHeroInner: { position: "relative", maxWidth: "1180px", margin: "0 auto", padding: "clamp(52px, 8vw, 96px) clamp(18px, 4vw, 56px) 110px", display: "flex", flexDirection: "column", alignItems: "center" },
   lovableHeroCopy: { maxWidth: "860px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center" },
   lovablePill: { display: "inline-flex", alignItems: "center", gap: "8px", padding: "6px 12px", borderRadius: "999px", background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.18)", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif", marginBottom: "24px" },
   lovablePillDot: { width: "6px", height: "6px", borderRadius: "50%", background: "#332d24", flexShrink: 0 },
-  lovableHeroTitle: { fontSize: "clamp(48px, 9vw, 88px)", lineHeight: 1.02, letterSpacing: "-0.04em", margin: 0, maxWidth: "880px", fontWeight: 400, color: "#2f2a22" },
+  lovableHeroTitle: { fontSize: "clamp(46px, 8vw, 88px)", lineHeight: 1.02, letterSpacing: 0, margin: 0, maxWidth: "920px", fontWeight: 400, color: "#2f2a22" },
   lovableHeroText: { margin: "22px auto 0", color: "#756b5d", fontSize: "18px", lineHeight: 1.65, maxWidth: "620px", fontFamily: "system-ui, sans-serif", textAlign: "center" },
   lovableComposerWrap: { marginTop: "40px", maxWidth: "700px", width: "100%" },
+  lovableComposerPrompt: { margin: "0 0 10px", color: "#332d24", fontSize: "14px", fontWeight: 700, fontFamily: "system-ui, sans-serif", textAlign: "center" },
   lovableComposer: { display: "flex", alignItems: "center", gap: "10px", padding: "8px", borderRadius: "22px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", boxShadow: "0 24px 70px -45px rgba(60,40,20,0.45)" },
-  lovableComposerIcon: { paddingLeft: "10px", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif", textTransform: "uppercase", letterSpacing: "0.08em", flexShrink: 0 },
-  lovableComposerInput: { flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", color: "#332d24", fontSize: "15px", padding: "13px 4px", fontFamily: "system-ui, sans-serif" },
+  lovableComposerInput: { flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", color: "#332d24", fontSize: "15px", padding: "13px 12px", fontFamily: "system-ui, sans-serif" },
   lovableComposerButton: { border: "none", borderRadius: "14px", background: "#332d24", color: "#fbf8ef", padding: "12px 16px", fontSize: "14px", fontFamily: "system-ui, sans-serif", cursor: "pointer", flexShrink: 0 },
   lovableComposerNote: { margin: "12px 0 0 8px", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
   lovableError: { margin: "10px 0 0 8px", color: "#b45309", fontSize: "13px", fontFamily: "system-ui, sans-serif" },
@@ -3243,7 +3163,7 @@ const styles = {
   lovableTag: { display: "inline-flex", alignItems: "center", borderRadius: "999px", background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.16)", color: "#756b5d", padding: "6px 10px", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
   lovablePreviewFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", marginTop: "22px", paddingTop: "20px", borderTop: "1px solid rgba(94,77,53,0.16)", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
   lovableTextButton: { background: "transparent", border: "none", color: "#332d24", cursor: "pointer", fontWeight: 700, fontSize: "12px" },
-  lovableSection: { maxWidth: "1120px", margin: "0 auto", padding: "96px 24px" },
+  lovableSection: { maxWidth: "1180px", margin: "0 auto", padding: "96px clamp(18px, 4vw, 56px)" },
   lovableSectionIntro: { maxWidth: "720px", margin: "0 auto 54px", textAlign: "center" },
   lovableKicker: { margin: 0, color: "#756b5d", textTransform: "uppercase", letterSpacing: "0.14em", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
   lovableSectionTitle: { margin: "12px 0 0", fontSize: "clamp(36px, 5vw, 56px)", lineHeight: 1.08, letterSpacing: "-0.035em", fontWeight: 400, color: "#2f2a22" },
@@ -3251,10 +3171,10 @@ const styles = {
   lovableStepCard: { borderRadius: "28px", background: "rgba(255,253,248,0.76)", border: "1px solid rgba(94,77,53,0.16)", padding: "24px", display: "flex", flexDirection: "column", gap: "16px" },
   lovableStepTop: { display: "flex", alignItems: "center", justifyContent: "space-between" },
   lovableStepNumber: { color: "#756b5d", fontSize: "28px", lineHeight: 1 },
-  lovableStepIcon: { width: "34px", height: "34px", borderRadius: "50%", background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.16)", color: "#332d24", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "10px", fontFamily: "system-ui, sans-serif", textTransform: "uppercase" },
+  lovableStepIcon: { minWidth: "64px", height: "34px", borderRadius: "999px", background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.16)", color: "#332d24", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 10px", fontSize: "10px", fontFamily: "system-ui, sans-serif", textTransform: "uppercase", boxSizing: "border-box" },
   lovableCardTitle: { margin: 0, fontSize: "26px", lineHeight: 1.15, letterSpacing: "-0.025em", fontWeight: 400, color: "#2f2a22" },
   lovableCardBody: { margin: "10px 0 0", color: "#756b5d", fontSize: "15px", lineHeight: 1.65, fontFamily: "system-ui, sans-serif" },
-  lovableFeatureGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: "18px" },
+  lovableFeatureGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "18px" },
   lovableFeatureCard: { borderRadius: "28px", border: "1px solid rgba(94,77,53,0.16)", padding: "24px", background: "#fffdf8", minHeight: "190px" },
   lovableTone_mint: { background: "rgba(205,233,217,0.44)" },
   lovableTone_peach: { background: "rgba(248,206,190,0.44)" },
@@ -3283,11 +3203,7 @@ const styles = {
   lovableFinalCta: { position: "relative", maxWidth: "860px", margin: "0 auto", padding: "110px 24px", textAlign: "center" },
   lovableFinalTitle: { margin: 0, fontSize: "clamp(50px, 8vw, 86px)", lineHeight: 1.02, letterSpacing: "-0.04em", fontWeight: 400, color: "#2f2a22" },
   lovableFinalButton: { marginTop: "34px", border: "none", borderRadius: "18px", background: "#332d24", color: "#fbf8ef", padding: "14px 20px", fontSize: "15px", fontFamily: "system-ui, sans-serif", cursor: "pointer" },
-  lovableModalOverlay: { position: "fixed", inset: 0, zIndex: 200, background: "rgba(47,42,34,0.42)", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px", backdropFilter: "blur(10px)" },
-  lovableModal: { width: "100%", maxWidth: "440px", borderRadius: "28px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", padding: "28px", boxShadow: "0 32px 90px -40px rgba(47,42,34,0.65)" },
-  lovableModalTitle: { margin: "10px 0 0", color: "#2f2a22", fontSize: "34px", lineHeight: 1.05, letterSpacing: "-0.035em", fontWeight: 400 },
-  lovableModalActions: { display: "flex", alignItems: "center", gap: "14px", flexWrap: "wrap", marginTop: "24px" },
-  lovableFooter: { borderTop: "1px solid rgba(94,77,53,0.16)", padding: "32px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", maxWidth: "1120px", margin: "0 auto", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableFooter: { borderTop: "1px solid rgba(94,77,53,0.16)", padding: "32px clamp(18px, 4vw, 56px)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", maxWidth: "1180px", margin: "0 auto", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
   lovableFooterLinks: { display: "flex", gap: "18px" },
   lovableFooterLink: { background: "transparent", border: "none", color: "#756b5d", cursor: "pointer", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
 
