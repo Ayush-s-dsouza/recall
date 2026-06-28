@@ -209,6 +209,9 @@ async def email_inbound_webhook(request: Request):
     auth_header = request.headers.get("authorization", "")
     expected = f"Basic {base64.b64encode(f'recall:{secret}'.encode()).decode()}"
     if not secret or not secrets.compare_digest(auth_header, expected):
+        # Temporary debug logging to diagnose a 401 mismatch — remove once confirmed working.
+        print(f"[email-webhook] auth mismatch: secret_set={bool(secret)} secret_len={len(secret)} "
+              f"received_auth_len={len(auth_header)} received_auth_prefix={auth_header[:10]!r}", flush=True)
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     payload = await request.json()
