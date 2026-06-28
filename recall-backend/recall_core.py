@@ -464,7 +464,12 @@ async def fetch_reddit(url: str):
                     },
                 )
             else:
-                clean = resolved_url.split("?")[0].rstrip("/")
+                # www.reddit.com specifically blocks the .json suffix with a 403 even when
+                # the plain HTML page next to it loads fine with the same headers — old.reddit.com
+                # (the legacy UI domain) is consistently less aggressively bot-protected and still
+                # serves the same .json data.
+                old_url = re.sub(r'^https://(www\.)?reddit\.com', 'https://old.reddit.com', resolved_url)
+                clean = old_url.split("?")[0].rstrip("/")
                 res = await client.get(f"{clean}.json")
 
             if res.status_code != 200:
