@@ -651,13 +651,16 @@ async def resolve_linkedin_redirect(url: str) -> str:
     except Exception:
         return url
 
-def _finalize_placeholder(placeholder_id: str | None):
-    """Flip a pending placeholder row to 'ready' without changing its title — used when
+def _finalize_placeholder(placeholder_id: str | None, title: str | None = None):
+    """Flip a pending placeholder row to 'ready', optionally overwriting its title — used when
     enrichment bails out early (thin content / authwall) so the row never stays stuck pending."""
     if not placeholder_id:
         return
+    payload = {"status": "ready"}
+    if title:
+        payload["title"] = title
     try:
-        supabase.table("saves").update({"status": "ready"}).eq("id", placeholder_id).execute()
+        supabase.table("saves").update(payload).eq("id", placeholder_id).execute()
     except Exception:
         pass
 
@@ -842,9 +845,15 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
         title, body_text, subreddit, post_hint, image_url, comments_text = await fetch_reddit(url)
         print(f"[reddit] title={repr(title)} subreddit={repr(subreddit)} post_hint={repr(post_hint)} body_len={len(body_text)} has_image={bool(image_url)} comments_len={len(comments_text)} url={url}", flush=True)
         if not title:
-            # Fetch failed entirely (creds missing/blocked/deleted/private) — don't save a
-            # row with no usable title
-            _finalize_placeholder(placeholder_id)
+            # Fetch failed entirely (creds missing/blocked/deleted/private). Reddit currently
+            # blocks every unauthenticated path we have (see Known Issue #30/#31) -- rather
+            # than leave a bare, ambiguous "Reddit" title sitting in the list, tell the user
+            # directly so they know to set their own (the receipt card's pencil-icon edit
+            # already supports this for any save).
+            _finalize_placeholder(
+                placeholder_id,
+                title="Reddit auto-titling isn't available yet — tap to add your own title",
+            )
             return {"thin_content": True, "url": url}
         clean_text = body_text
         extra_context = f"Subreddit: {subreddit}" if subreddit else ""
