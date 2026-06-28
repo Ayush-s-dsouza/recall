@@ -21,6 +21,7 @@ from supabase import create_client
 from google import genai
 from google.genai import types
 from pywebpush import webpush, WebPushException
+from bs4 import BeautifulSoup
 
 load_dotenv()
 
@@ -1015,6 +1016,146 @@ async def _enrich_in_background(url: str, user_id: str, placeholder_id: str):
     except Exception as e:
         print(f"[enrich] background save failed for {placeholder_id}: {e}", flush=True)
         _finalize_placeholder(placeholder_id)
+
+NEWSLETTER_QUALITY_THRESHOLD = 40  # chars — newsletters are often short, same bar as LinkedIn posts
+
+def _find_user_id_by_email(email: str) -> str | None:
+    """Look up a Supabase auth user by email via the admin API — there's no email->user_id
+    table in this schema otherwise. Paginates through all users; fine at this app's scale,
+    but would need a dedicated index/table if the user base grew large."""
+    if not email:
+        return None
+    email = email.strip().lower()
+    try:
+        page = 1
+        while True:
+            resp = supabase.auth.admin.list_users(page=page, per_page=200)
+            users = resp if isinstance(resp, list) else getattr(resp, "users", [])
+            if not users:
+                return None
+            for u in users:
+                if (getattr(u, "email", "") or "").strip().lower() == email:
+                    return u.id
+            if len(users) < 200:
+                return None
+            page += 1
+    except Exception as e:
+        print(f"[newsletter] user lookup failed: {e!r}", flush=True)
+        return None
+
+def _resolve_forwarding_sender(headers: dict) -> str:
+    """Figure out which email address actually forwarded this message into ReCall.
+    Gmail filter-based auto-forwarding adds 'X-Forwarded-For: <forwarding mailbox> <destination>' —
+    the FIRST address is the Gmail account that owns the filter, NOT the newsletter's original
+    sender. This must be checked before falling back to the From header, otherwise auto-forwarded
+    mail tries to match the newsletter's own sender address and never resolves to a user.
+    Manual forwards (clicking "Forward" in Gmail) don't get this header — the From header is
+    already the user's own address in that case, so the fallback covers it."""
+    forwarded_for = headers.get("x_forwarded_for") or headers.get("x-forwarded-for") or ""
+    if forwarded_for:
+        first = forwarded_for.split()[0].strip()
+        m = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', first)
+        if m:
+            return m.group(0)
+    from_header = headers.get("from") or ""
+    m = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', from_header)
+    return m.group(0) if m else ""
+
+def _extract_newsletter_view_url(html: str) -> str:
+    """Newsletters near-universally include a 'view this email in your browser' link —
+    use it as the save's canonical url so duplicate-detection and a real source link work,
+    instead of relying purely on a synthetic identifier."""
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        for a in soup.find_all("a", href=True):
+            text = (a.get_text() or "").strip().lower()
+            if any(phrase in text for phrase in ["view in browser", "view in your browser", "view this email", "view online", "read online"]):
+                href = a["href"].strip()
+                if href.startswith("http"):
+                    return href
+    except Exception:
+        pass
+    return ""
+
+def _html_to_text(html: str) -> str:
+    """Newsletter HTML (Substack/Beehiiv/ConvertKit templates) is heavier/messier than the
+    cases the stdlib HTMLParser elsewhere in this file was built for — BeautifulSoup handles
+    nested tables/styling far more reliably."""
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "head"]):
+            tag.decompose()
+        text = soup.get_text(separator="\n")
+        lines = [l.strip() for l in text.split("\n") if l.strip()]
+        return "\n".join(lines)[:5000]
+    except Exception:
+        return ""
+
+async def process_newsletter_email(payload: dict) -> dict:
+    """Entry point for the CloudMailin inbound-email webhook. A sibling to process_save, not a
+    branch inside it — the input is a parsed email, not a URL to fetch. Resolves the sender to
+    a ReCall user, extracts clean text from the HTML body, then converges on the exact same
+    metadata/embedding/upsert tail every other source uses.
+    Returns one of:
+      {"no_match": True}
+      {"thin_content": True}
+      {"success": True, "title", "tag", "id"}
+      {"error": True, "detail"}
+    """
+    headers = payload.get("headers") or {}
+    sender_email = _resolve_forwarding_sender(headers)
+    user_id = _find_user_id_by_email(sender_email)
+    if not user_id:
+        print(f"[newsletter] no ReCall user matched sender={sender_email!r}", flush=True)
+        return {"no_match": True}
+
+    subject = headers.get("subject") or payload.get("subject") or "Untitled newsletter"
+    html = payload.get("html") or (payload.get("body") or {}).get("html") or ""
+    plain = payload.get("plain") or (payload.get("body") or {}).get("plain") or ""
+
+    view_url = _extract_newsletter_view_url(html)
+    message_id = headers.get("message_id") or headers.get("message-id") or str(time.time())
+    url = view_url or f"newsletter://{message_id.strip('<>')}"
+
+    clean_text = _html_to_text(html) if html else plain.strip()
+    from_header = headers.get("from") or ""
+    sender_name_match = re.match(r'^"?([^"<]+)"?\s*<', from_header)
+    sender_name = sender_name_match.group(1).strip() if sender_name_match else (urlparse(view_url).hostname or "")
+    extra_context = f"Newsletter from: {sender_name}" if sender_name else ""
+
+    if len(clean_text.strip()) < NEWSLETTER_QUALITY_THRESHOLD:
+        return {"thin_content": True}
+
+    existing = supabase.table("saves") \
+        .select("id, title, tag, created_at") \
+        .eq("user_id", user_id).eq("url", url) \
+        .limit(1).execute()
+    if existing.data:
+        row = existing.data[0]
+        return {"duplicate": True, "id": row["id"], "title": row["title"],
+                "tag": row["tag"], "created_at": row["created_at"]}
+
+    title, tag = await extract_save_metadata_async(subject, clean_text, extra_context)
+    embedding = await get_embedding(f"{title} {clean_text}")
+
+    payload_row = {
+        "user_id": user_id, "url": url, "title": title,
+        "content_text": clean_text, "embedding": embedding, "tag": tag,
+        "content_type": "article", "status": "ready"
+    }
+    try:
+        result = supabase.table("saves").insert(payload_row).execute()
+        inserted_id = result.data[0]["id"]
+    except Exception as e:
+        print(f"[newsletter] DB insert failed: {e}", flush=True)
+        return {"error": True, "detail": "DB insert failed"}
+
+    send_save_ready_push(user_id, title, "Newsletter")
+    return {"success": True, "title": title, "tag": tag, "id": inserted_id}
 
 async def expand_search_query(query: str) -> str:
     """Expand a short query with related synonyms/concepts to improve semantic recall."""

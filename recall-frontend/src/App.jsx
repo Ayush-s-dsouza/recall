@@ -142,6 +142,7 @@ const LINKEDIN_BOOKMARKLET_CODE = "javascript:" + LINKEDIN_BOOKMARKLET_SCRIPT.re
 const VALID_TAGS = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
 const SHARE_SHEET_VIDEO_URL = null // replace with YouTube URL when ready
 const SAVE_TO_RECALL_SHORTCUT_URL = "https://www.icloud.com/shortcuts/fd37dd0550924fafb19a0f984ded9825" // "Save to ReCall" shortcut — regenerate via Shortcuts app → long-press → Share → Copy iCloud Link if ever rebuilt
+const EMAIL_INBOUND_ADDRESS = import.meta.env.VITE_EMAIL_INBOUND_ADDRESS || "" // shared CloudMailin inbound address for newsletter forwarding — same address for every user, matched to an account by sender email
 const LOADING_STEPS = ["Fetching...", "Reading...", "Analyzing...", "Almost there..."]
 
 function getAppScheme(url) {
@@ -302,6 +303,7 @@ export default function App() {
   const [tokenCopied, setTokenCopied] = useState(false)
   const [xCodeCopied, setXCodeCopied] = useState(false)
   const [linkedinCodeCopied, setLinkedinCodeCopied] = useState(false)
+  const [newsletterAddressCopied, setNewsletterAddressCopied] = useState(false)
   const [xBookmarkletHelpOpen, setXBookmarkletHelpOpen] = useState(false)
   const [linkedinBookmarkletHelpOpen, setLinkedinBookmarkletHelpOpen] = useState(false)
   const [message, setMessage] = useState("")
@@ -2156,6 +2158,38 @@ export default function App() {
                 </div>
               )}
             </>
+          )}
+
+          <div style={styles.settingsDivider} />
+
+          {/* Save newsletters by email — collapsible */}
+          <button
+            onClick={() => setOpenSettingsSection(s => s === 'newsletters' ? null : 'newsletters')}
+            style={styles.settingsAccordionHeader}
+          >
+            <span>Save newsletters by email</span>
+            <span style={styles.settingsAccordionChevron}>{openSettingsSection === 'newsletters' ? "▾" : "▸"}</span>
+          </button>
+          {openSettingsSection === 'newsletters' && (
+            <div style={styles.settingsAccordionBody}>
+              {EMAIL_INBOUND_ADDRESS ? (
+                <>
+                  <p style={styles.overlayNote}>Forward a newsletter to this address (from <strong>{user?.email}</strong>) to save it:</p>
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                    <code style={{ ...styles.settingsLink, color: "#fff", fontSize: 13 }}>{EMAIL_INBOUND_ADDRESS}</code>
+                    <button
+                      onClick={() => { navigator.clipboard.writeText(EMAIL_INBOUND_ADDRESS); setNewsletterAddressCopied(true); setTimeout(() => setNewsletterAddressCopied(false), 2000) }}
+                      style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                    >
+                      {newsletterAddressCopied ? "Copied!" : "Copy"}
+                    </button>
+                  </div>
+                  <p style={styles.overlayNote}>Want every future issue from one sender saved automatically? Set up a Gmail filter ("from this sender → forward to this address") once — no need to forward manually again.</p>
+                </>
+              ) : (
+                <p style={styles.overlayNote}>Newsletter forwarding isn't configured on this deployment yet.</p>
+              )}
+            </div>
           )}
 
           <div style={styles.settingsDivider} />

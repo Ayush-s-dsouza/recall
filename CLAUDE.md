@@ -34,6 +34,7 @@ ReCall is a PWA (Progressive Web App) for semantic search over saved internet co
 | AI tagging | Gemini `gemini-2.5-flash` (via `google-genai` SDK) |
 | X/Twitter content | X API v2 (OAuth 2.0 PKCE for bookmark import; app-only Bearer token for single-tweet reads), pay-per-use billing |
 | Reddit content | Reddit's official OAuth API (`oauth.reddit.com`), app-only `client_credentials` grant — fetches post + top comments |
+| Newsletter content | CloudMailin inbound-email webhook (free tier) — forwarded/auto-forwarded emails parsed with `beautifulsoup4` |
 | Analytics | PostHog (`posthog-js` — frontend only) |
 | Error monitoring | Sentry (`@sentry/react` frontend, `sentry-sdk[fastapi]` backend) |
 | Rate limiting | slowapi (per-IP, on `/save` and `/search`) |
@@ -88,9 +89,10 @@ VITE_SENTRY_DSN=<Sentry frontend DSN — safe for client>
 VITE_POSTHOG_KEY=<PostHog project API key — safe for client>
 VITE_TWITTER_CLIENT_ID=<X OAuth 2.0 app Client ID — safe for client, used to build the authorize URL>
 VITE_VAPID_PUBLIC_KEY=<same value as backend's VAPID_PUBLIC_KEY — public-safe, used by PushManager.subscribe()>
+VITE_EMAIL_INBOUND_ADDRESS=<shared CloudMailin inbound address shown in Settings for newsletter forwarding — public-safe, it's the address you hand out>
 ```
 
-**On Vercel**, set `VITE_BACKEND_URL` to `https://recall-production-9941.up.railway.app` via the Vercel environment variable dashboard — do NOT hardcode it. `VITE_SENTRY_DSN`, `VITE_POSTHOG_KEY`, `VITE_TWITTER_CLIENT_ID`, and `VITE_VAPID_PUBLIC_KEY` are also set in Vercel dashboard. All are public-safe by design.
+**On Vercel**, set `VITE_BACKEND_URL` to `https://recall-production-9941.up.railway.app` via the Vercel environment variable dashboard — do NOT hardcode it. `VITE_SENTRY_DSN`, `VITE_POSTHOG_KEY`, `VITE_TWITTER_CLIENT_ID`, `VITE_VAPID_PUBLIC_KEY`, and `VITE_EMAIL_INBOUND_ADDRESS` are also set in Vercel dashboard. All are public-safe by design.
 
 ### Backend — `recall-backend/.env`
 
@@ -111,9 +113,10 @@ REDDIT_USER_AGENT=<descriptive UA Reddit's API requires, e.g. "ReCall/1.0 by u/y
 VAPID_PUBLIC_KEY=<Web Push VAPID public key — also mirrored to frontend as VITE_VAPID_PUBLIC_KEY>
 VAPID_PRIVATE_KEY=<Web Push VAPID private key — NEVER expose to client>
 VAPID_SUBJECT=mailto:<contact email, required by the Web Push spec>
+EMAIL_WEBHOOK_SECRET=<shared secret embedded as the password in CloudMailin's configured target webhook URL — verifies inbound email requests are genuinely from CloudMailin>
 ```
 
-**On Railway**, these are set as environment variables in the Railway dashboard. `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes. The three X API vars are all from the same X Developer Portal app; if unset, both import paths fall back gracefully (bookmark import shows a 503 + bookmarklet fallback; single-tweet save degrades to Jina/OG/syndication-API fallbacks — see Import X Bookmarks (#14) and Known Issue #23). The three Reddit vars are from a single Reddit "script" app; if unset, Reddit saves degrade to `thin_content` rather than erroring (see "Reddit post + comment fetching" below and Known Issue #30). The three VAPID vars power Web Push (see "Web Push notifications" #1c) — generate once with `npx web-push generate-vapid-keys`; if unset, `send_save_ready_push()` silently no-ops (no save behavior is affected either way).
+**On Railway**, these are set as environment variables in the Railway dashboard. `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes. The three X API vars are all from the same X Developer Portal app; if unset, both import paths fall back gracefully (bookmark import shows a 503 + bookmarklet fallback; single-tweet save degrades to Jina/OG/syndication-API fallbacks — see Import X Bookmarks (#14) and Known Issue #23). The three Reddit vars are from a single Reddit "script" app; if unset, Reddit saves degrade to `thin_content` rather than erroring (see "Reddit post + comment fetching" below and Known Issue #30). The three VAPID vars power Web Push (see "Web Push notifications" #1c) — generate once with `npx web-push generate-vapid-keys`; if unset, `send_save_ready_push()` silently no-ops (no save behavior is affected either way). `EMAIL_WEBHOOK_SECRET` powers newsletter saving (see "Newsletter saving via email forwarding" below and Known Issue #32) — if unset, `/webhooks/email-inbound` rejects every request with 401.
 
 ---
 
@@ -130,6 +133,7 @@ VAPID_SUBJECT=mailto:<contact email, required by the Web Push spec>
 | `DELETE` | `/account` | Delete all user saves + auth account |
 | `POST` | `/push/subscribe` | Register a Web Push subscription for the signed-in user |
 | `POST` | `/push/unsubscribe` | Remove a Web Push subscription |
+| `POST` | `/webhooks/email-inbound` | CloudMailin inbound-email webhook — receives forwarded newsletters (see "Newsletter saving via email forwarding") |
 | `GET` | `/` | Health check |
 
 All mutating endpoints verify the Supabase JWT and enforce `user_id` ownership before touching any row.
@@ -380,6 +384,19 @@ Three import paths, all funneling into the same source-agnostic `run_import_job`
 
 Sparse image/link posts get a vision-analysis fallback the same way Instagram captions do (`analyze_image` on the post's preview image when `selftext` is short).
 
+### 16. Newsletter saving via email forwarding
+
+Newsletters arrive as email, not a URL — every other save path assumes a URL. `process_newsletter_email()` (`recall_core.py`) is a **sibling** to `process_save`, not a branch inside it, since the input is a parsed email rather than something to fetch. It converges on the same `extract_save_metadata_async`/`get_embedding`/upsert tail every other source uses.
+
+1. **Ingestion**: a single shared CloudMailin inbound address (free tier, no custom domain) is shown to every user in Settings → "Save newsletters by email". Forwarding one issue manually saves it once; setting a Gmail filter to auto-forward a sender saves every future issue with zero ongoing effort.
+2. **Webhook**: CloudMailin POSTs the parsed email (JSON Normalized format — `envelope`, `headers`, `plain`/`html`, `attachments`) to `POST /webhooks/email-inbound`. Authenticity is verified via HTTP Basic Auth embedded in the target URL configured in the CloudMailin dashboard (`EMAIL_WEBHOOK_SECRET`), not a signature header.
+3. **Resolving which ReCall user this belongs to** (`_resolve_forwarding_sender`) — there's no per-user address (see Known Issue #32), so the sender must be matched to a signed-in account by email:
+   - Checks `headers["x_forwarded_for"]` first. Gmail filter-based auto-forwarding adds this header as `<forwarding mailbox> <destination>` — the *first* address is the Gmail account that owns the filter, **not** the newsletter's original sender. This must be checked before falling back to `From`, or auto-forwarded mail tries to match the newsletter's own sender address and never resolves.
+   - Falls back to the `From` header, which is correct for a manual forward (the user composed that outgoing message themselves).
+   - Looked up against Supabase auth users via the admin API (`_find_user_id_by_email`) — there's no email→user_id table otherwise. No match → dropped and logged, not saved to the wrong account.
+4. **Content extraction**: `_extract_newsletter_view_url()` pulls the near-universal "view this email in your browser" link out of the HTML to use as the save's canonical `url` (enables real duplicate-detection and a working source link); falls back to a synthetic `newsletter://<message-id>` when absent. `_html_to_text()` uses `beautifulsoup4` (not the stdlib `HTMLParser` used elsewhere — newsletter templates are too messy for it) to get clean text.
+5. Webhook always returns 200 regardless of match/thin-content/duplicate outcome, so CloudMailin doesn't retry-loop a request that simply had nothing to save.
+
 ---
 
 ## Supabase Schema
@@ -621,6 +638,8 @@ A lightning bolt / cursor-shaped path:
 
 31. **`REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` are currently unset by design, not by oversight** — as of mid-2026, Reddit gates new API app registration behind a manual "Responsible Builder Policy" review (a support ticket, not an instant form); the legacy self-serve "create app" flow on `old.reddit.com/prefs/apps` accepts the captcha but silently rejects the submission with a policy notice instead of issuing credentials, and `developers.reddit.com` (Devvit) is a different product for apps that run *inside* Reddit, not a source of plain script-app credentials. Until/unless a manual application is approved, `fetch_reddit()` runs entirely on its unauthenticated `.json` fallback (see "Reddit post + comment fetching" above) — this is the expected, working state, not a degraded one to "fix" by chasing credentials again without a clear new path.
 
+32. **Newsletter forwarding uses one shared inbound address, not a unique address per user** — a deliberate tradeoff to avoid buying/owning a custom domain (per-user addresses like `save+token@yourdomain.com` need MX records on a domain you control). Consequences: (a) a user must forward from the *same* email address they signed into ReCall with, or the webhook drops the email as unmatched; (b) Gmail auto-forward resolution relies on the `X-Forwarded-For` header (see "Newsletter saving via email forwarding" #16) — non-Gmail providers may not add this header on filter-based auto-forwards and will fall back to (and likely fail) the `From`-based match, so auto-forward-by-sender is effectively Gmail-only for now; (c) CloudMailin's free tier caps at 10,000 emails/month across the whole app, not per-user — fine at portfolio scale, would need a paid tier or per-user addressing to scale further.
+
 ---
 
 ## Current Status
@@ -666,6 +685,7 @@ A lightning bolt / cursor-shaped path:
 - **iOS Share Sheet via Shortcuts guide** — Settings panel walks iOS users through building a "Save to ReCall" Shortcut that feeds the existing share-sheet URL handling
 - **X API integration** — bookmark import via OAuth 2.0 PKCE (primary, restored June 2026 once X moved to pay-per-use pricing), with bookmarklet + file-upload as fallbacks; single-tweet save now reads `GET /2/tweets/:id` via an app-only Bearer token instead of the legacy oEmbed scrape, with Jina/OG/syndication-API enrichment unchanged
 - **Reddit support** — `fetch_reddit()` reads posts + top comments via Reddit's official OAuth API (`oauth.reddit.com`, app-only `client_credentials`), replacing a broken generic-scrape path that was saving the site's bot-detection block page as the title
+- **Newsletter saving via email forwarding** — Settings → "Save newsletters by email" shows a shared CloudMailin inbound address; forwarding a newsletter there saves it, and a Gmail filter auto-forwards every future issue from a sender automatically. Sender resolved to a ReCall account via `X-Forwarded-For`-then-`From` header matching; HTML parsed with `beautifulsoup4`
 
 ### Not Yet Built
 - Offline support / service worker caching

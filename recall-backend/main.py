@@ -9,6 +9,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import os
 import io
+import base64
 import secrets
 import zipfile
 from urllib.parse import urlparse
@@ -32,6 +33,7 @@ from recall_core import (
     do_update_tag,
     do_update_title,
     do_delete_save,
+    process_newsletter_email,
     TWEET_URL_RE,
 )
 
@@ -196,6 +198,24 @@ async def push_unsubscribe(req: PushUnsubscribeRequest):
     supabase.table("push_subscriptions").delete() \
         .eq("user_id", user_id).eq("endpoint", req.endpoint).execute()
     return {"success": True}
+
+@app.post("/webhooks/email-inbound")
+async def email_inbound_webhook(request: Request):
+    """Receives parsed newsletter emails from CloudMailin (JSON Normalized format) when a
+    user forwards (or auto-forwards via a Gmail filter) a newsletter to ReCall's shared
+    inbound address. Authenticity is verified via HTTP Basic Auth embedded in the target
+    URL configured in the CloudMailin dashboard, not a signature header."""
+    secret = os.getenv("EMAIL_WEBHOOK_SECRET", "")
+    auth_header = request.headers.get("authorization", "")
+    expected = f"Basic {base64.b64encode(f'recall:{secret}'.encode()).decode()}"
+    if not secret or not secrets.compare_digest(auth_header, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    payload = await request.json()
+    result = await process_newsletter_email(payload)
+    # Always 200 — CloudMailin retries on non-2xx, and an unmatched/thin-content email
+    # isn't a delivery failure on our end, just nothing to save.
+    return {"received": True, "result": result}
 
 @app.post("/search")
 @limiter.limit("30/minute")
