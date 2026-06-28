@@ -852,7 +852,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             # already supports this for any save).
             _finalize_placeholder(
                 placeholder_id,
-                title="Reddit auto-titling isn't available yet — tap to add your own title",
+                title="Tap to add your own title [Reddit auto-titling isn't available yet]",
             )
             return {"thin_content": True, "url": url}
         clean_text = body_text
