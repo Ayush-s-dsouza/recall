@@ -6,6 +6,7 @@ import os
 import re
 import json
 import math
+import time
 import socket
 import ipaddress
 import asyncio
@@ -357,6 +358,118 @@ async def fetch_youtube(url: str):
     except:
         return "", ""
 
+_reddit_token_cache = {"token": None, "expires_at": 0}
+
+async def _get_reddit_token() -> str:
+    """App-only OAuth token (client_credentials grant) — cached in-process, refreshed when expired.
+    Unlike X's static TWITTER_BEARER_TOKEN, Reddit tokens expire hourly and must be fetched ourselves."""
+    if _reddit_token_cache["token"] and time.time() < _reddit_token_cache["expires_at"]:
+        return _reddit_token_cache["token"]
+    client_id = os.getenv("REDDIT_CLIENT_ID")
+    client_secret = os.getenv("REDDIT_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.post(
+                "https://www.reddit.com/api/v1/access_token",
+                data={"grant_type": "client_credentials"},
+                auth=(client_id, client_secret),
+                headers={"User-Agent": os.getenv("REDDIT_USER_AGENT", "ReCall/1.0")},
+            )
+        if res.status_code != 200:
+            print(f"[reddit-auth] non-200: {res.status_code} body={res.text[:200]!r}", flush=True)
+            return ""
+        data = res.json()
+        _reddit_token_cache["token"] = data["access_token"]
+        _reddit_token_cache["expires_at"] = time.time() + data.get("expires_in", 3600) - 60
+        return _reddit_token_cache["token"]
+    except Exception as e:
+        print(f"[reddit-auth] exception: {e!r}", flush=True)
+        return ""
+
+REDDIT_COMMENT_SKIP_AUTHORS = {"AutoModerator"}
+REDDIT_COMMENT_SKIP_BODIES = {"[deleted]", "[removed]"}
+
+def _parse_reddit_listing(data):
+    """Parse Reddit's comments-listing JSON shape — identical whether it came from the
+    authenticated oauth.reddit.com API or the unauthenticated .json endpoint.
+    Returns (title, body_text, subreddit, post_hint, image_url, comments_text)."""
+    post = data[0]["data"]["children"][0]["data"]
+    title = decode_html_entities(post.get("title", ""))
+    body_text = decode_html_entities(post.get("selftext", "") or "")
+    subreddit = post.get("subreddit_name_prefixed", "")
+    post_hint = post.get("post_hint", "")
+    image_url = ""
+    if post_hint == "image":
+        image_url = post.get("url_overridden_by_dest", "")
+    else:
+        images = (post.get("preview") or {}).get("images") or []
+        if images:
+            image_url = decode_html_entities(images[0].get("source", {}).get("url", ""))
+
+    comments = []
+    for child in (data[1]["data"]["children"] if len(data) > 1 else []):
+        if child.get("kind") != "t1":
+            continue
+        c = child.get("data", {})
+        body = c.get("body", "")
+        author = c.get("author", "")
+        if not body or body in REDDIT_COMMENT_SKIP_BODIES or author in REDDIT_COMMENT_SKIP_AUTHORS:
+            continue
+        comments.append(f"- {author}: {decode_html_entities(body)[:300]}")
+        if len(comments) >= 5:
+            break
+    comments_text = ("Top comments:\n" + "\n".join(comments)) if comments else ""
+
+    return title, body_text, subreddit, post_hint, image_url, comments_text
+
+async def fetch_reddit(url: str):
+    """Fetch a Reddit post + its top comments. Prefers Reddit's official OAuth API
+    (oauth.reddit.com) when REDDIT_CLIENT_ID/SECRET are configured — Reddit now gates
+    app registration behind manual approval ("Responsible Builder Policy"), so this is
+    often unavailable. Falls back to the unauthenticated reddit.com/<path>.json endpoint,
+    which needs no registration but rides Reddit's anti-bot tolerance rather than a
+    sanctioned API (see Known Issue #30/#31) — still far more reliable than the plain
+    HTML/Jina scrape this replaced, which got served a 'security check' interstitial.
+    Returns (title, body_text, subreddit, post_hint, image_url, comments_text)."""
+    browser_headers = {"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}
+    try:
+        async with httpx.AsyncClient(timeout=12, headers=browser_headers) as client:
+            # Resolve modern share shortlinks (reddit.com/r/<sub>/s/<token>, redd.it/<id>) to
+            # the canonical /comments/<id>/ URL — needed by both the OAuth and .json paths.
+            resolve_res = await client.get(url, follow_redirects=True)
+            resolved_url = str(resolve_res.url)
+            m = re.search(r'/comments/(\w+)', resolved_url)
+            if not m:
+                print(f"[reddit] could not extract post id url={url} resolved={resolved_url}", flush=True)
+                return "", "", "", "", "", ""
+            post_id = m.group(1)
+
+            token = await _get_reddit_token()
+            if token:
+                res = await client.get(
+                    f"https://oauth.reddit.com/comments/{post_id}",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "User-Agent": os.getenv("REDDIT_USER_AGENT", "ReCall/1.0"),
+                    },
+                )
+            else:
+                clean = resolved_url.split("?")[0].rstrip("/")
+                res = await client.get(f"{clean}.json")
+
+            if res.status_code != 200:
+                via = "oauth" if token else "json"
+                print(f"[reddit] non-200 via={via}: {res.status_code} body={res.text[:200]!r} url={url}", flush=True)
+                return "", "", "", "", "", ""
+            data = res.json()
+
+        return _parse_reddit_listing(data)
+    except Exception as e:
+        print(f"[reddit] exception: {e!r} url={url}", flush=True)
+        return "", "", "", "", "", ""
+
 def _extract_tweet_id(tweet_url: str) -> str:
     m = re.search(r'/status/(\d+)', tweet_url)
     return m.group(1) if m else ""
@@ -604,6 +717,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
     is_tweet = "x.com" in url or "twitter.com" in url
     is_instagram = "instagram.com" in url
     is_linkedin = "linkedin.com" in url
+    is_reddit = "reddit.com" in url or "redd.it" in url
 
     extra_context = ""
 
@@ -711,6 +825,28 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
         if len(clean_text.strip()) < LINKEDIN_QUALITY_THRESHOLD:
             _finalize_placeholder(placeholder_id)
             return {"thin_content": True, "url": url}
+    elif is_reddit:
+        title, body_text, subreddit, post_hint, image_url, comments_text = await fetch_reddit(url)
+        print(f"[reddit] title={repr(title)} subreddit={repr(subreddit)} post_hint={repr(post_hint)} body_len={len(body_text)} has_image={bool(image_url)} comments_len={len(comments_text)} url={url}", flush=True)
+        if not title:
+            # Fetch failed entirely (creds missing/blocked/deleted/private) — don't save a
+            # row with no usable title
+            _finalize_placeholder(placeholder_id)
+            return {"thin_content": True, "url": url}
+        clean_text = body_text
+        extra_context = f"Subreddit: {subreddit}" if subreddit else ""
+        # Image/link posts often have little or no selftext — fall back to vision analysis,
+        # same pattern as Instagram's sparse-caption fallback
+        if image_url and len(clean_text) < 200:
+            image_description = await analyze_image(image_url)
+            if image_description:
+                extra_context = (extra_context + f"\nImage: {image_description}").strip()
+                clean_text = (clean_text + "\n\n" + image_description).strip()
+        # Comments are the point for Reddit — fold the top discussion into both the embedded
+        # text and the Gemini context so search/tagging account for the discussion, not just the post
+        if comments_text:
+            extra_context = (extra_context + f"\n\n{comments_text}").strip()
+            clean_text = (clean_text + "\n\n" + comments_text).strip()
     else:
         # Run Jina Reader and raw OG fetch concurrently for speed
         (jina_text, jina_title), raw_html = await asyncio.gather(

@@ -33,6 +33,7 @@ ReCall is a PWA (Progressive Web App) for semantic search over saved internet co
 | Embeddings | Gemini `gemini-embedding-001` (768 dims, via direct REST — NOT the SDK) |
 | AI tagging | Gemini `gemini-2.5-flash` (via `google-genai` SDK) |
 | X/Twitter content | X API v2 (OAuth 2.0 PKCE for bookmark import; app-only Bearer token for single-tweet reads), pay-per-use billing |
+| Reddit content | Reddit's official OAuth API (`oauth.reddit.com`), app-only `client_credentials` grant — fetches post + top comments |
 | Analytics | PostHog (`posthog-js` — frontend only) |
 | Error monitoring | Sentry (`@sentry/react` frontend, `sentry-sdk[fastapi]` backend) |
 | Rate limiting | slowapi (per-IP, on `/save` and `/search`) |
@@ -104,12 +105,15 @@ FRONTEND_URL=https://recall-iota-six.vercel.app                    # where mcp_s
 TWITTER_CLIENT_ID=<X OAuth 2.0 app Client ID — bookmark import>
 TWITTER_CLIENT_SECRET=<X OAuth 2.0 app Client Secret — NEVER expose to client>
 TWITTER_BEARER_TOKEN=<X API app-only Bearer token — single-tweet save lookups>
+REDDIT_CLIENT_ID=<optional — Reddit "script" app Client ID; unset until Reddit approves API access, see Known Issue #30>
+REDDIT_CLIENT_SECRET=<optional — Reddit "script" app Client Secret — NEVER expose to client>
+REDDIT_USER_AGENT=<descriptive UA Reddit's API requires, e.g. "ReCall/1.0 by u/yourusername" — used by both the OAuth path and the .json fallback>
 VAPID_PUBLIC_KEY=<Web Push VAPID public key — also mirrored to frontend as VITE_VAPID_PUBLIC_KEY>
 VAPID_PRIVATE_KEY=<Web Push VAPID private key — NEVER expose to client>
 VAPID_SUBJECT=mailto:<contact email, required by the Web Push spec>
 ```
 
-**On Railway**, these are set as environment variables in the Railway dashboard. `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes. The three X API vars are all from the same X Developer Portal app; if unset, both import paths fall back gracefully (bookmark import shows a 503 + bookmarklet fallback; single-tweet save degrades to Jina/OG/syndication-API fallbacks — see Import X Bookmarks (#14) and Known Issue #23). The three VAPID vars power Web Push (see "Web Push notifications" #1c) — generate once with `npx web-push generate-vapid-keys`; if unset, `send_save_ready_push()` silently no-ops (no save behavior is affected either way).
+**On Railway**, these are set as environment variables in the Railway dashboard. `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes. The three X API vars are all from the same X Developer Portal app; if unset, both import paths fall back gracefully (bookmark import shows a 503 + bookmarklet fallback; single-tweet save degrades to Jina/OG/syndication-API fallbacks — see Import X Bookmarks (#14) and Known Issue #23). The three Reddit vars are from a single Reddit "script" app; if unset, Reddit saves degrade to `thin_content` rather than erroring (see "Reddit post + comment fetching" below and Known Issue #30). The three VAPID vars power Web Push (see "Web Push notifications" #1c) — generate once with `npx web-push generate-vapid-keys`; if unset, `send_save_ready_push()` silently no-ops (no save behavior is affected either way).
 
 ---
 
@@ -364,6 +368,18 @@ Three import paths, all funneling into the same source-agnostic `run_import_job`
 
 **Why both OAuth and a scraping fallback exist**: the OAuth flow was originally built first (`14c3420`), then immediately shelved (`f37b62a`) because X's legacy API tier gated bookmark reads behind a $200+/mo plan and the integration 403'd. The bookmarklet was added as the free workaround and became the primary CTA, leaving the OAuth code in the repo but unreferenced by any UI element. X's Feb 2026 move to pay-per-use pricing (~$0.005/read, no monthly minimum) removed that blocker, so OAuth was restored as primary — but the bookmarklet stays as a no-API-access-required fallback in case the dev account's billing/tier ever doesn't cover bookmark reads.
 
+### 15. Reddit post + comment fetching
+
+`fetch_reddit(url)` (`recall_core.py`) fetches a Reddit post — title, body, subreddit, image, **and top comments** — instead of falling into the generic article scrape, which previously got served Reddit's anti-bot "security check" interstitial and saved it as the title ("Reddit Verification Security Block"). It tries Reddit's official OAuth API first, and transparently falls back to an unauthenticated endpoint when no API credentials are configured:
+
+1. The original URL is resolved (`follow_redirects=True`, no auth needed) to extract the canonical post ID — handles modern share shortlinks (`reddit.com/r/<sub>/s/<token>`, `redd.it/<id>`) that the Android Share Sheet produces. Shared by both paths below.
+2. **If `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` are set**: `_get_reddit_token()` exchanges them for an app-only `client_credentials` token (cached in-process, refreshed ~1 minute before its hourly expiry — unlike X's static `TWITTER_BEARER_TOKEN`, Reddit doesn't issue a long-lived token), then `GET oauth.reddit.com/comments/{id}` with that bearer token.
+3. **Otherwise** (the current default — see Known Issue #30): `GET reddit.com/<path>.json` with a browser-like `User-Agent`, no auth. Both paths return the identical listing shape, parsed by the shared `_parse_reddit_listing()`.
+4. Either way, the response is the post **and** the top-level comment tree in one call. Up to 5 real top-level comments (skipping `AutoModerator` and `[deleted]`/`[removed]` bodies) are folded into both `content_text` and the Gemini tagging context — comments are the actual value of most Reddit saves, unlike a tweet or LinkedIn post, so this is Reddit-specific and doesn't apply to any other source branch.
+5. If both the post-ID resolution and the fetch fail for any reason (deleted/private post, blocked request), `process_save` falls through to `{"thin_content": True, ...}` exactly like a deleted tweet or LinkedIn authwall — never saves a row with a junk/blocked-page title.
+
+Sparse image/link posts get a vision-analysis fallback the same way Instagram captions do (`analyze_image` on the post's preview image when `selftext` is short).
+
 ---
 
 ## Supabase Schema
@@ -601,6 +617,10 @@ A lightning bolt / cursor-shaped path:
 
 29. **Windows blocks browser notifications at the OS level, independent of `Notification.permission`** — Windows Settings → System → Notifications has a per-app toggle for Chrome that, if off, silently drops every web push notification (no toast, nothing in Action Center either) even though `Notification.requestPermission()` reports "granted" and the backend's `webpush()` call succeeds with no error. When push notifications "don't work" during testing, check this before assuming the code is broken — DevTools → Application → Service Workers → "Push" test button simulates a push with no network involved and is the fastest way to isolate the two.
 
+30. **Reddit's OAuth API is unauthenticated-adjacent and not a stable contract** — `fetch_reddit()` prefers Reddit's real `client_credentials` OAuth API over scraping when credentials are configured, which is far more reliable than the HTML page (which actively blocks bots with a "security check" interstitial — the original bug this fixed), but it's still not a paid/contracted API tier. Reddit could tighten or rate-limit `oauth.reddit.com` access in the future the same way X locked down its API and forced a pricing-model pivot (#23). If `REDDIT_CLIENT_ID`/`SECRET` are missing or every Reddit save starts silently returning `thin_content`, check this before assuming the code regressed.
+
+31. **`REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` are currently unset by design, not by oversight** — as of mid-2026, Reddit gates new API app registration behind a manual "Responsible Builder Policy" review (a support ticket, not an instant form); the legacy self-serve "create app" flow on `old.reddit.com/prefs/apps` accepts the captcha but silently rejects the submission with a policy notice instead of issuing credentials, and `developers.reddit.com` (Devvit) is a different product for apps that run *inside* Reddit, not a source of plain script-app credentials. Until/unless a manual application is approved, `fetch_reddit()` runs entirely on its unauthenticated `.json` fallback (see "Reddit post + comment fetching" above) — this is the expected, working state, not a degraded one to "fix" by chasing credentials again without a clear new path.
+
 ---
 
 ## Current Status
@@ -645,6 +665,7 @@ A lightning bolt / cursor-shaped path:
 - **Install banner + bottom-of-page fallback button** — persistent, dismissible "Install ReCall" banner below the header on all views; once dismissed, replaced by a small button near the footer. Uses `beforeinstallprompt`/`appinstalled` where available, falls back to platform-specific "Add to Home Screen" instructions on iOS/others
 - **iOS Share Sheet via Shortcuts guide** — Settings panel walks iOS users through building a "Save to ReCall" Shortcut that feeds the existing share-sheet URL handling
 - **X API integration** — bookmark import via OAuth 2.0 PKCE (primary, restored June 2026 once X moved to pay-per-use pricing), with bookmarklet + file-upload as fallbacks; single-tweet save now reads `GET /2/tweets/:id` via an app-only Bearer token instead of the legacy oEmbed scrape, with Jina/OG/syndication-API enrichment unchanged
+- **Reddit support** — `fetch_reddit()` reads posts + top comments via Reddit's official OAuth API (`oauth.reddit.com`, app-only `client_credentials`), replacing a broken generic-scrape path that was saving the site's bot-detection block page as the title
 
 ### Not Yet Built
 - Offline support / service worker caching
