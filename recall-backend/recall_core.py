@@ -11,7 +11,7 @@ import socket
 import ipaddress
 import asyncio
 import html as html_entities
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -1118,8 +1118,17 @@ async def process_newsletter_email(payload: dict) -> dict:
     plain = payload.get("plain") or (payload.get("body") or {}).get("plain") or ""
 
     view_url = _extract_newsletter_view_url(html)
-    message_id = headers.get("message_id") or headers.get("message-id") or str(time.time())
-    url = view_url or f"newsletter://{message_id.strip('<>')}"
+    message_id = headers.get("message_id") or headers.get("message-id") or ""
+    # When the email has no "view in browser" link, fall back to a Gmail deep link via the
+    # rfc822msgid: search operator — opens the exact original email by its Message-ID header.
+    # Far more useful than an inert synthetic URL, since tapping the save actually goes somewhere.
+    # Gmail-specific (consistent with this feature's Gmail-first scope — see Known Issue #32).
+    if view_url:
+        url = view_url
+    elif message_id:
+        url = f"https://mail.google.com/mail/u/0/#search/rfc822msgid:{quote(message_id.strip('<>'))}"
+    else:
+        url = f"newsletter://{time.time()}"
 
     clean_text = _html_to_text(html) if html else plain.strip()
     from_header = headers.get("from") or ""
