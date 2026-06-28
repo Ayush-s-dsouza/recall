@@ -433,7 +433,15 @@ async def fetch_reddit(url: str):
     sanctioned API (see Known Issue #30/#31) — still far more reliable than the plain
     HTML/Jina scrape this replaced, which got served a 'security check' interstitial.
     Returns (title, body_text, subreddit, post_hint, image_url, comments_text)."""
-    browser_headers = {"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}
+    # A generic/obviously-bot User-Agent (the "compatible; ReCall/1.0" string used elsewhere
+    # in this file) gets an outright 403 from Reddit even on a plain redirect-resolution GET —
+    # Reddit's anti-bot wall is exactly what this function exists to get around, so it needs a
+    # genuinely realistic browser UA, same as fetch_instagram's embed fetch.
+    browser_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
     try:
         async with httpx.AsyncClient(timeout=12, headers=browser_headers) as client:
             # Resolve modern share shortlinks (reddit.com/r/<sub>/s/<token>, redd.it/<id>) to
