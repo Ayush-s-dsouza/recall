@@ -1061,24 +1061,6 @@ def _resolve_forwarding_sender(headers: dict) -> str:
     m = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', from_header)
     return m.group(0) if m else ""
 
-def _extract_newsletter_view_url(html: str) -> str:
-    """Newsletters near-universally include a 'view this email in your browser' link —
-    use it as the save's canonical url so duplicate-detection and a real source link work,
-    instead of relying purely on a synthetic identifier."""
-    if not html:
-        return ""
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        for a in soup.find_all("a", href=True):
-            text = (a.get_text() or "").strip().lower()
-            if any(phrase in text for phrase in ["view in browser", "view in your browser", "view this email", "view online", "read online"]):
-                href = a["href"].strip()
-                if href.startswith("http"):
-                    return href
-    except Exception:
-        pass
-    return ""
-
 def _html_to_text(html: str) -> str:
     """Newsletter HTML (Substack/Beehiiv/ConvertKit templates) is heavier/messier than the
     cases the stdlib HTMLParser elsewhere in this file was built for — BeautifulSoup handles
@@ -1117,15 +1099,13 @@ async def process_newsletter_email(payload: dict) -> dict:
     html = payload.get("html") or (payload.get("body") or {}).get("html") or ""
     plain = payload.get("plain") or (payload.get("body") or {}).get("plain") or ""
 
-    view_url = _extract_newsletter_view_url(html)
-    message_id = headers.get("message_id") or headers.get("message-id") or ""
-    # When the email has no "view in browser" link, fall back to a Gmail deep link via the
-    # rfc822msgid: search operator — opens the exact original email by its Message-ID header.
-    # Far more useful than an inert synthetic URL, since tapping the save actually goes somewhere.
+    # The save's url always points back to the original email in the inbox via Gmail's
+    # rfc822msgid: search deep link, not a link scraped out of the newsletter body — those
+    # are unreliable (could be a confusing intermediate page, or ambiguous when an email has
+    # several links) and the inbox copy is the one source that's always the real thing.
     # Gmail-specific (consistent with this feature's Gmail-first scope — see Known Issue #32).
-    if view_url:
-        url = view_url
-    elif message_id:
+    message_id = headers.get("message_id") or headers.get("message-id") or ""
+    if message_id:
         url = f"https://mail.google.com/mail/u/0/#search/rfc822msgid:{quote(message_id.strip('<>'))}"
     else:
         url = f"newsletter://{time.time()}"
@@ -1133,7 +1113,11 @@ async def process_newsletter_email(payload: dict) -> dict:
     clean_text = _html_to_text(html) if html else plain.strip()
     from_header = headers.get("from") or ""
     sender_name_match = re.match(r'^"?([^"<]+)"?\s*<', from_header)
-    sender_name = sender_name_match.group(1).strip() if sender_name_match else (urlparse(view_url).hostname or "")
+    if sender_name_match:
+        sender_name = sender_name_match.group(1).strip()
+    else:
+        from_addr_match = re.search(r'[\w.+-]+@([\w-]+\.[\w.-]+)', from_header)
+        sender_name = from_addr_match.group(1) if from_addr_match else ""
     extra_context = f"Newsletter from: {sender_name}" if sender_name else ""
 
     if len(clean_text.strip()) < NEWSLETTER_QUALITY_THRESHOLD:
