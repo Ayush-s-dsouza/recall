@@ -1647,7 +1647,17 @@ export default function App() {
     )
   }
 
-  if (authLoading) return null
+  if (authLoading) {
+    // Paint something immediately instead of staying blank — Android's native PWA splash
+    // (manifest icon + background_color) only goes away on first paint, so returning null
+    // here means the user stares at that splash for the full duration of the auth check
+    // (cold app boot + a Supabase network round trip), not just the JS bundle's load time.
+    return (
+      <div style={{ ...styles.container, justifyContent: "center", alignItems: "center" }}>
+        <img src="/icon.svg" alt="" style={{ width: 64, height: 64, opacity: 0.9 }} />
+      </div>
+    )
+  }
 
   if (view === 'legal') {
     return (
@@ -2785,7 +2795,9 @@ export default function App() {
             </div>
           )}
 
-          {saveReceipt?.fromShareSheet && !saveReceipt.thin_content && !saveReceipt.optimistic && !saveReceipt.duplicate && (
+          {/* Don't gate this on !optimistic — url + fromShareSheet are already known the
+              instant the share sheet hands off, so this shouldn't wait on the /save round trip. */}
+          {saveReceipt?.fromShareSheet && !saveReceipt.thin_content && !saveReceipt.duplicate && (
             <a
               href={getAppScheme(saveReceipt.url) ?? undefined}
               onClick={e => {
