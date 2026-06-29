@@ -652,9 +652,13 @@ async def resolve_linkedin_redirect(url: str) -> str:
     except Exception:
         return url
 
-def _finalize_placeholder(placeholder_id: str | None, title: str | None = None):
+def _finalize_placeholder(placeholder_id: str | None, user_id: str | None = None,
+                           url: str | None = None, title: str | None = None):
     """Flip a pending placeholder row to 'ready', optionally overwriting its title — used when
-    enrichment bails out early (thin content / authwall) so the row never stays stuck pending."""
+    enrichment bails out early (thin content / authwall) so the row never stays stuck pending.
+    Also sends the save-ready push here, mirroring the success path's call — otherwise a save
+    that bails out early (thin content, authwall) finishes silently with no signal to the user,
+    on top of whatever generic title it's left with."""
     if not placeholder_id:
         return
     payload = {"status": "ready"}
@@ -663,7 +667,9 @@ def _finalize_placeholder(placeholder_id: str | None, title: str | None = None):
     try:
         supabase.table("saves").update(payload).eq("id", placeholder_id).execute()
     except Exception:
-        pass
+        return
+    if user_id and url:
+        send_save_ready_push(user_id, title or get_source_label(url), get_source_label(url))
 
 async def process_save(url: str, user_id: str, placeholder_id: str | None = None) -> dict:
     """Core save pipeline shared by /save's background enrichment, the bookmark import job,
@@ -782,7 +788,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
         if title == url:
             # Nothing usable came back at all (deleted/protected/unfetchable tweet) — skip
             # rather than insert a row whose only "title" is the URL itself.
-            _finalize_placeholder(placeholder_id)
+            _finalize_placeholder(placeholder_id, user_id, url)
             return {"thin_content": True, "url": url}
         if tweet_author:
             extra_context = f"Author: {tweet_author}"
@@ -834,13 +840,21 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
         lowered = (clean_text + " " + og_title).lower()
         if any(sig in lowered for sig in AUTHWALL_SIGNATURES):
             print(f"[linkedin] authwall signature detected, skipping url={url}", flush=True)
-            _finalize_placeholder(placeholder_id)
+            _finalize_placeholder(placeholder_id, user_id, url)
             return {"thin_content": True, "url": url}
         # LinkedIn posts are often short (a one-liner, a quote) — use a lower bar than the
         # generic article threshold, since the authwall check above already filters garbage.
         LINKEDIN_QUALITY_THRESHOLD = 40
+        if len(clean_text.strip()) < LINKEDIN_QUALITY_THRESHOLD and og_title:
+            # og_description/jina can come back empty (e.g. a Jina timeout) even though
+            # LinkedIn already embedded the full post text in og:title, suffixed with
+            # "| Author Name | N comments" — strip that suffix and use it as the body.
+            fallback_text = re.sub(r'\s*\|\s*\d+\s+comments?\s*$', '', og_title, flags=re.IGNORECASE)
+            fallback_text = re.sub(r'\s*\|\s*[^|]+$', '', fallback_text).strip()
+            if len(fallback_text) >= LINKEDIN_QUALITY_THRESHOLD:
+                clean_text = fallback_text
         if len(clean_text.strip()) < LINKEDIN_QUALITY_THRESHOLD:
-            _finalize_placeholder(placeholder_id)
+            _finalize_placeholder(placeholder_id, user_id, url)
             return {"thin_content": True, "url": url}
     elif is_reddit:
         title, body_text, subreddit, post_hint, image_url, comments_text = await fetch_reddit(url)
@@ -852,7 +866,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             # directly so they know to set their own (the receipt card's pencil-icon edit
             # already supports this for any save).
             _finalize_placeholder(
-                placeholder_id,
+                placeholder_id, user_id, url,
                 title="Tap to add your own title [Reddit auto-titling isn't available yet]",
             )
             return {"thin_content": True, "url": url}
@@ -928,7 +942,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             clean_text = (clean_text + "\n\n" + extra_context)[:5000]
 
         if len((clean_text + extra_context).strip()) < QUALITY_THRESHOLD:
-            _finalize_placeholder(placeholder_id)
+            _finalize_placeholder(placeholder_id, user_id, url)
             return {"thin_content": True, "url": url}
 
     title, tag = await extract_save_metadata_async(title, clean_text, extra_context)
@@ -1015,7 +1029,7 @@ async def _enrich_in_background(url: str, user_id: str, placeholder_id: str):
         await process_save(url, user_id, placeholder_id=placeholder_id)
     except Exception as e:
         print(f"[enrich] background save failed for {placeholder_id}: {e}", flush=True)
-        _finalize_placeholder(placeholder_id)
+        _finalize_placeholder(placeholder_id, user_id, url)
 
 NEWSLETTER_QUALITY_THRESHOLD = 40  # chars — newsletters are often short, same bar as LinkedIn posts
 
