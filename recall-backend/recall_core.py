@@ -804,39 +804,35 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
                 extra_context = f"Image: {image_description}"
                 clean_text = (clean_text + "\n\n" + extra_context).strip()
     elif is_linkedin:
-        (jina_text, jina_title), raw_html = await asyncio.gather(
-            fetch_with_jina(url),
-            fetch_og_html(url)
-        )
+        # Jina Reader was tried here for "See more" expansion, but LinkedIn's anonymous-access
+        # authwall blocks it almost every time in practice (either an explicit authwall page or
+        # a 15s ReadTimeout) — pure latency with no realized benefit, since og:description (and
+        # the og:title fallback below) already carry the real post content. Dropped to cut the
+        # slowest leg out of LinkedIn save latency.
+        raw_html = await fetch_og_html(url)
         og = extract_og_tags(raw_html)
         og_title = og.get("og:title", "")
         og_description = og.get("og:description", "") or og.get("description", "")
 
-        # LinkedIn's anonymous-access login wall returns generic marketing copy that's
-        # often long enough to beat a short-but-real og_description on length alone —
-        # check for it before letting jina_text win that comparison.
+        # LinkedIn's anonymous-access login wall returns generic marketing copy in
+        # og:description sometimes — check for it before trusting og_description as the body.
         AUTHWALL_SIGNATURES = [
             "agree & join linkedin", "login to linkedin to keep in touch",
             "by clicking continue to join or sign in", "new to linkedin? join now",
             "skip to main content", "linkedin login, sign in",
         ]
-        jina_is_authwall = jina_text and any(sig in jina_text.lower() for sig in AUTHWALL_SIGNATURES)
 
-        # OG description is the post body (reliable); Jina adds depth for "See more" expansion —
-        # but never prefer it over a real (if shorter) og_description when it's just authwall noise.
         combined = og_description if og_description else ""
-        if jina_text and not jina_is_authwall and len(jina_text) > len(og_description):
-            combined = jina_text
 
-        # Strip LinkedIn UI boilerplate that Jina extracts
+        # Strip LinkedIn UI boilerplate
         for noise in ["Like · Comment · Share", "Like Comment Share", "1st · ", "2nd · ",
                       "3rd · ", "Connect", "Follow", "Message", "View all comments",
                       "Load more comments", "Sign in to view", "Join now to see"]:
             combined = combined.replace(noise, "")
         clean_text = re.sub(r'\s{2,}', ' ', combined).strip()
 
-        title = og_title or jina_title or url
-        print(f"[linkedin] og_title={og_title!r} jina_title={jina_title!r} jina_is_authwall={jina_is_authwall} og_description_len={len(og_description)} clean_text_len={len(clean_text)} clean_text_preview={clean_text[:150]!r} url={url}", flush=True)
+        title = og_title or url
+        print(f"[linkedin] og_title={og_title!r} og_description_len={len(og_description)} clean_text_len={len(clean_text)} clean_text_preview={clean_text[:150]!r} url={url}", flush=True)
         lowered = (clean_text + " " + og_title).lower()
         if any(sig in lowered for sig in AUTHWALL_SIGNATURES):
             print(f"[linkedin] authwall signature detected, skipping url={url}", flush=True)
@@ -846,8 +842,8 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
         # generic article threshold, since the authwall check above already filters garbage.
         LINKEDIN_QUALITY_THRESHOLD = 40
         if len(clean_text.strip()) < LINKEDIN_QUALITY_THRESHOLD and og_title:
-            # og_description/jina can come back empty (e.g. a Jina timeout) even though
-            # LinkedIn already embedded the full post text in og:title, suffixed with
+            # og_description sometimes comes back empty/truncated even though LinkedIn
+            # already embedded the full post text in og:title, suffixed with
             # "| Author Name | N comments" — strip that suffix and use it as the body.
             fallback_text = re.sub(r'\s*\|\s*\d+\s+comments?\s*$', '', og_title, flags=re.IGNORECASE)
             fallback_text = re.sub(r'\s*\|\s*[^|]+$', '', fallback_text).strip()
