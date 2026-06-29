@@ -128,7 +128,11 @@ def send_save_ready_push(user_id: str, title: str, source_label: str):
                 },
                 data=json.dumps({"title": f'Saved "{title}"', "body": f"from {source_label}"}),
                 vapid_private_key=vapid_private_key,
-                vapid_claims={"sub": os.getenv("VAPID_SUBJECT", "mailto:noreply@example.com")}
+                vapid_claims={"sub": os.getenv("VAPID_SUBJECT", "mailto:noreply@example.com")},
+                # Without this, FCM treats the push as "normal" urgency and Android can defer
+                # delivery to a Doze/App Standby maintenance window — sometimes minutes to hours
+                # later — instead of waking the device immediately.
+                headers={"Urgency": "high"}
             )
         except WebPushException as e:
             body = e.response.text if e.response is not None else ""
