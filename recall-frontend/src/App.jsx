@@ -1565,11 +1565,6 @@ export default function App() {
   }
 
   if (!user) {
-    const featureItems = [
-      { title: "Save", body: "Paste a link, or use Share via ReCall from your phone when you find something worth keeping.", tone: "mint" },
-      { title: "Browse", body: "Open your Library to skim everything you have saved, grouped by source, time, and topic.", tone: "peach" },
-      { title: "ReCall", body: "Search by meaning, ask questions over your saves, or connect the library to Claude, ChatGPT, or another LLM.", tone: "blue" },
-    ]
     const howSteps = [
       {
         n: "01",
@@ -1624,7 +1619,6 @@ export default function App() {
           </a>
           <nav style={styles.lovableNavLinks}>
             <a href="#how" style={styles.lovableNavLink}>How it works</a>
-            <a href="#features" style={styles.lovableNavLink}>Features</a>
           </nav>
           <div style={styles.lovableNavActions}>
             <button onClick={() => signIn()} style={styles.lovablePlainButton}>Sign in</button>
@@ -1719,21 +1713,6 @@ export default function App() {
                   </div>
                   <h3 style={styles.lovableCardTitle}>{step.title}</h3>
                   <p style={styles.lovableCardBody}>{step.body}</p>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section id="features" style={styles.lovableSection}>
-            <div style={styles.lovableSectionIntro}>
-              <p style={styles.lovableKicker}>Flow</p>
-              <h2 style={styles.lovableSectionTitle}>Three ways your saved internet becomes useful again.</h2>
-            </div>
-            <div style={styles.lovableFeatureGrid}>
-              {featureItems.map(item => (
-                <div key={item.title} style={{ ...styles.lovableFeatureCard, ...(styles[`lovableTone_${item.tone}`] || {}) }}>
-                  <h3 style={styles.lovableCardTitle}>{item.title}</h3>
-                  <p style={styles.lovableCardBody}>{item.body}</p>
                 </div>
               ))}
             </div>
@@ -3174,14 +3153,6 @@ const styles = {
   lovableStepIcon: { minWidth: "64px", height: "34px", borderRadius: "999px", background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.16)", color: "#332d24", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 10px", fontSize: "10px", fontFamily: "system-ui, sans-serif", textTransform: "uppercase", boxSizing: "border-box" },
   lovableCardTitle: { margin: 0, fontSize: "26px", lineHeight: 1.15, letterSpacing: "-0.025em", fontWeight: 400, color: "#2f2a22" },
   lovableCardBody: { margin: "10px 0 0", color: "#756b5d", fontSize: "15px", lineHeight: 1.65, fontFamily: "system-ui, sans-serif" },
-  lovableFeatureGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "18px" },
-  lovableFeatureCard: { borderRadius: "28px", border: "1px solid rgba(94,77,53,0.16)", padding: "24px", background: "#fffdf8", minHeight: "190px" },
-  lovableTone_mint: { background: "rgba(205,233,217,0.44)" },
-  lovableTone_peach: { background: "rgba(248,206,190,0.44)" },
-  lovableTone_lavender: { background: "rgba(224,210,245,0.44)" },
-  lovableTone_blue: { background: "rgba(212,228,242,0.56)" },
-  lovableTone_cream: { background: "#f3ecdd" },
-  lovableTone_white: { background: "#fffdf8" },
   lovableMilestone: { position: "relative", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "48px", alignItems: "start", borderRadius: "34px", background: "linear-gradient(135deg, #f3ecdd 0%, #fbf8ef 56%, rgba(248,206,190,0.5) 100%)", border: "1px solid rgba(94,77,53,0.16)", padding: "clamp(26px, 5vw, 52px)", overflow: "hidden" },
   lovableMilestoneList: { listStyle: "none", margin: "34px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: "16px" },
   lovableMilestoneItem: { display: "flex", alignItems: "center", gap: "14px" },
