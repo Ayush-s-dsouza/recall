@@ -180,6 +180,43 @@ function formatDate(isoString) {
   } catch { return "" }
 }
 
+function formatRelativeTime(isoString) {
+  if (!isoString) return "just now"
+  try {
+    const seconds = Math.max(0, Math.floor((Date.now() - new Date(isoString).getTime()) / 1000))
+    if (seconds < 60) return "just now"
+    const minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return `${minutes}m ago`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours}h ago`
+    const days = Math.floor(hours / 24)
+    if (days < 7) return `${days}d ago`
+    return formatDate(isoString)
+  } catch {
+    return "just now"
+  }
+}
+
+function getSiteName(url) {
+  if (!url) return "page"
+  try {
+    return new URL(url).hostname.replace(/^www\./, "")
+  } catch {
+    return getSourceLabel(url).toLowerCase()
+  }
+}
+
+function getSaveCaption(save) {
+  const content = (save?.excerpt || save?.content_text || "").replace(/\s+/g, " ").trim()
+  if (content) {
+    const clipped = content.length > 170 ? content.slice(0, 170).replace(/\s+\S*$/, "") + "..." : content
+    return clipped
+  }
+  const source = getSourceLabel(save?.url)
+  if (save?.status === "pending") return `ReCall is reading this ${source} save and preparing its summary.`
+  return `Saved from ${source}. ReCall will use this context when you search your library.`
+}
+
 function getSourceLabel(url) {
   if (!url) return "Page"
   if (url.includes("twitter.com") || url.includes("x.com")) return "X (Twitter)"
@@ -212,6 +249,33 @@ function SearchIcon({ size = 16 }) {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="11" cy="11" r="8" />
       <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  )
+}
+
+function LinkIcon({ size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M10 13a5 5 0 0 0 7.07 0l2.83-2.83a5 5 0 0 0-7.07-7.07L11.5 4.43" />
+      <path d="M14 11a5 5 0 0 0-7.07 0L4.1 13.83a5 5 0 0 0 7.07 7.07l1.33-1.33" />
+    </svg>
+  )
+}
+
+function ArrowRightIcon({ size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 12h14" />
+      <path d="m12 5 7 7-7 7" />
+    </svg>
+  )
+}
+
+function TagIcon({ size = 12 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20.59 13.41 11 3.83A2 2 0 0 0 9.59 3H4a1 1 0 0 0-1 1v5.59A2 2 0 0 0 3.59 11l9.59 9.59a2 2 0 0 0 2.82 0L20.59 16a2 2 0 0 0 0-2.59Z" />
+      <path d="M7 7h.01" />
     </svg>
   )
 }
@@ -559,7 +623,7 @@ export default function App() {
     today.setHours(0, 0, 0, 0)
     const { data } = await supabase
       .from("saves")
-      .select("id, url, title, tag, content_type, status")
+      .select("id, url, title, tag, content_type, status, created_at, content_text")
       .gte("created_at", today.toISOString())
       .order("created_at", { ascending: false })
       .limit(20)
@@ -1235,7 +1299,8 @@ export default function App() {
   }
 
   const updateTodayTitle = async (id, newTitle) => {
-    const currentTitle = todaySaves.find(s => s.id === id)?.title || ""
+    const librarySave = Object.values(calendarSaves).flat().find(s => s.id === id)
+    const currentTitle = todaySaves.find(s => s.id === id)?.title || librarySave?.title || ""
     if (!newTitle.trim() || newTitle === currentTitle) {
       setEditingTodayTitleId(null)
       return
@@ -1247,6 +1312,9 @@ export default function App() {
       body: JSON.stringify({ title: newTitle, token })
     })
     setTodaySaves(prev => prev.map(s => s.id === id ? { ...s, title: newTitle } : s))
+    setCalendarSaves(prev => Object.fromEntries(
+      Object.entries(prev).map(([day, saves]) => [day, saves.map(s => s.id === id ? { ...s, title: newTitle } : s)])
+    ))
     if (saveReceipt?.id === id) setSaveReceipt(r => ({ ...r, title: newTitle }))
     setEditingTodayTitleId(null)
     playSuccessChime()
@@ -1264,6 +1332,11 @@ export default function App() {
       body: JSON.stringify({ token })
     })
     setTodaySaves(prev => prev.filter(s => s.id !== id))
+    setCalendarSaves(prev => Object.fromEntries(
+      Object.entries(prev)
+        .map(([day, saves]) => [day, saves.filter(s => s.id !== id)])
+        .filter(([, saves]) => saves.length > 0)
+    ))
     setResults(prev => prev.filter(s => s.id !== id))
     setSynthesisSources(prev => prev.filter(s => s.id !== id))
     setRelatedSaves(prev => prev.filter(s => s.id !== id))
@@ -1409,7 +1482,7 @@ export default function App() {
     setCalendarLoading(true)
     const { data } = await supabase
       .from("saves")
-      .select("id, url, title, tag, created_at")
+      .select("id, url, title, tag, created_at, content_text")
       .order("created_at", { ascending: false })
     if (data) {
       const grouped = {}
@@ -1469,6 +1542,111 @@ export default function App() {
   // this ref so it never acts on a stale closure from when the channel was first opened.
   finalizeSaveRef.current = finalizeSave
 
+  const renderSavedArticleCard = (save) => {
+    const tagLabel =
+      save.content_type === "video" ? "Video" :
+      save.content_type === "image" ? "Image" :
+      (save.tag || "Auto tagged")
+    const isEditing = editingTodayTitleId === save.id
+
+    if (isEditing) {
+      return (
+        <div key={save.id} style={styles.savedArticleCard}>
+          <div style={styles.savedArticleTop}>
+            <div style={styles.savedArticleMeta}>
+              <span style={styles.savedArticleSourceTile} />
+              <span>{getSiteName(save.url)}</span>
+              <span>saved {formatRelativeTime(save.created_at)}</span>
+            </div>
+          </div>
+          <input
+            style={styles.savedArticleTitleInput}
+            value={draftTodayTitle}
+            onChange={e => setDraftTodayTitle(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") updateTodayTitle(save.id, draftTodayTitle)
+              if (e.key === "Escape") setEditingTodayTitleId(null)
+            }}
+            autoFocus
+          />
+          <div style={styles.savedArticleEditActions}>
+            <button onClick={() => updateTodayTitle(save.id, draftTodayTitle)} style={styles.confirmButton}>✓</button>
+            <button onClick={() => setEditingTodayTitleId(null)} style={styles.savedArticleGhostButton}>✕</button>
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <a key={save.id} href={save.url} target="_blank" rel="noreferrer" style={styles.savedArticleCard}>
+        {deletingId === save.id ? (
+          <span style={styles.savedArticleStatus}>Removing...</span>
+        ) : confirmDeleteId === save.id ? (
+          <div style={styles.deleteConfirm} onClick={e => e.stopPropagation()}>
+            <span style={styles.deleteConfirmText}>Remove from ReCall?</span>
+            <button
+              onClick={e => { e.preventDefault(); e.stopPropagation(); deleteSave(save.id) }}
+              style={styles.deleteConfirmYes}
+            >Delete</button>
+            <button
+              onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(null) }}
+              style={styles.deleteConfirmNo}
+            >Cancel</button>
+          </div>
+        ) : save.status === "pending" ? (
+          <>
+            <div style={styles.savedArticleTop}>
+              <div style={styles.savedArticleMeta}>
+                <span style={styles.savedArticleSourceTile} />
+                <span>{getSiteName(save.url)}</span>
+                <span>saving now</span>
+              </div>
+              <button
+                onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(save.id) }}
+                style={styles.deleteButton}
+                aria-label="Delete"
+              ><TrashIcon /></button>
+            </div>
+            <span className="shimmer" style={styles.savedArticleTitleShimmer} />
+            <span className="shimmer" style={styles.savedArticleCaptionShimmer} />
+            <div style={styles.savedArticleTagRow}>
+              <span className="shimmer" style={styles.savedArticleTagShimmer} />
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={styles.savedArticleTop}>
+              <div style={styles.savedArticleMeta}>
+                <span style={styles.savedArticleSourceTile} />
+                <span>{getSiteName(save.url)}</span>
+                <span>saved {formatRelativeTime(save.created_at)}</span>
+              </div>
+              <div style={styles.savedArticleControls}>
+                <button
+                  onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTodayTitleId(save.id); setDraftTodayTitle(save.title || "") }}
+                  style={styles.editButton}
+                  title="Edit name"
+                >✎</button>
+                <button
+                  onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(save.id) }}
+                  style={styles.deleteButton}
+                  aria-label="Delete"
+                ><TrashIcon /></button>
+              </div>
+            </div>
+            <div style={styles.savedArticleBody}>
+              <span style={styles.savedArticleTitle}>{save.title || getSourceLabel(save.url)}</span>
+              <span style={styles.savedArticleCaption}>{getSaveCaption(save)}</span>
+            </div>
+            <div style={styles.savedArticleTagRow}>
+              <span style={styles.savedArticleTag}><TagIcon />{tagLabel}</span>
+            </div>
+          </>
+        )}
+      </a>
+    )
+  }
+
   if (authLoading) return null
 
   if (view === 'legal') {
@@ -1506,7 +1684,7 @@ export default function App() {
               <h3 style={styles.legalH3}>Deleting your data</h3>
               <p style={styles.legalP}>You're in control. Delete your account and everything in it at any time from the app settings (⚙ in the header). It's immediate and permanent.</p>
               <h3 style={styles.legalH3}>Contact</h3>
-              <p style={styles.legalP}>Questions? <a href="https://github.com/Ayush-s-dsouza" target="_blank" rel="noreferrer" style={{ color: "#888" }}>Reach the developer on GitHub.</a></p>
+              <p style={styles.legalP}>Questions? <a href="https://github.com/Ayush-s-dsouza" target="_blank" rel="noreferrer" style={{ color: "#d9ff5f" }}>Reach the developer on GitHub.</a></p>
             </>
           ) : (
             <>
@@ -1551,7 +1729,7 @@ export default function App() {
             <button onClick={signInForMcpConsent} style={styles.button}>Sign in with Google to continue</button>
           ) : (
             <>
-              <p style={{ ...styles.heroBody, fontSize: "13px", color: "#888" }}>Signed in as {user.email}</p>
+              <p style={{ ...styles.heroBody, fontSize: "13px", color: "#aca79b" }}>Signed in as {user.email}</p>
               {mcpConsentError && <p style={styles.error}>{mcpConsentError}</p>}
               <button onClick={approveMcpConsent} disabled={mcpConsenting} style={styles.button}>
                 {mcpConsenting ? "Connecting…" : "Allow"}
@@ -1617,11 +1795,11 @@ export default function App() {
             <img src="/icon.svg" alt="" style={styles.lovableBrandLogo} />
             <span style={styles.lovableBrandText}>ReCall</span>
           </a>
-          <nav style={styles.lovableNavLinks}>
+          <nav className="landing-nav-links" style={styles.lovableNavLinks}>
             <a href="#how" style={styles.lovableNavLink}>How it works</a>
           </nav>
           <div style={styles.lovableNavActions}>
-            <button onClick={() => signIn()} style={styles.lovablePlainButton}>Sign in</button>
+            <button className="landing-sign-in-link" onClick={() => signIn()} style={styles.lovablePlainButton}>Sign in</button>
             <button onClick={() => signIn(preAuthUrl)} style={styles.lovableDarkButton}>Start free</button>
           </div>
         </header>
@@ -1646,6 +1824,7 @@ export default function App() {
               <div style={styles.lovableComposerWrap}>
                 <p style={styles.lovableComposerPrompt}>Start building your library - paste a link</p>
                 <div style={styles.lovableComposer}>
+                  <span style={styles.lovableComposerIcon}><LinkIcon /></span>
                   <input
                     type="url"
                     placeholder="Paste any URL"
@@ -1658,7 +1837,7 @@ export default function App() {
                     onKeyDown={e => { if (e.key === "Enter") startLandingSignIn() }}
                   />
                   <button onClick={startLandingSignIn} style={styles.lovableComposerButton}>
-                    Start free
+                    Start free <ArrowRightIcon />
                   </button>
                 </div>
                 {landingPreviewError && <p style={styles.lovableError}>{landingPreviewError}</p>}
@@ -1683,13 +1862,13 @@ export default function App() {
                       </p>
                       <div style={styles.lovableTagRow}>
                         {article.topics.map(topic => (
-                          <span key={topic} style={styles.lovableTag}>{topic}</span>
+                          <span key={topic} style={styles.lovableTag}><TagIcon />{topic}</span>
                         ))}
                       </div>
                       {index === 0 && (
                         <div style={styles.lovablePreviewFooter}>
                           <span>{landingSavedArticles.length > 0 ? "Saved locally in your preview library" : "3 related saves in your library"}</span>
-                          <button onClick={startLandingSignIn} style={styles.lovableTextButton}>Start with a link</button>
+                          <button onClick={startLandingSignIn} style={styles.lovableTextButton}>Open ↗</button>
                         </div>
                       )}
                     </article>
@@ -1719,14 +1898,15 @@ export default function App() {
           </section>
 
           <section id="cta" style={styles.lovableFinalCta}>
+            <div style={styles.lovableFinalBackdrop} />
             <h2 style={styles.lovableFinalTitle}>Start your memory.</h2>
             <p style={styles.lovableHeroText}>Free to try. No card. Your saved internet, finally searchable.</p>
-            <button onClick={() => signIn(preAuthUrl)} style={styles.lovableFinalButton}>Get started with Google</button>
+            <button onClick={() => signIn(preAuthUrl)} style={styles.lovableFinalButton}>Get started with Google <ArrowRightIcon /></button>
           </section>
         </main>
 
         <footer style={styles.lovableFooter}>
-          <span>ReCall - your saved internet, finally searchable</span>
+          <span style={styles.lovableFooterBrand}><img src="/icon.svg" alt="" style={styles.lovableFooterLogo} />ReCall - your saved internet, finally searchable</span>
           <div style={styles.lovableFooterLinks}>
             <button onClick={() => { setLegalSection('privacy'); setView('legal') }} style={styles.lovableFooterLink}>Privacy</button>
             <button onClick={() => { setLegalSection('terms'); setView('legal') }} style={styles.lovableFooterLink}>Terms</button>
@@ -1844,7 +2024,7 @@ export default function App() {
                 <div style={styles.tokenSection}>
                   {mcpConnections.map(c => (
                     <div key={c.client_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
-                      <span style={{ fontSize: "13px", color: "#ccc" }}>
+                      <span style={{ fontSize: "13px", color: "#aca79b" }}>
                         {c.client_name || "Unnamed app"}
                         <span style={{ color: "#666" }}> · connected {new Date(c.connected_at).toLocaleDateString()}</span>
                       </span>
@@ -1900,7 +2080,7 @@ export default function App() {
                   />
                   <button
                     onClick={() => setXBookmarkletFallback(o => !o)}
-                    style={{ ...styles.settingsLink, fontSize: 12, color: "#555", alignSelf: "flex-start", marginTop: "4px" }}
+                    style={{ ...styles.settingsLink, fontSize: 12, color: "#7d786f", alignSelf: "flex-start", marginTop: "4px" }}
                   >
                     {xBookmarkletFallback ? "Hide other import options" : "Can't or won't connect your account?"}
                   </button>
@@ -1922,18 +2102,18 @@ export default function App() {
                       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
                         <button
                           onClick={() => importFileInputRef.current?.click()}
-                          style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                          style={{ ...styles.settingsLink, fontSize: 12, color: "#7d786f" }}
                           disabled={importUploading}
                         >
                           {importUploading ? "Uploading…" : "or upload a file export instead"}
                         </button>
                         <button
                           onClick={() => { navigator.clipboard.writeText(BOOKMARKLET_CODE); setXCodeCopied(true); setTimeout(() => setXCodeCopied(false), 2000) }}
-                          style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                          style={{ ...styles.settingsLink, fontSize: 12, color: "#7d786f" }}
                         >
                           {xCodeCopied ? "Copied!" : "or copy the bookmarklet code"}
                         </button>
-                        <button onClick={() => setXBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}>
+                        <button onClick={() => setXBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#7d786f" }}>
                           {xBookmarkletHelpOpen ? "Hide Safari/Arc help" : "Drag not working? (Safari/Arc)"}
                         </button>
                       </div>
@@ -1958,7 +2138,7 @@ export default function App() {
                         ].filter(Boolean).join(", ")})`
                       : ""}
                   </p>
-                  <div style={{ height: 4, background: "#222", borderRadius: 2, margin: "4px 0 8px" }}>
+                  <div style={{ height: 4, background: "#171719", borderRadius: 2, margin: "4px 0 8px" }}>
                     <div style={{
                       height: "100%",
                       width: `${importJob.total > 0 ? Math.round((importJob.processed / importJob.total) * 100) : 0}%`,
@@ -2000,11 +2180,11 @@ export default function App() {
                   <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
                     <button
                       onClick={() => { navigator.clipboard.writeText(LINKEDIN_BOOKMARKLET_CODE); setLinkedinCodeCopied(true); setTimeout(() => setLinkedinCodeCopied(false), 2000) }}
-                      style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                      style={{ ...styles.settingsLink, fontSize: 12, color: "#7d786f" }}
                     >
                       {linkedinCodeCopied ? "Copied!" : "or copy the bookmarklet code"}
                     </button>
-                    <button onClick={() => setLinkedinBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}>
+                    <button onClick={() => setLinkedinBookmarkletHelpOpen(o => !o)} style={{ ...styles.settingsLink, fontSize: 12, color: "#7d786f" }}>
                       {linkedinBookmarkletHelpOpen ? "Hide Safari/Arc help" : "Drag not working? (Safari/Arc)"}
                     </button>
                   </div>
@@ -2075,10 +2255,10 @@ export default function App() {
                 <>
                   <p style={styles.overlayNote}>Forward a newsletter to this address (from <strong>{user?.email}</strong>) to save it:</p>
                   <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                    <code style={{ ...styles.settingsLink, color: "#fff", fontSize: 13 }}>{EMAIL_INBOUND_ADDRESS}</code>
+                    <code style={{ ...styles.settingsLink, color: "#f6f3ea", fontSize: 13 }}>{EMAIL_INBOUND_ADDRESS}</code>
                     <button
                       onClick={() => { navigator.clipboard.writeText(EMAIL_INBOUND_ADDRESS); setNewsletterAddressCopied(true); setTimeout(() => setNewsletterAddressCopied(false), 2000) }}
-                      style={{ ...styles.settingsLink, fontSize: 12, color: "#555" }}
+                      style={{ ...styles.settingsLink, fontSize: 12, color: "#7d786f" }}
                     >
                       {newsletterAddressCopied ? "Copied!" : "Copy"}
                     </button>
@@ -2209,7 +2389,7 @@ export default function App() {
           {/* Insufficient sources message */}
           {askMode && synthesis === "__insufficient__" && (
             <div style={styles.synthesisInsufficient}>
-              <p style={{ margin: 0, color: "#888", fontSize: 14 }}>
+              <p style={{ margin: 0, color: "#aca79b", fontSize: 14 }}>
                 {insufficientData?.relevant_count === 0
                   ? "Nothing focused on this topic yet."
                   : `Only ${insufficientData?.relevant_count} closely-matched save${insufficientData?.relevant_count === 1 ? "" : "s"} on this — save ${3 - (insufficientData?.relevant_count ?? 0)} more focused articles to unlock synthesis.`}
@@ -2221,7 +2401,7 @@ export default function App() {
           {/* Error message */}
           {askMode && synthesis === "__error__" && (
             <div style={styles.synthesisInsufficient}>
-              <p style={{ margin: 0, color: "#888", fontSize: 14 }}>
+              <p style={{ margin: 0, color: "#aca79b", fontSize: 14 }}>
                 {insufficientData?.message || "Something went wrong — try again"}
               </p>
             </div>
@@ -2410,7 +2590,7 @@ export default function App() {
           </button>
 
           {saveReceipt?.media && (
-            <div style={{ background: "#1a1a1a", border: "1px solid #333", borderRadius: 12, padding: "16px 18px" }}>
+            <div style={{ background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 18, padding: "16px 18px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                 <span>{saveReceipt.content_type === "video" ? "🎥" : "📷"}</span>
                 <span style={{ color: "#aaa", fontSize: 13, fontWeight: 600 }}>Saved to library</span>
@@ -2456,7 +2636,7 @@ export default function App() {
           )}
 
           {saveReceipt?.thin_content && (
-            <div style={{ background: "#1a1a1a", border: "1px solid #333", borderRadius: 12, padding: "16px 18px" }}>
+            <div style={{ background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 18, padding: "16px 18px" }}>
               <p style={{ color: "#aaa", fontSize: 14, margin: 0 }}>
                 Couldn't extract enough content from this link — it may require a login, or be mostly video or images.
               </p>
@@ -2524,7 +2704,7 @@ export default function App() {
                       style={styles.receiptTagButton}
                     >
                       <span style={styles.receiptTag}>{saveReceipt.tag}</span>
-                      <span style={{ fontSize: "10px", color: "#555" }}>▾</span>
+                      <span style={{ fontSize: "10px", color: "#7d786f" }}>▾</span>
                     </button>
                   )}
                   <div style={styles.receiptTitleRow}>
@@ -2625,75 +2805,7 @@ export default function App() {
             <div style={styles.todaySection}>
               <p style={styles.todayHeader}>Today</p>
               <div style={styles.todayList}>
-                {todaySaves.map(s => (
-                  editingTodayTitleId === s.id ? (
-                    <div key={s.id} style={{ ...styles.todayCard, gap: "6px" }}>
-                      <input
-                        style={{ ...styles.receiptTitleInput, flex: 1, minWidth: 0, fontSize: "13px" }}
-                        value={draftTodayTitle}
-                        onChange={e => setDraftTodayTitle(e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === "Enter") updateTodayTitle(s.id, draftTodayTitle)
-                          if (e.key === "Escape") setEditingTodayTitleId(null)
-                        }}
-                        autoFocus
-                      />
-                      <button onClick={() => updateTodayTitle(s.id, draftTodayTitle)} style={styles.confirmButton}>✓</button>
-                      <button onClick={() => setEditingTodayTitleId(null)} style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "16px", padding: "0 2px" }}>✕</button>
-                    </div>
-                  ) : (
-                    <a key={s.id} href={s.url} target="_blank" rel="noreferrer" style={styles.todayCard}>
-                      {deletingId === s.id ? (
-                        <span style={{ color: "#888", fontSize: 13, padding: "4px 0" }}>Removing…</span>
-                      ) : confirmDeleteId === s.id ? (
-                        <div style={styles.deleteConfirm} onClick={e => e.stopPropagation()}>
-                          <span style={styles.deleteConfirmText}>Remove from ReCall?</span>
-                          <button
-                            onClick={e => { e.preventDefault(); e.stopPropagation(); deleteSave(s.id) }}
-                            style={styles.deleteConfirmYes}
-                          >Delete</button>
-                          <button
-                            onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(null) }}
-                            style={styles.deleteConfirmNo}
-                          >Cancel</button>
-                        </div>
-                      ) : s.status === "pending" ? (
-                        <>
-                          <span className="shimmer" style={styles.todayTagShimmer} />
-                          <span className="shimmer" style={styles.todayTitleShimmer} />
-                          <span style={styles.todaySource}>{getSourceLabel(s.url)}</span>
-                          <button
-                            onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(s.id) }}
-                            style={styles.deleteButton}
-                            aria-label="Delete"
-                          ><TrashIcon /></button>
-                        </>
-                      ) : (
-                        <>
-                          {s.content_type === "video" ? (
-                            <span style={{ ...styles.todayTag, color: "#666" }}>🎥 Video</span>
-                          ) : s.content_type === "image" ? (
-                            <span style={{ ...styles.todayTag, color: "#666" }}>📷 Image</span>
-                          ) : (
-                            <span style={styles.todayTag}>{s.tag}</span>
-                          )}
-                          <span style={styles.todayTitle}>{s.title}</span>
-                          <span style={styles.todaySource}>{getSourceLabel(s.url)}</span>
-                          <button
-                            onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTodayTitleId(s.id); setDraftTodayTitle(s.title) }}
-                            style={styles.editButton}
-                            title="Edit name"
-                          >✎</button>
-                          <button
-                            onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(s.id) }}
-                            style={styles.deleteButton}
-                            aria-label="Delete"
-                          ><TrashIcon /></button>
-                        </>
-                      )}
-                    </a>
-                  )
-                ))}
+                {todaySaves.map(s => renderSavedArticleCard(s))}
               </div>
             </div>
           )}
@@ -2716,7 +2828,7 @@ export default function App() {
                   </div>
                   <div style={styles.shareHowToStep}>
                     <span style={styles.shareHowToNum}>②</span>
-                    <span style={styles.shareHowToText}>Tap <strong style={{ color: "#ccc" }}>Share</strong> → choose <strong style={{ color: "#ccc" }}>ReCall</strong> — it saves instantly</span>
+                    <span style={styles.shareHowToText}>Tap <strong style={{ color: "#f6f3ea" }}>Share</strong> → choose <strong style={{ color: "#f6f3ea" }}>ReCall</strong> — it saves instantly</span>
                   </div>
                 </div>
               )}
@@ -2766,7 +2878,7 @@ export default function App() {
                 style={styles.calNavBtn}
                 onClick={() => { setCalendarMonth(new Date(year, month - 1, 1)); setSelectedCalendarDay(null) }}
               >←</button>
-              <span style={{ fontWeight: 600, fontSize: 15, color: "#ccc" }}>{monthName}</span>
+              <span style={{ fontWeight: 600, fontSize: 15, color: "#f6f3ea" }}>{monthName}</span>
               <button
                 style={{ ...styles.calNavBtn, opacity: isCurrentMonth ? 0.25 : 1, pointerEvents: isCurrentMonth ? "none" : "auto" }}
                 onClick={() => { setCalendarMonth(new Date(year, month + 1, 1)); setSelectedCalendarDay(null) }}
@@ -2803,7 +2915,7 @@ export default function App() {
                           ...(hasSaves ? { cursor: "pointer" } : {}),
                         }}
                       >
-                        <span style={{ ...styles.calDayNum, ...(isToday ? { color: "#fff", fontWeight: 700 } : {}) }}>{day}</span>
+                        <span style={{ ...styles.calDayNum, ...(isToday ? { color: "#f6f3ea", fontWeight: 700 } : {}) }}>{day}</span>
                         {hasSaves && (
                           <div style={styles.calDots}>
                             {daySaves.slice(0, 3).map((s, idx) => (
@@ -2824,17 +2936,9 @@ export default function App() {
                       <span style={styles.calDayPanelTitle}>
                         {new Date(selectedCalendarDay + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
                       </span>
-                      <span style={{ fontSize: 12, color: "#555" }}>{selectedDaySaves.length} {selectedDaySaves.length === 1 ? "save" : "saves"}</span>
+                      <span style={{ fontSize: 12, color: "#7d786f" }}>{selectedDaySaves.length} {selectedDaySaves.length === 1 ? "save" : "saves"}</span>
                     </div>
-                    {selectedDaySaves.map(save => (
-                      <a key={save.id} href={save.url} target="_blank" rel="noopener noreferrer" style={styles.calSaveCard}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ ...styles.tagPill, background: "#222", color: "#888", fontSize: 11, padding: "2px 8px" }}>{save.tag}</span>
-                          <span style={styles.calSaveTitle}>{save.title}</span>
-                        </div>
-                        <span style={styles.calSaveSource}>{getSourceLabel(save.url)}</span>
-                      </a>
-                    ))}
+                    {selectedDaySaves.map(save => renderSavedArticleCard(save))}
                   </div>
                 )}
 
@@ -2857,15 +2961,7 @@ export default function App() {
                           <span style={styles.calDayPanelTitle}>
                             {new Date(dateKey + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
                           </span>
-                          {daySaves.map(save => (
-                            <a key={save.id} href={save.url} target="_blank" rel="noopener noreferrer" style={styles.calSaveCard}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                <span style={{ ...styles.tagPill, background: "#222", color: "#888", fontSize: 11, padding: "2px 8px" }}>{save.tag}</span>
-                                <span style={styles.calSaveTitle}>{save.title}</span>
-                              </div>
-                              <span style={styles.calSaveSource}>{getSourceLabel(save.url)}</span>
-                            </a>
-                          ))}
+                          {daySaves.map(save => renderSavedArticleCard(save))}
                         </div>
                       )
                     })}
@@ -2959,7 +3055,7 @@ export default function App() {
 
       <div style={styles.legalFooter}>
         <button onClick={() => { setLegalSection('privacy'); setView('legal') }} style={styles.legalFooterLink}>Privacy Policy</button>
-        <span style={{ color: "#333" }}>·</span>
+        <span style={{ color: "#3a3935" }}>·</span>
         <button onClick={() => { setLegalSection('terms'); setView('legal') }} style={styles.legalFooterLink}>Terms</button>
       </div>
     </div>
@@ -2967,113 +3063,130 @@ export default function App() {
 }
 
 const styles = {
-  container: { minHeight: "100vh", maxWidth: "100vw", overflowX: "hidden", background: "#0f0f0f", color: "#fff", fontFamily: "system-ui, sans-serif", padding: "0 16px", boxSizing: "border-box" },
+  container: { minHeight: "100vh", maxWidth: "100vw", overflowX: "hidden", background: "#171719", color: "#f6f3ea", fontFamily: "Inter, system-ui, sans-serif", padding: "0 16px", boxSizing: "border-box", display: "flex", flexDirection: "column", alignItems: "center" },
   hero: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", gap: "16px" },
   heroLanding: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", gap: "18px", padding: "48px 0 24px" },
   heroCopy: { display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", width: "100%" },
   heroEyebrow: { fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.12em", color: "#7f8ea3" },
-  logo: { fontSize: "48px", fontWeight: "700", margin: 0, letterSpacing: "-2px" },
-  logoSmall: { fontSize: "24px", fontWeight: "700", margin: 0, letterSpacing: "-1px" },
-  tagline: { color: "#888", fontSize: "16px", margin: 0 },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 0" },
-  tabs: { display: "flex", gap: "8px", marginBottom: "24px" },
-  tab: { background: "none", border: "1px solid #333", color: "#888", padding: "8px 20px", borderRadius: "20px", cursor: "pointer", fontSize: "14px" },
-  tabActive: { background: "#fff", border: "1px solid #fff", color: "#000", padding: "8px 20px", borderRadius: "20px", cursor: "pointer", fontSize: "14px", fontWeight: "600" },
-  section: { display: "flex", flexDirection: "column", gap: "12px", width: "100%", boxSizing: "border-box" },
-  input: { width: "100%", padding: "14px", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", color: "#fff", fontSize: "16px", boxSizing: "border-box" },
-  button: { width: "100%", padding: "14px", background: "#fff", color: "#000", border: "none", borderRadius: "12px", fontSize: "16px", fontWeight: "600", cursor: "pointer" },
-  signOut: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "8px", cursor: "pointer", fontSize: "13px" },
+  logo: { fontSize: "48px", fontWeight: "400", margin: 0, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em" },
+  logoSmall: { fontSize: "24px", fontWeight: "400", margin: 0, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em" },
+  tagline: { color: "#aca79b", fontSize: "16px", margin: 0 },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 0", width: "100%", maxWidth: "760px", boxSizing: "border-box" },
+  tabs: { display: "flex", gap: "8px", marginBottom: "24px", justifyContent: "center", width: "100%", maxWidth: "760px" },
+  tab: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "8px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px" },
+  tabActive: { background: "#d9ff5f", border: "1px solid #d9ff5f", color: "#1f2b08", padding: "8px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px", fontWeight: "700" },
+  section: { display: "flex", flexDirection: "column", gap: "12px", width: "100%", maxWidth: "760px", margin: "0 auto", boxSizing: "border-box" },
+  input: { width: "100%", padding: "14px", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "14px", color: "#f6f3ea", fontSize: "16px", boxSizing: "border-box", outline: "none" },
+  button: { width: "100%", padding: "14px", background: "#d9ff5f", color: "#1f2b08", border: "none", borderRadius: "14px", fontSize: "16px", fontWeight: "700", cursor: "pointer" },
+  signOut: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "6px 14px", borderRadius: "999px", cursor: "pointer", fontSize: "13px" },
   results: { display: "flex", flexDirection: "column", gap: "12px", marginTop: "8px" },
-  card: { display: "block", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", borderRadius: "24px", padding: "22px", textDecoration: "none", color: "#2f2a22", overflow: "hidden", boxShadow: "0 24px 70px -52px rgba(60,40,20,0.55)" },
-  cardTag: { fontSize: "11px", color: "#756b5d", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" },
+  card: { display: "block", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "22px", textDecoration: "none", color: "#f6f3ea", overflow: "hidden", boxShadow: "0 30px 90px -56px rgba(0,0,0,0.95)" },
+  cardTag: { fontSize: "11px", color: "#d9ff5f", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: "6px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
   success: { color: "#4ade80", fontSize: "14px", margin: 0 },
   error: { color: "#ef4444", fontSize: "14px", margin: 0 },
-  neutral: { color: "#888", fontSize: "14px", margin: 0 },
-  receiptCard: { background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", borderRadius: "24px", padding: "22px", display: "flex", flexDirection: "column", gap: "12px", transition: "box-shadow 0.8s ease", color: "#2f2a22", boxShadow: "0 24px 70px -52px rgba(60,40,20,0.55)" },
-  receiptTagButton: { background: "none", border: "none", color: "#888", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: "4px", alignSelf: "flex-start" },
-  receiptTag: { fontSize: "11px", color: "#756b5d", textTransform: "uppercase", letterSpacing: "1px" },
+  neutral: { color: "#aca79b", fontSize: "14px", margin: 0 },
+  receiptCard: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "22px", display: "flex", flexDirection: "column", gap: "12px", transition: "box-shadow 0.8s ease", color: "#f6f3ea", boxShadow: "0 30px 90px -56px rgba(0,0,0,0.95)" },
+  receiptTagButton: { background: "none", border: "none", color: "#aca79b", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: "4px", alignSelf: "flex-start" },
+  receiptTag: { fontSize: "11px", color: "#d9ff5f", textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
   tagPicker: { display: "flex", flexWrap: "wrap", gap: "6px" },
-  tagPill: { background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.16)", color: "#756b5d", borderRadius: "20px", padding: "4px 12px", fontSize: "12px", cursor: "pointer" },
-  tagPillActive: { background: "#332d24", border: "1px solid #332d24", color: "#fbf8ef", borderRadius: "20px", padding: "4px 12px", fontSize: "12px", cursor: "pointer", fontWeight: "600" },
+  tagPill: { background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "999px", padding: "4px 12px", fontSize: "12px", cursor: "pointer" },
+  tagPillActive: { background: "#d9ff5f", border: "1px solid #d9ff5f", color: "#1f2b08", borderRadius: "999px", padding: "4px 12px", fontSize: "12px", cursor: "pointer", fontWeight: "700" },
   receiptTitleRow: { display: "flex", alignItems: "center", gap: "8px" },
-  receiptTitle: { fontSize: "22px", fontWeight: "500", flex: 1, lineHeight: 1.25, color: "#2f2a22", fontFamily: "Georgia, 'Times New Roman', serif" },
-  receiptTitleInput: { flex: 1, background: "#222", border: "1px solid #555", borderRadius: "8px", color: "#fff", fontSize: "15px", fontWeight: "600", padding: "4px 8px", outline: "none" },
-  editButton: { background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: "15px", padding: "2px 4px", lineHeight: 1, flexShrink: 0 },
-  confirmButton: { background: "#4ade80", border: "none", color: "#000", cursor: "pointer", fontSize: "14px", fontWeight: "700", padding: "4px 10px", borderRadius: "8px", flexShrink: 0 },
+  receiptTitle: { fontSize: "22px", fontWeight: "400", flex: 1, lineHeight: 1.25, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em" },
+  receiptTitleInput: { flex: 1, background: "#171719", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "10px", color: "#f6f3ea", fontSize: "15px", fontWeight: "600", padding: "6px 10px", outline: "none" },
+  editButton: { background: "none", border: "none", color: "#7d786f", cursor: "pointer", fontSize: "15px", padding: "2px 4px", lineHeight: 1, flexShrink: 0 },
+  confirmButton: { background: "#d9ff5f", border: "none", color: "#1f2b08", cursor: "pointer", fontSize: "14px", fontWeight: "700", padding: "4px 10px", borderRadius: "8px", flexShrink: 0 },
   receiptFooter: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" },
-  receiptUrl: { fontSize: "12px", color: "#756b5d", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 },
+  receiptUrl: { fontSize: "12px", color: "#7d786f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 },
   receiptSaved: { fontSize: "13px", color: "#4ade80", fontWeight: "600", flexShrink: 0 },
   duplicateHeader: { fontSize: "13px", color: "#fbbf24", fontWeight: "600" },
   shimmerPill: { height: "14px", width: "48px", borderRadius: "4px", background: "#2a2a2a", display: "block" },
   shimmerTitle: { height: "18px", width: "70%", borderRadius: "4px", background: "#2a2a2a", display: "block" },
   returnButton: { display: "block", background: "none", border: "1px solid rgba(255,255,255,0.25)", color: "#fff", borderRadius: "12px", padding: "13px 14px", fontSize: "14px", fontWeight: "500", cursor: "pointer", width: "100%", textAlign: "center", boxSizing: "border-box", textDecoration: "none" },
-  todaySection: { marginTop: "4px", display: "flex", flexDirection: "column", gap: "8px" },
-  todayHeader: { fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "1px", margin: 0 },
-  todayList: { display: "flex", flexDirection: "column", gap: "6px", maxHeight: "320px", overflowY: "auto" },
-  todayCard: { display: "flex", alignItems: "center", gap: "10px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", borderRadius: "18px", padding: "13px 16px", textDecoration: "none", color: "#2f2a22", overflow: "hidden" },
-  todayTag: { fontSize: "10px", color: "#756b5d", textTransform: "uppercase", letterSpacing: "0.5px", flexShrink: 0 },
-  todayTitle: { fontSize: "14px", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#2f2a22", fontFamily: "Georgia, 'Times New Roman', serif" },
+  todaySection: { marginTop: "4px", display: "flex", flexDirection: "column", gap: "12px" },
+  todayHeader: { fontSize: "11px", color: "#7d786f", textTransform: "uppercase", letterSpacing: "0.12em", margin: 0, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
+  todayList: { display: "flex", flexDirection: "column", gap: "14px", maxHeight: "none", overflowY: "visible" },
+  todayCard: { display: "flex", alignItems: "center", gap: "10px", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "18px", padding: "13px 16px", textDecoration: "none", color: "#f6f3ea", overflow: "hidden" },
+  todayTag: { fontSize: "10px", color: "#d9ff5f", textTransform: "uppercase", letterSpacing: "0.08em", flexShrink: 0, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
+  todayTitle: { fontSize: "14px", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif" },
   todayTagShimmer: { height: "10px", width: "32px", borderRadius: "3px", background: "#2a2a2a", display: "block", flexShrink: 0 },
   todayTitleShimmer: { height: "13px", width: "60%", borderRadius: "3px", background: "#2a2a2a", display: "block", flex: 1 },
-  todaySource: { fontSize: "11px", color: "#756b5d", flexShrink: 0 },
-  deleteButton: { background: "none", border: "none", color: "#444", cursor: "pointer", padding: "0 0 0 8px", flexShrink: 0, display: "flex", alignItems: "center" },
+  todaySource: { fontSize: "11px", color: "#7d786f", flexShrink: 0 },
+  deleteButton: { background: "none", border: "none", color: "#7d786f", cursor: "pointer", padding: "0 0 0 8px", flexShrink: 0, display: "flex", alignItems: "center" },
   deleteConfirm: { display: "flex", alignItems: "center", gap: "8px", width: "100%" },
-  deleteConfirmText: { fontSize: "12px", color: "#888", flex: 1 },
+  deleteConfirmText: { fontSize: "12px", color: "#aca79b", flex: 1 },
   deleteConfirmYes: { background: "#ef4444", border: "none", color: "#fff", borderRadius: "6px", padding: "4px 10px", fontSize: "12px", fontWeight: "600", cursor: "pointer", flexShrink: 0 },
-  deleteConfirmNo: { background: "none", border: "1px solid #333", color: "#888", borderRadius: "6px", padding: "4px 10px", fontSize: "12px", cursor: "pointer", flexShrink: 0 },
+  deleteConfirmNo: { background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "6px", padding: "4px 10px", fontSize: "12px", cursor: "pointer", flexShrink: 0 },
+  savedArticleCard: { display: "flex", flexDirection: "column", gap: "20px", background: "#202024", border: "1px solid rgba(255,255,255,0.10)", borderRadius: "24px", padding: "22px", textDecoration: "none", color: "#f6f3ea", overflow: "hidden", boxShadow: "0 30px 90px -56px rgba(0,0,0,0.95)", boxSizing: "border-box" },
+  savedArticleTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "14px" },
+  savedArticleMeta: { display: "inline-flex", alignItems: "center", gap: "10px", minWidth: 0, color: "#7d786f", fontSize: "13px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", letterSpacing: "0.04em" },
+  savedArticleSourceTile: { width: "20px", height: "20px", borderRadius: "6px", background: "linear-gradient(135deg, #a06eff 0%, rgba(217,255,95,0.72) 100%)", flexShrink: 0, boxShadow: "0 0 20px -10px rgba(217,255,95,0.9)" },
+  savedArticleControls: { display: "inline-flex", alignItems: "center", gap: "8px", flexShrink: 0 },
+  savedArticleBody: { display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", textAlign: "center" },
+  savedArticleTitle: { color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif", fontSize: "24px", lineHeight: 1.15, letterSpacing: "-0.02em", fontWeight: 400, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
+  savedArticleCaption: { color: "#aca79b", fontSize: "15px", lineHeight: 1.55, maxWidth: "680px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
+  savedArticleTagRow: { display: "flex", justifyContent: "flex-start", flexWrap: "wrap", gap: "8px" },
+  savedArticleTag: { display: "inline-flex", alignItems: "center", gap: "6px", borderRadius: "999px", background: "#25252a", border: "1px solid rgba(255,255,255,0.10)", color: "#aca79b", padding: "7px 11px", fontSize: "12px" },
+  savedArticleStatus: { color: "#aca79b", fontSize: "13px", padding: "4px 0" },
+  savedArticleTitleInput: { width: "100%", background: "#171719", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "14px", color: "#f6f3ea", fontSize: "20px", fontFamily: "Georgia, 'Times New Roman', serif", padding: "12px 14px", outline: "none", boxSizing: "border-box" },
+  savedArticleEditActions: { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "8px" },
+  savedArticleGhostButton: { background: "none", border: "none", color: "#7d786f", cursor: "pointer", fontSize: "16px", padding: "0 2px" },
+  savedArticleTitleShimmer: { height: "32px", width: "70%", borderRadius: "6px", background: "#2a2a2f", display: "block", alignSelf: "center" },
+  savedArticleCaptionShimmer: { height: "18px", width: "82%", borderRadius: "5px", background: "#2a2a2f", display: "block", alignSelf: "center" },
+  savedArticleTagShimmer: { height: "30px", width: "110px", borderRadius: "999px", background: "#2a2a2f", display: "block" },
 
   // Unified search bar
   searchBarWrapper: { position: "relative", display: "flex", alignItems: "center", width: "100%", boxSizing: "border-box" },
-  searchBarInput: { width: "100%", padding: "14px 52px 14px 16px", background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", color: "#fff", fontSize: "16px", boxSizing: "border-box", outline: "none" },
-  searchBarButton: { position: "absolute", right: "10px", background: "none", border: "none", cursor: "pointer", fontSize: "18px", padding: "4px", lineHeight: 1, color: "#888", display: "flex", alignItems: "center" },
+  searchBarInput: { width: "100%", padding: "14px 52px 14px 16px", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "14px", color: "#f6f3ea", fontSize: "16px", boxSizing: "border-box", outline: "none" },
+  searchBarButton: { position: "absolute", right: "10px", background: "none", border: "none", cursor: "pointer", fontSize: "18px", padding: "4px", lineHeight: 1, color: "#aca79b", display: "flex", alignItems: "center" },
 
   // Recent searches
-  recentSearchesBox: { background: "#1a1a1a", border: "1px solid #333", borderRadius: "12px", padding: "12px 16px", display: "flex", flexDirection: "column", gap: "8px" },
-  recentSearchesLabel: { fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "1px" },
+  recentSearchesBox: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "14px", padding: "12px 16px", display: "flex", flexDirection: "column", gap: "8px" },
+  recentSearchesLabel: { fontSize: "11px", color: "#7d786f", textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
   recentChips: { display: "flex", flexDirection: "column", gap: "4px" },
   recentChipRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" },
-  recentChip: { background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: "14px", padding: "4px 0", textAlign: "left", flex: 1 },
-  recentChipDismiss: { background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "16px", padding: "0 4px", lineHeight: 1, flexShrink: 0 },
+  recentChip: { background: "none", border: "none", color: "#f6f3ea", cursor: "pointer", fontSize: "14px", padding: "4px 0", textAlign: "left", flex: 1 },
+  recentChipDismiss: { background: "none", border: "none", color: "#7d786f", cursor: "pointer", fontSize: "16px", padding: "0 4px", lineHeight: 1, flexShrink: 0 },
 
   // Shimmer loading bar
   searchShimmerBar: { display: "block", width: "100%", height: "4px", borderRadius: "4px", background: "linear-gradient(90deg, #2a2a2a 0%, #444 50%, #2a2a2a 100%)" },
 
   // Empty state
   emptyState: { display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", marginTop: "16px" },
-  emptyStateHint: { fontSize: "13px", color: "#555", margin: 0 },
+  emptyStateHint: { fontSize: "13px", color: "#7d786f", margin: 0 },
   exampleChips: { display: "flex", flexWrap: "wrap", gap: "8px", justifyContent: "center" },
-  exampleChip: { background: "none", border: "1px solid #333", color: "#888", padding: "8px 16px", borderRadius: "20px", cursor: "pointer", fontSize: "13px" },
+  exampleChip: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "8px 16px", borderRadius: "999px", cursor: "pointer", fontSize: "13px" },
 
   // Zero results
   zeroResults: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", marginTop: "24px" },
-  zeroResultsMain: { fontSize: "15px", color: "#aaa", fontWeight: "600", margin: 0, textAlign: "center" },
-  zeroResultsSub: { fontSize: "13px", color: "#555", margin: 0, textAlign: "center" },
+  zeroResultsMain: { fontSize: "15px", color: "#f6f3ea", fontWeight: "600", margin: 0, textAlign: "center" },
+  zeroResultsSub: { fontSize: "13px", color: "#7d786f", margin: 0, textAlign: "center" },
 
   cardMeta: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", gap: "8px", width: "100%" },
-  cardDate: { fontSize: "11px", color: "#756b5d", marginLeft: "auto" },
-  cardTitle: { fontSize: "24px", fontWeight: "400", marginBottom: "8px", color: "#2f2a22", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em", lineHeight: 1.15 },
-  cardSource: { fontSize: "12px", color: "#756b5d" },
+  cardDate: { fontSize: "11px", color: "#7d786f", marginLeft: "auto" },
+  cardTitle: { fontSize: "24px", fontWeight: "400", marginBottom: "8px", color: "#f6f3ea", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em", lineHeight: 1.15 },
+  cardSource: { fontSize: "12px", color: "#7d786f" },
 
   // Show more
-  showMoreButton: { background: "none", border: "1px solid #333", color: "#888", padding: "10px 20px", borderRadius: "20px", cursor: "pointer", fontSize: "14px", alignSelf: "center" },
+  showMoreButton: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "10px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px", alignSelf: "center" },
 
   // Empty state CTA (new-user nudge)
-  emptyStateCta: { background: "none", border: "none", color: "#888", fontSize: "14px", cursor: "pointer", padding: 0, textDecoration: "underline", textDecorationColor: "#444" },
+  emptyStateCta: { background: "none", border: "none", color: "#d9ff5f", fontSize: "14px", cursor: "pointer", padding: 0, textDecoration: "underline", textDecorationColor: "rgba(217,255,95,0.42)" },
 
   // Zero results CTA
-  zeroResultsCta: { background: "none", border: "1px solid #333", color: "#888", padding: "10px 20px", borderRadius: "20px", cursor: "pointer", fontSize: "14px", marginTop: "8px" },
+  zeroResultsCta: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "10px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px", marginTop: "8px" },
 
   // Filter dropdowns
   filterRow: { display: "flex", gap: "8px", flexWrap: "wrap" },
   filterDropdownWrapper: { position: "relative", flexShrink: 0 },
-  filterDropdown: { appearance: "none", WebkitAppearance: "none", background: "#1a1a1a", border: "1px solid #333", color: "#888", padding: "7px 32px 7px 12px", borderRadius: "20px", fontSize: "13px", cursor: "pointer", backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23555'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center" },
+  filterDropdown: { appearance: "none", WebkitAppearance: "none", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "7px 32px 7px 12px", borderRadius: "999px", fontSize: "13px", cursor: "pointer", backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%237d786f'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center" },
 
   // Card excerpt
-  cardExcerpt: { fontSize: "14px", color: "#756b5d", lineHeight: 1.6, marginBottom: "10px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" },
+  cardExcerpt: { fontSize: "14px", color: "#aca79b", lineHeight: 1.6, marginBottom: "10px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" },
 
   // Hero redesign
-  heroTagline: { fontSize: "28px", fontWeight: "700", textAlign: "center", lineHeight: 1.25, margin: 0, letterSpacing: "-0.5px", color: "#fff" },
-  heroBody: { fontSize: "15px", color: "#888", textAlign: "center", margin: 0, maxWidth: "280px" },
+  heroTagline: { fontSize: "28px", fontWeight: "400", textAlign: "center", lineHeight: 1.25, margin: 0, letterSpacing: "-0.02em", color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif" },
+  heroBody: { fontSize: "15px", color: "#aca79b", textAlign: "center", margin: 0, maxWidth: "280px" },
   heroBodyWide: { fontSize: "15px", color: "#9098a7", textAlign: "center", margin: 0, maxWidth: "620px", lineHeight: 1.6 },
   heroMicrocopy: { fontSize: "12px", color: "#586273", textAlign: "center" },
   landingShell: { width: "100%", maxWidth: "760px", display: "flex", flexDirection: "column", gap: "14px", padding: "18px", borderRadius: "24px", background: "linear-gradient(180deg, rgba(20,29,43,0.95) 0%, rgba(14,16,21,0.98) 100%)", border: "1px solid rgba(148,163,184,0.18)", boxShadow: "0 24px 80px rgba(0,0,0,0.35)" },
@@ -3089,9 +3202,9 @@ const styles = {
   landingProgressDotActive: { width: "22px", height: "22px", borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "11px", color: "#17210c", background: "#d9f99d", flexShrink: 0, fontWeight: "700" },
   landingProgressText: { fontSize: "13px", color: "#c5cfdd", lineHeight: 1.4 },
   mockCards: { display: "flex", flexDirection: "column", gap: "8px", width: "100%", maxWidth: "340px", opacity: 0.55, pointerEvents: "none" },
-  mockCard: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "10px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "4px", textAlign: "left" },
-  mockCardTag: { fontSize: "10px", color: "#555", textTransform: "uppercase", letterSpacing: "1px" },
-  mockCardTitle: { fontSize: "14px", fontWeight: "600", color: "#ccc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  mockCard: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "4px", textAlign: "left" },
+  mockCardTag: { fontSize: "10px", color: "#7d786f", textTransform: "uppercase", letterSpacing: "1px" },
+  mockCardTitle: { fontSize: "14px", fontWeight: "600", color: "#f6f3ea", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   previewPanel: { display: "flex", flexDirection: "column", gap: "14px", padding: "18px", borderRadius: "20px", background: "linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.02) 100%)", border: "1px solid rgba(170,184,204,0.16)" },
   previewHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" },
   previewLabel: { fontSize: "11px", color: "#7f8ea3", textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 6px" },
@@ -3104,217 +3217,221 @@ const styles = {
   previewTopic: { fontSize: "12px", color: "#d3d9e3", background: "#1b2330", border: "1px solid #2f3a4d", borderRadius: "999px", padding: "7px 10px" },
 
   // Lovable landing page port
-  lovablePage: { minHeight: "100vh", width: "100%", background: "#fbf8ef", color: "#332d24", fontFamily: "Georgia, 'Times New Roman', serif", overflowX: "hidden" },
-  lovableNav: { position: "sticky", top: 0, zIndex: 40, minHeight: "64px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", padding: "10px clamp(18px, 4vw, 56px)", background: "rgba(251,248,239,0.9)", borderBottom: "1px solid rgba(94,77,53,0.16)", backdropFilter: "blur(14px)", flexWrap: "wrap" },
-  lovableBrand: { display: "flex", alignItems: "center", gap: "9px", color: "#332d24", textDecoration: "none", flexShrink: 0 },
-  lovableBrandLogo: { width: "30px", height: "30px", borderRadius: "8px", display: "block" },
-  lovableBrandText: { fontSize: "22px", letterSpacing: 0 },
+  lovablePage: { minHeight: "100vh", width: "100%", background: "#171719", color: "#f6f3ea", fontFamily: "Inter, system-ui, sans-serif", overflowX: "hidden" },
+  lovableNav: { position: "sticky", top: 0, zIndex: 40, minHeight: "64px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", padding: "10px clamp(18px, 4vw, 56px)", background: "rgba(23,23,25,0.72)", borderBottom: "1px solid rgba(255,255,255,0.08)", backdropFilter: "blur(18px)", flexWrap: "wrap" },
+  lovableBrand: { display: "flex", alignItems: "center", gap: "10px", color: "#f6f3ea", textDecoration: "none", flexShrink: 0 },
+  lovableBrandLogo: { width: "30px", height: "30px", borderRadius: "9px", display: "block", boxShadow: "0 0 0 1px rgba(255,255,255,0.08)" },
+  lovableBrandText: { fontSize: "14px", letterSpacing: "0.2em", textTransform: "uppercase", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
   lovableNavLinks: { display: "flex", alignItems: "center", gap: "18px", flexWrap: "wrap" },
-  lovableNavLink: { color: "#756b5d", textDecoration: "none", fontSize: "14px", fontFamily: "system-ui, sans-serif" },
+  lovableNavLink: { color: "#aca79b", textDecoration: "none", fontSize: "14px", fontFamily: "system-ui, sans-serif" },
   lovableNavActions: { display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 },
-  lovablePlainButton: { background: "transparent", border: "none", color: "#756b5d", cursor: "pointer", fontSize: "14px", fontFamily: "system-ui, sans-serif" },
-  lovableDarkButton: { background: "#332d24", border: "none", color: "#fbf8ef", borderRadius: "999px", padding: "9px 16px", cursor: "pointer", fontSize: "14px", fontFamily: "system-ui, sans-serif" },
+  lovablePlainButton: { background: "transparent", border: "none", color: "#aca79b", cursor: "pointer", fontSize: "14px", fontFamily: "system-ui, sans-serif" },
+  lovableDarkButton: { background: "#d9ff5f", border: "none", color: "#1f2b08", borderRadius: "999px", padding: "9px 16px", cursor: "pointer", fontSize: "14px", fontWeight: 700, fontFamily: "system-ui, sans-serif" },
   lovableHero: { position: "relative", overflow: "hidden", minHeight: "calc(100vh - 64px)" },
-  lovableHeroBackdrop: { position: "absolute", inset: 0, pointerEvents: "none", background: "radial-gradient(circle at 12% 8%, rgba(248,206,190,0.72), transparent 32%), radial-gradient(circle at 92% 18%, rgba(224,210,245,0.68), transparent 30%), radial-gradient(circle at 52% 88%, rgba(205,233,217,0.62), transparent 34%)" },
+  lovableHeroBackdrop: { position: "absolute", inset: 0, pointerEvents: "none", background: "linear-gradient(to right, rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.04) 1px, transparent 1px), radial-gradient(circle at 50% -10%, rgba(217,255,95,0.12), transparent 34%), radial-gradient(circle at 94% 18%, rgba(160,110,255,0.15), transparent 28%), radial-gradient(circle at 6% 80%, rgba(255,198,92,0.1), transparent 30%)", backgroundSize: "56px 56px, 56px 56px, auto, auto, auto" },
   lovableHeroInner: { position: "relative", maxWidth: "1180px", margin: "0 auto", padding: "clamp(52px, 8vw, 96px) clamp(18px, 4vw, 56px) 110px", display: "flex", flexDirection: "column", alignItems: "center" },
   lovableHeroCopy: { maxWidth: "860px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center" },
-  lovablePill: { display: "inline-flex", alignItems: "center", gap: "8px", padding: "6px 12px", borderRadius: "999px", background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.18)", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif", marginBottom: "24px" },
-  lovablePillDot: { width: "6px", height: "6px", borderRadius: "50%", background: "#332d24", flexShrink: 0 },
-  lovableHeroTitle: { fontSize: "clamp(46px, 8vw, 88px)", lineHeight: 1.02, letterSpacing: 0, margin: 0, maxWidth: "920px", fontWeight: 400, color: "#2f2a22" },
-  lovableHeroText: { margin: "22px auto 0", color: "#756b5d", fontSize: "18px", lineHeight: 1.65, maxWidth: "620px", fontFamily: "system-ui, sans-serif", textAlign: "center" },
+  lovablePill: { display: "inline-flex", alignItems: "center", gap: "8px", padding: "7px 12px", borderRadius: "999px", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", fontSize: "12px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: "24px" },
+  lovablePillDot: { width: "6px", height: "6px", borderRadius: "50%", background: "#d9ff5f", flexShrink: 0, boxShadow: "0 0 18px rgba(217,255,95,0.8)" },
+  lovableHeroTitle: { fontSize: "clamp(48px, 8vw, 92px)", lineHeight: 1.02, letterSpacing: "-0.02em", margin: 0, maxWidth: "940px", fontWeight: 400, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif" },
+  lovableHeroText: { margin: "22px auto 0", color: "#aca79b", fontSize: "18px", lineHeight: 1.65, maxWidth: "620px", fontFamily: "system-ui, sans-serif", textAlign: "center" },
   lovableComposerWrap: { marginTop: "40px", maxWidth: "700px", width: "100%" },
-  lovableComposerPrompt: { margin: "0 0 10px", color: "#332d24", fontSize: "14px", fontWeight: 700, fontFamily: "system-ui, sans-serif", textAlign: "center" },
-  lovableComposer: { display: "flex", alignItems: "center", gap: "10px", padding: "8px", borderRadius: "22px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", boxShadow: "0 24px 70px -45px rgba(60,40,20,0.45)" },
-  lovableComposerInput: { flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", color: "#332d24", fontSize: "15px", padding: "13px 12px", fontFamily: "system-ui, sans-serif" },
-  lovableComposerButton: { border: "none", borderRadius: "14px", background: "#332d24", color: "#fbf8ef", padding: "12px 16px", fontSize: "14px", fontFamily: "system-ui, sans-serif", cursor: "pointer", flexShrink: 0 },
-  lovableComposerNote: { margin: "12px 0 0 8px", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
-  lovableError: { margin: "10px 0 0 8px", color: "#b45309", fontSize: "13px", fontFamily: "system-ui, sans-serif" },
+  lovableComposerPrompt: { margin: "0 0 12px", color: "#7d786f", fontSize: "12px", fontWeight: 700, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", textAlign: "center", textTransform: "uppercase", letterSpacing: "0.14em" },
+  lovableComposer: { display: "flex", alignItems: "center", gap: "10px", padding: "8px", borderRadius: "22px", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", boxShadow: "0 0 0 1px rgba(255,255,255,0.02), 0 28px 90px -30px rgba(0,0,0,0.9)" },
+  lovableComposerIcon: { display: "inline-flex", color: "#7d786f", paddingLeft: "10px", flexShrink: 0 },
+  lovableComposerInput: { flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", color: "#f6f3ea", fontSize: "15px", padding: "13px 4px", fontFamily: "system-ui, sans-serif" },
+  lovableComposerButton: { border: "none", borderRadius: "14px", background: "#d9ff5f", color: "#1f2b08", padding: "12px 16px", fontSize: "14px", fontWeight: 700, fontFamily: "system-ui, sans-serif", cursor: "pointer", flexShrink: 0, display: "inline-flex", alignItems: "center", gap: "8px" },
+  lovableComposerNote: { margin: "12px 0 0", color: "#7d786f", fontSize: "12px", fontFamily: "system-ui, sans-serif", textAlign: "center" },
+  lovableError: { margin: "10px 0 0", color: "#fbbf24", fontSize: "13px", fontFamily: "system-ui, sans-serif", textAlign: "center" },
   lovablePreviewStack: { position: "relative", maxWidth: "760px", margin: "62px auto 0", width: "100%" },
-  lovableFloatBadge: { position: "absolute", top: "-22px", left: "-12px", transform: "rotate(-2deg)", borderRadius: "12px", background: "rgba(248,206,190,0.9)", border: "1px solid rgba(94,77,53,0.16)", padding: "8px 12px", fontSize: "12px", color: "#332d24", fontFamily: "system-ui, sans-serif", boxShadow: "0 12px 32px -22px rgba(60,40,20,0.7)" },
-  lovablePreviewCard: { borderRadius: "30px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", padding: "28px", boxShadow: "0 30px 90px -55px rgba(60,40,20,0.55)" },
+  lovableFloatBadge: { position: "absolute", top: "-22px", left: "-12px", transform: "rotate(-2deg)", borderRadius: "10px", background: "#d9ff5f", border: "1px solid rgba(217,255,95,0.42)", padding: "8px 12px", fontSize: "12px", color: "#1f2b08", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", textTransform: "uppercase", letterSpacing: "0.08em", boxShadow: "0 14px 36px -20px rgba(217,255,95,0.9)" },
+  lovablePreviewCard: { borderRadius: "24px", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", padding: "28px", boxShadow: "0 30px 90px -48px rgba(0,0,0,0.95)" },
   lovableArticleList: { display: "flex", flexDirection: "column", gap: "14px" },
-  lovablePreviewCardCompact: { borderRadius: "24px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", padding: "22px", boxShadow: "0 22px 64px -54px rgba(60,40,20,0.55)" },
-  lovablePreviewMeta: { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
-  lovableSourceTile: { width: "20px", height: "20px", borderRadius: "6px", background: "#f7cfc0", flexShrink: 0 },
-  lovablePreviewTitle: { margin: "14px 0 0", fontSize: "30px", lineHeight: 1.15, letterSpacing: "-0.02em", fontWeight: 400, color: "#2f2a22" },
-  lovablePreviewBody: { margin: "14px 0 0", color: "#756b5d", fontSize: "15px", lineHeight: 1.65, fontFamily: "system-ui, sans-serif" },
+  lovablePreviewCardCompact: { borderRadius: "24px", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", padding: "22px", boxShadow: "0 22px 64px -54px rgba(0,0,0,0.95)", opacity: 0.95 },
+  lovablePreviewMeta: { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", color: "#7d786f", fontSize: "12px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
+  lovableSourceTile: { width: "20px", height: "20px", borderRadius: "6px", background: "linear-gradient(135deg, #a06eff 0%, rgba(217,255,95,0.65) 100%)", flexShrink: 0 },
+  lovablePreviewTitle: { margin: "14px 0 0", fontSize: "30px", lineHeight: 1.15, letterSpacing: "-0.02em", fontWeight: 400, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif" },
+  lovablePreviewBody: { margin: "14px 0 0", color: "#aca79b", fontSize: "15px", lineHeight: 1.65, fontFamily: "system-ui, sans-serif" },
   lovableTagRow: { display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "20px" },
-  lovableTag: { display: "inline-flex", alignItems: "center", borderRadius: "999px", background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.16)", color: "#756b5d", padding: "6px 10px", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
-  lovablePreviewFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", marginTop: "22px", paddingTop: "20px", borderTop: "1px solid rgba(94,77,53,0.16)", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
-  lovableTextButton: { background: "transparent", border: "none", color: "#332d24", cursor: "pointer", fontWeight: 700, fontSize: "12px" },
-  lovableSection: { maxWidth: "1180px", margin: "0 auto", padding: "96px clamp(18px, 4vw, 56px)" },
+  lovableTag: { display: "inline-flex", alignItems: "center", gap: "5px", borderRadius: "999px", background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "6px 10px", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovablePreviewFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", marginTop: "22px", paddingTop: "20px", borderTop: "1px solid rgba(255,255,255,0.08)", color: "#7d786f", fontSize: "12px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", textTransform: "uppercase", letterSpacing: "0.08em" },
+  lovableTextButton: { background: "transparent", border: "none", color: "#d9ff5f", cursor: "pointer", fontWeight: 700, fontSize: "12px" },
+  lovableSection: { maxWidth: "1180px", margin: "0 auto", padding: "110px clamp(18px, 4vw, 56px)", borderTop: "1px solid rgba(255,255,255,0.08)" },
   lovableSectionIntro: { maxWidth: "720px", margin: "0 auto 54px", textAlign: "center" },
-  lovableKicker: { margin: 0, color: "#756b5d", textTransform: "uppercase", letterSpacing: "0.14em", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
-  lovableSectionTitle: { margin: "12px 0 0", fontSize: "clamp(36px, 5vw, 56px)", lineHeight: 1.08, letterSpacing: "-0.035em", fontWeight: 400, color: "#2f2a22" },
-  lovableStepsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "22px" },
-  lovableStepCard: { borderRadius: "28px", background: "rgba(255,253,248,0.76)", border: "1px solid rgba(94,77,53,0.16)", padding: "24px", display: "flex", flexDirection: "column", gap: "16px" },
+  lovableKicker: { margin: 0, color: "#d9ff5f", textTransform: "uppercase", letterSpacing: "0.18em", fontSize: "12px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
+  lovableSectionTitle: { margin: "12px 0 0", fontSize: "clamp(38px, 5vw, 64px)", lineHeight: 1.05, letterSpacing: "-0.02em", fontWeight: 400, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif" },
+  lovableStepsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "1px", background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "28px", overflow: "hidden" },
+  lovableStepCard: { background: "#202024", padding: "32px", minHeight: "240px", display: "flex", flexDirection: "column", justifyContent: "space-between", gap: "28px" },
   lovableStepTop: { display: "flex", alignItems: "center", justifyContent: "space-between" },
-  lovableStepNumber: { color: "#756b5d", fontSize: "28px", lineHeight: 1 },
-  lovableStepIcon: { minWidth: "64px", height: "34px", borderRadius: "999px", background: "#f3ecdd", border: "1px solid rgba(94,77,53,0.16)", color: "#332d24", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 10px", fontSize: "10px", fontFamily: "system-ui, sans-serif", textTransform: "uppercase", boxSizing: "border-box" },
-  lovableCardTitle: { margin: 0, fontSize: "26px", lineHeight: 1.15, letterSpacing: "-0.025em", fontWeight: 400, color: "#2f2a22" },
-  lovableCardBody: { margin: "10px 0 0", color: "#756b5d", fontSize: "15px", lineHeight: 1.65, fontFamily: "system-ui, sans-serif" },
-  lovableMilestone: { position: "relative", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "48px", alignItems: "start", borderRadius: "34px", background: "linear-gradient(135deg, #f3ecdd 0%, #fbf8ef 56%, rgba(248,206,190,0.5) 100%)", border: "1px solid rgba(94,77,53,0.16)", padding: "clamp(26px, 5vw, 52px)", overflow: "hidden" },
+  lovableStepNumber: { color: "#7d786f", fontSize: "12px", lineHeight: 1, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", letterSpacing: "0.16em" },
+  lovableStepIcon: { minWidth: "64px", height: "34px", borderRadius: "999px", color: "#d9ff5f", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 10px", fontSize: "10px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", textTransform: "uppercase", letterSpacing: "0.12em", boxSizing: "border-box" },
+  lovableCardTitle: { margin: 0, fontSize: "30px", lineHeight: 1.15, letterSpacing: "-0.02em", fontWeight: 400, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif" },
+  lovableCardBody: { margin: "12px 0 0", color: "#aca79b", fontSize: "15px", lineHeight: 1.65, fontFamily: "system-ui, sans-serif" },
+  lovableMilestone: { position: "relative", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "48px", alignItems: "start", borderRadius: "34px", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", padding: "clamp(26px, 5vw, 52px)", overflow: "hidden" },
   lovableMilestoneList: { listStyle: "none", margin: "34px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: "16px" },
   lovableMilestoneItem: { display: "flex", alignItems: "center", gap: "14px" },
-  lovableMilestoneDot: { width: "40px", height: "40px", borderRadius: "50%", background: "#fbf8ef", color: "#756b5d", border: "1px solid rgba(94,77,53,0.16)", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: "13px", fontFamily: "system-ui, sans-serif" },
-  lovableMilestoneDotDone: { width: "40px", height: "40px", borderRadius: "50%", background: "#332d24", color: "#fbf8ef", border: "1px solid #332d24", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: "11px", fontFamily: "system-ui, sans-serif" },
-  lovableMilestoneDotActive: { width: "40px", height: "40px", borderRadius: "50%", background: "#fffdf8", color: "#332d24", border: "1px solid #332d24", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: "13px", fontFamily: "system-ui, sans-serif" },
-  lovableMilestoneLabel: { margin: 0, color: "#332d24", fontSize: "15px", fontFamily: "system-ui, sans-serif", fontWeight: 700 },
-  lovableMilestoneCaption: { margin: "2px 0 0", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
-  lovableClaudeMock: { borderRadius: "24px", background: "#fffdf8", border: "1px solid rgba(94,77,53,0.16)", overflow: "hidden", boxShadow: "0 30px 90px -60px rgba(60,40,20,0.7)" },
-  lovableClaudeTop: { display: "flex", alignItems: "center", gap: "8px", padding: "14px 16px", borderBottom: "1px solid rgba(94,77,53,0.14)", background: "rgba(243,236,221,0.68)" },
+  lovableMilestoneDot: { width: "40px", height: "40px", borderRadius: "50%", background: "#25252a", color: "#aca79b", border: "1px solid rgba(255,255,255,0.08)", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: "13px", fontFamily: "system-ui, sans-serif" },
+  lovableMilestoneDotDone: { width: "40px", height: "40px", borderRadius: "50%", background: "#d9ff5f", color: "#1f2b08", border: "1px solid #d9ff5f", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: "11px", fontFamily: "system-ui, sans-serif" },
+  lovableMilestoneDotActive: { width: "40px", height: "40px", borderRadius: "50%", background: "#171719", color: "#d9ff5f", border: "1px solid rgba(217,255,95,0.42)", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: "13px", fontFamily: "system-ui, sans-serif" },
+  lovableMilestoneLabel: { margin: 0, color: "#f6f3ea", fontSize: "15px", fontFamily: "system-ui, sans-serif", fontWeight: 700 },
+  lovableMilestoneCaption: { margin: "2px 0 0", color: "#aca79b", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableClaudeMock: { borderRadius: "24px", background: "#171719", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden", boxShadow: "0 30px 90px -60px rgba(0,0,0,0.95)" },
+  lovableClaudeTop: { display: "flex", alignItems: "center", gap: "8px", padding: "14px 16px", borderBottom: "1px solid rgba(255,255,255,0.08)", background: "#202024" },
   lovableWindowDotPeach: { width: "8px", height: "8px", borderRadius: "50%", background: "#f7cfc0" },
   lovableWindowDotMint: { width: "8px", height: "8px", borderRadius: "50%", background: "#cde9d9" },
   lovableWindowDotLavender: { width: "8px", height: "8px", borderRadius: "50%", background: "#e0d2f5" },
-  lovableClaudeLabel: { marginLeft: "8px", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableClaudeLabel: { marginLeft: "8px", color: "#7d786f", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
   lovableClaudeBody: { padding: "22px", display: "flex", flexDirection: "column", gap: "16px", fontFamily: "system-ui, sans-serif", fontSize: "14px" },
-  lovableUserBubble: { alignSelf: "flex-end", maxWidth: "82%", borderRadius: "18px 18px 4px 18px", background: "#332d24", color: "#fbf8ef", padding: "12px 14px", lineHeight: 1.45 },
-  lovableAssistantBubble: { maxWidth: "88%", borderRadius: "18px 18px 18px 4px", background: "#f3ecdd", color: "#332d24", padding: "14px", lineHeight: 1.55 },
-  lovableCitation: { display: "block", marginTop: "10px", color: "#756b5d", fontSize: "12px" },
-  lovableFinalCta: { position: "relative", maxWidth: "860px", margin: "0 auto", padding: "110px 24px", textAlign: "center" },
-  lovableFinalTitle: { margin: 0, fontSize: "clamp(50px, 8vw, 86px)", lineHeight: 1.02, letterSpacing: "-0.04em", fontWeight: 400, color: "#2f2a22" },
-  lovableFinalButton: { marginTop: "34px", border: "none", borderRadius: "18px", background: "#332d24", color: "#fbf8ef", padding: "14px 20px", fontSize: "15px", fontFamily: "system-ui, sans-serif", cursor: "pointer" },
-  lovableFooter: { borderTop: "1px solid rgba(94,77,53,0.16)", padding: "32px clamp(18px, 4vw, 56px)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", maxWidth: "1180px", margin: "0 auto", color: "#756b5d", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableUserBubble: { alignSelf: "flex-end", maxWidth: "82%", borderRadius: "18px 18px 4px 18px", background: "#d9ff5f", color: "#1f2b08", padding: "12px 14px", lineHeight: 1.45 },
+  lovableAssistantBubble: { maxWidth: "88%", borderRadius: "18px 18px 18px 4px", background: "#25252a", color: "#f6f3ea", padding: "14px", lineHeight: 1.55 },
+  lovableCitation: { display: "block", marginTop: "10px", color: "#7d786f", fontSize: "12px" },
+  lovableFinalCta: { position: "relative", overflow: "hidden", maxWidth: "none", margin: "0 auto", padding: "132px 24px", textAlign: "center", borderTop: "1px solid rgba(255,255,255,0.08)" },
+  lovableFinalBackdrop: { position: "absolute", inset: 0, pointerEvents: "none", background: "linear-gradient(to right, rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.04) 1px, transparent 1px), radial-gradient(circle at 50% 110%, rgba(217,255,95,0.16), transparent 36%)", backgroundSize: "56px 56px, 56px 56px, auto" },
+  lovableFinalTitle: { position: "relative", margin: 0, fontSize: "clamp(58px, 9vw, 104px)", lineHeight: 1.02, letterSpacing: "-0.02em", fontWeight: 400, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif" },
+  lovableFinalButton: { position: "relative", marginTop: "34px", border: "none", borderRadius: "999px", background: "#d9ff5f", color: "#1f2b08", padding: "14px 22px", fontSize: "15px", fontWeight: 700, fontFamily: "system-ui, sans-serif", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "8px", boxShadow: "0 0 44px -16px rgba(217,255,95,0.85)" },
+  lovableFooter: { borderTop: "1px solid rgba(255,255,255,0.08)", padding: "32px clamp(18px, 4vw, 56px)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", maxWidth: "1180px", margin: "0 auto", color: "#7d786f", fontSize: "12px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", textTransform: "uppercase", letterSpacing: "0.12em" },
+  lovableFooterBrand: { display: "inline-flex", alignItems: "center", gap: "10px" },
+  lovableFooterLogo: { width: "22px", height: "22px", borderRadius: "7px" },
   lovableFooterLinks: { display: "flex", gap: "18px" },
-  lovableFooterLink: { background: "transparent", border: "none", color: "#756b5d", cursor: "pointer", fontSize: "12px", fontFamily: "system-ui, sans-serif" },
+  lovableFooterLink: { background: "transparent", border: "none", color: "#7d786f", cursor: "pointer", fontSize: "12px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", textTransform: "uppercase", letterSpacing: "0.12em" },
 
   // Install overlay
   overlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.88)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: "24px", boxSizing: "border-box" },
-  overlayCard: { background: "#1a1a1a", border: "1px solid #333", borderRadius: "20px", padding: "28px 24px", display: "flex", flexDirection: "column", gap: "14px", width: "100%", maxWidth: "360px", textAlign: "center" },
-  overlayTitle: { fontSize: "22px", fontWeight: "700", margin: 0, color: "#fff" },
-  overlayBody: { fontSize: "14px", color: "#888", margin: 0, lineHeight: 1.5 },
-  overlaySteps: { display: "flex", flexDirection: "column", gap: "6px", textAlign: "left", background: "#111", borderRadius: "12px", padding: "14px 16px" },
-  overlayStep: { fontSize: "14px", color: "#ccc", margin: 0, lineHeight: 1.6 },
-  overlayNote: { fontSize: "12px", color: "#555", margin: "4px 0 0", lineHeight: 1.5 },
-  overlaySkip: { background: "none", border: "none", color: "#555", fontSize: "13px", cursor: "pointer", padding: "4px" },
-  overlayDivider: { height: "1px", background: "#2a2a2a", margin: "4px 0 10px" },
-  overlayVideoLink: { color: "#888", fontSize: "13px", textDecoration: "none", display: "block", textAlign: "center", marginTop: "8px" },
+  overlayCard: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "28px 24px", display: "flex", flexDirection: "column", gap: "14px", width: "100%", maxWidth: "360px", textAlign: "center", color: "#f6f3ea" },
+  overlayTitle: { fontSize: "24px", fontWeight: "400", margin: 0, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em" },
+  overlayBody: { fontSize: "14px", color: "#aca79b", margin: 0, lineHeight: 1.5 },
+  overlaySteps: { display: "flex", flexDirection: "column", gap: "6px", textAlign: "left", background: "#171719", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "14px", padding: "14px 16px" },
+  overlayStep: { fontSize: "14px", color: "#aca79b", margin: 0, lineHeight: 1.6 },
+  overlayNote: { fontSize: "12px", color: "#7d786f", margin: "4px 0 0", lineHeight: 1.5 },
+  overlaySkip: { background: "none", border: "none", color: "#7d786f", fontSize: "13px", cursor: "pointer", padding: "4px" },
+  overlayDivider: { height: "1px", background: "rgba(255,255,255,0.08)", margin: "4px 0 10px" },
+  overlayVideoLink: { color: "#d9ff5f", fontSize: "13px", textDecoration: "none", display: "block", textAlign: "center", marginTop: "8px" },
 
   // Progress pill (Save tab, multi-stage milestone track)
   progressPill: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", padding: "10px 14px", background: "rgba(251,191,36,0.07)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: "12px" },
   progressPillPurple: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", padding: "10px 14px", background: "rgba(167,139,250,0.07)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "12px" },
   progressPillGreen: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", padding: "10px 14px", background: "rgba(52,211,153,0.07)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: "12px" },
-  progressBar: { width: "100%", height: "3px", background: "#222", borderRadius: "2px", overflow: "hidden" },
+  progressBar: { width: "100%", height: "3px", background: "#171719", borderRadius: "2px", overflow: "hidden" },
   progressFill: { height: "100%", background: "#a78bfa", borderRadius: "2px", transition: "width 0.4s ease" },
   progressDotsRow: { display: "flex", alignItems: "center", gap: "6px" },
   dotFilled: { display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", background: "#fbbf24", flexShrink: 0 },
   dotEmpty: { display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", background: "#2a2a2a", border: "1px solid #444", flexShrink: 0 },
   dotFilledSmall: { display: "inline-block", width: "7px", height: "7px", borderRadius: "50%", background: "#fbbf24", flexShrink: 0 },
   dotEmptySmall: { display: "inline-block", width: "7px", height: "7px", borderRadius: "50%", background: "#2a2a2a", border: "1px solid #444", flexShrink: 0 },
-  progressLabel: { fontSize: "12px", color: "#888", marginLeft: "2px" },
+  progressLabel: { fontSize: "12px", color: "#aca79b", marginLeft: "2px" },
 
   // First-save bottom sheet
-  bottomSheet: { position: "fixed", bottom: 0, left: 0, right: 0, background: "#1a1a1a", border: "1px solid #333", borderTopLeftRadius: "20px", borderTopRightRadius: "20px", padding: "16px 24px 36px", display: "flex", flexDirection: "column", gap: "12px", zIndex: 50, animation: "slideUp 0.3s ease-out" },
-  bottomSheetHandle: { width: "36px", height: "4px", background: "#444", borderRadius: "2px", alignSelf: "center", marginBottom: "4px" },
-  bottomSheetTitle: { fontSize: "20px", fontWeight: "700", margin: 0, color: "#fff" },
-  bottomSheetBody: { fontSize: "14px", color: "#888", margin: 0, lineHeight: 1.5 },
-  shareHowTo: { background: "#111", borderRadius: "10px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "8px" },
-  shareHowToLabel: { fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "1px", margin: 0 },
+  bottomSheet: { position: "fixed", bottom: 0, left: 0, right: 0, background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderTopLeftRadius: "24px", borderTopRightRadius: "24px", padding: "16px 24px 36px", display: "flex", flexDirection: "column", gap: "12px", zIndex: 50, animation: "slideUp 0.3s ease-out" },
+  bottomSheetHandle: { width: "36px", height: "4px", background: "#7d786f", borderRadius: "2px", alignSelf: "center", marginBottom: "4px" },
+  bottomSheetTitle: { fontSize: "22px", fontWeight: "400", margin: 0, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em" },
+  bottomSheetBody: { fontSize: "14px", color: "#aca79b", margin: 0, lineHeight: 1.5 },
+  shareHowTo: { background: "#171719", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "14px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "8px" },
+  shareHowToLabel: { fontSize: "11px", color: "#7d786f", textTransform: "uppercase", letterSpacing: "0.12em", margin: 0, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
   shareHowToStep: { display: "flex", alignItems: "flex-start", gap: "10px" },
-  shareHowToNum: { fontSize: "16px", color: "#fbbf24", flexShrink: 0, lineHeight: 1.4 },
-  shareHowToText: { fontSize: "13px", color: "#888", lineHeight: 1.5 },
+  shareHowToNum: { fontSize: "16px", color: "#d9ff5f", flexShrink: 0, lineHeight: 1.4 },
+  shareHowToText: { fontSize: "13px", color: "#aca79b", lineHeight: 1.5 },
 
   // Search nudge toast
-  nudgeToast: { position: "fixed", top: "16px", left: "16px", right: "16px", background: "#1e1e1e", border: "1px solid #333", borderRadius: "14px", padding: "12px 14px", display: "flex", alignItems: "center", gap: "10px", zIndex: 50, animation: "slideDown 0.3s ease-out", boxShadow: "0 4px 24px rgba(0,0,0,0.6)" },
-  nudgeText: { fontSize: "14px", color: "#ccc", flex: 1 },
-  nudgeCta: { background: "#fff", border: "none", color: "#000", borderRadius: "8px", padding: "6px 12px", fontSize: "13px", fontWeight: "600", cursor: "pointer", flexShrink: 0 },
-  nudgeDismiss: { background: "none", border: "none", color: "#555", fontSize: "18px", cursor: "pointer", padding: "0 4px", lineHeight: 1, flexShrink: 0 },
+  nudgeToast: { position: "fixed", top: "16px", left: "16px", right: "16px", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "16px", padding: "12px 14px", display: "flex", alignItems: "center", gap: "10px", zIndex: 50, animation: "slideDown 0.3s ease-out", boxShadow: "0 24px 70px -42px rgba(0,0,0,0.9)" },
+  nudgeText: { fontSize: "14px", color: "#f6f3ea", flex: 1 },
+  nudgeCta: { background: "#d9ff5f", border: "none", color: "#1f2b08", borderRadius: "999px", padding: "6px 12px", fontSize: "13px", fontWeight: "700", cursor: "pointer", flexShrink: 0 },
+  nudgeDismiss: { background: "none", border: "none", color: "#7d786f", fontSize: "18px", cursor: "pointer", padding: "0 4px", lineHeight: 1, flexShrink: 0 },
 
   // Milestone receipt row
-  milestoneRow: { display: "flex", flexDirection: "column", gap: "6px", paddingTop: "10px", borderTop: "1px solid #2a2a2a" },
-  milestoneText: { fontSize: "12px", color: "#fbbf24", margin: 0 },
-  milestoneHeadline: { fontSize: "14px", fontWeight: "700", color: "#fff", margin: 0 },
-  milestoneSub: { fontSize: "12px", color: "#888", margin: 0 },
+  milestoneRow: { display: "flex", flexDirection: "column", gap: "6px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.08)" },
+  milestoneText: { fontSize: "12px", color: "#d9ff5f", margin: 0 },
+  milestoneHeadline: { fontSize: "14px", fontWeight: "700", color: "#f6f3ea", margin: 0 },
+  milestoneSub: { fontSize: "12px", color: "#aca79b", margin: 0 },
 
   // Settings panel
-  settingsPanel: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "14px 16px", display: "flex", flexDirection: "column", gap: "10px", marginBottom: "4px" },
+  settingsPanel: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "18px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px", marginBottom: "4px", color: "#f6f3ea" },
   settingsLinks: { display: "flex", gap: "8px", flexWrap: "wrap" },
-  settingsLink: { background: "none", border: "1px solid #333", color: "#888", padding: "6px 14px", borderRadius: "20px", cursor: "pointer", fontSize: "13px" },
-  settingsDivider: { height: "1px", background: "#2a2a2a" },
-  settingsSectionHeading: { fontSize: "11px", fontWeight: "600", color: "#555", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 },
-  settingsAccordionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: "11px", fontWeight: "600", color: "#555", textTransform: "uppercase", letterSpacing: "0.08em" },
-  settingsAccordionChevron: { fontSize: "13px", color: "#555", textTransform: "none", letterSpacing: 0 },
+  settingsLink: { background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "6px 14px", borderRadius: "999px", cursor: "pointer", fontSize: "13px" },
+  settingsDivider: { height: "1px", background: "rgba(255,255,255,0.08)" },
+  settingsSectionHeading: { fontSize: "11px", fontWeight: "700", color: "#d9ff5f", textTransform: "uppercase", letterSpacing: "0.12em", margin: 0, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
+  settingsAccordionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: "11px", fontWeight: "700", color: "#d9ff5f", textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
+  settingsAccordionChevron: { fontSize: "13px", color: "#7d786f", textTransform: "none", letterSpacing: 0 },
   settingsAccordionBody: { display: "flex", flexDirection: "column", gap: "10px", marginTop: "10px" },
-  shortcutAddButton: { display: "inline-block", textAlign: "center", background: "#fff", border: "none", color: "#000", borderRadius: "10px", padding: "10px 16px", fontSize: "14px", fontWeight: "600", cursor: "pointer", textDecoration: "none" },
+  shortcutAddButton: { display: "inline-block", textAlign: "center", background: "#d9ff5f", border: "none", color: "#1f2b08", borderRadius: "999px", padding: "10px 16px", fontSize: "14px", fontWeight: "700", cursor: "pointer", textDecoration: "none" },
   tokenSection: { display: "flex", flexDirection: "column", gap: "8px" },
   tokenRow: { display: "flex", gap: "6px", alignItems: "center" },
-  tokenInput: { flex: 1, background: "#111", border: "1px solid #333", borderRadius: "8px", color: "#ccc", fontSize: "13px", padding: "7px 10px", fontFamily: "ui-monospace, Consolas, monospace", minWidth: 0 },
-  tokenCopyButton: { background: "#fff", border: "none", color: "#000", borderRadius: "8px", padding: "7px 14px", fontSize: "13px", fontWeight: "600", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
-  tokenWarning: { fontSize: "12px", color: "#666", lineHeight: 1.5, margin: 0 },
-  tokenHideButton: { background: "none", border: "none", color: "#555", fontSize: "12px", cursor: "pointer", padding: 0, alignSelf: "flex-start" },
+  tokenInput: { flex: 1, background: "#171719", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", color: "#f6f3ea", fontSize: "13px", padding: "7px 10px", fontFamily: "ui-monospace, Consolas, monospace", minWidth: 0 },
+  tokenCopyButton: { background: "#d9ff5f", border: "none", color: "#1f2b08", borderRadius: "10px", padding: "7px 14px", fontSize: "13px", fontWeight: "700", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
+  tokenWarning: { fontSize: "12px", color: "#7d786f", lineHeight: 1.5, margin: 0 },
+  tokenHideButton: { background: "none", border: "none", color: "#7d786f", fontSize: "12px", cursor: "pointer", padding: 0, alignSelf: "flex-start" },
   deleteAccountButton: { background: "none", border: "1px solid #ef4444", color: "#ef4444", padding: "7px 16px", borderRadius: "8px", cursor: "pointer", fontSize: "13px", alignSelf: "flex-start" },
   deleteAccountConfirm: { display: "flex", flexDirection: "column", gap: "10px" },
-  deleteAccountWarning: { fontSize: "13px", color: "#aaa", margin: 0, lineHeight: 1.4 },
+  deleteAccountWarning: { fontSize: "13px", color: "#aca79b", margin: 0, lineHeight: 1.4 },
   deleteAccountYes: { background: "#ef4444", border: "none", color: "#fff", borderRadius: "8px", padding: "7px 16px", fontSize: "13px", fontWeight: "600", cursor: "pointer", flexShrink: 0 },
-  deleteAccountNo: { background: "none", border: "1px solid #333", color: "#888", borderRadius: "8px", padding: "7px 14px", fontSize: "13px", cursor: "pointer", flexShrink: 0 },
+  deleteAccountNo: { background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "8px", padding: "7px 14px", fontSize: "13px", cursor: "pointer", flexShrink: 0 },
 
   // Legal view
-  legalContent: { display: "flex", flexDirection: "column", gap: "0", paddingBottom: "40px" },
-  legalTitle: { fontSize: "24px", fontWeight: "700", color: "#fff", margin: "0 0 4px", letterSpacing: "-0.5px" },
-  legalMeta: { fontSize: "12px", color: "#555", margin: "0 0 20px" },
-  legalH3: { fontSize: "14px", fontWeight: "600", color: "#ccc", margin: "20px 0 6px" },
-  legalP: { fontSize: "14px", color: "#888", lineHeight: 1.6, margin: 0 },
-  backButton: { background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "14px", padding: "4px 0" },
+  legalContent: { display: "flex", flexDirection: "column", gap: "0", paddingBottom: "40px", width: "100%", maxWidth: "760px", margin: "0 auto", textAlign: "left" },
+  legalTitle: { fontSize: "clamp(36px, 6vw, 56px)", fontWeight: "400", color: "#f6f3ea", margin: "12px 0 8px", letterSpacing: "-0.02em", fontFamily: "Georgia, 'Times New Roman', serif", textAlign: "center" },
+  legalMeta: { fontSize: "12px", color: "#7d786f", margin: "0 0 24px", textAlign: "left" },
+  legalH3: { fontSize: "22px", fontWeight: "400", color: "#f6f3ea", margin: "24px 0 8px", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em", textAlign: "center" },
+  legalP: { fontSize: "14px", color: "#aca79b", lineHeight: 1.7, margin: 0, textAlign: "left" },
+  backButton: { background: "none", border: "none", color: "#aca79b", cursor: "pointer", fontSize: "14px", padding: "4px 0" },
 
   // Legal footer
-  legalFooter: { display: "flex", justifyContent: "center", alignItems: "center", gap: "8px", padding: "24px 0 16px", marginTop: "8px" },
-  legalFooterLink: { background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "12px", padding: 0 },
+  legalFooter: { display: "flex", justifyContent: "center", alignItems: "center", gap: "8px", padding: "24px 0 16px", marginTop: "8px", width: "100%", maxWidth: "760px" },
+  legalFooterLink: { background: "none", border: "none", color: "#7d786f", cursor: "pointer", fontSize: "12px", padding: 0 },
 
   // Install banner + bottom-of-page fallback button
-  installBanner: { display: "flex", flexDirection: "column", gap: "8px", background: "rgba(167,139,250,0.07)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "12px", padding: "10px 14px", marginBottom: "16px" },
+  installBanner: { display: "flex", flexDirection: "column", gap: "8px", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "16px", padding: "10px 14px", marginBottom: "16px", width: "100%", maxWidth: "760px", boxSizing: "border-box" },
   installBannerRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" },
-  installBannerText: { fontSize: "13px", color: "#ccc", flex: 1, lineHeight: 1.4 },
+  installBannerText: { fontSize: "13px", color: "#aca79b", flex: 1, lineHeight: 1.4 },
   installBannerActions: { display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 },
-  installBannerButton: { background: "#fff", border: "none", color: "#000", borderRadius: "8px", padding: "7px 14px", fontSize: "13px", fontWeight: "600", cursor: "pointer", whiteSpace: "nowrap" },
-  installBannerDismiss: { background: "none", border: "none", color: "#555", fontSize: "16px", cursor: "pointer", padding: "0 2px", lineHeight: 1, flexShrink: 0 },
-  installFooterWrap: { display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", padding: "8px 0 0" },
-  installFooterButton: { background: "none", border: "1px solid #333", color: "#888", padding: "8px 18px", borderRadius: "20px", cursor: "pointer", fontSize: "13px" },
+  installBannerButton: { background: "#d9ff5f", border: "none", color: "#1f2b08", borderRadius: "999px", padding: "7px 14px", fontSize: "13px", fontWeight: "700", cursor: "pointer", whiteSpace: "nowrap" },
+  installBannerDismiss: { background: "none", border: "none", color: "#7d786f", fontSize: "16px", cursor: "pointer", padding: "0 2px", lineHeight: 1, flexShrink: 0 },
+  installFooterWrap: { display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", padding: "8px 0 0", width: "100%", maxWidth: "760px" },
+  installFooterButton: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "8px 18px", borderRadius: "999px", cursor: "pointer", fontSize: "13px" },
 
   // Ask / Search mode toggle
-  modeToggle: { display: "flex", gap: "4px", background: "#111", borderRadius: "20px", padding: "3px", alignSelf: "flex-start" },
-  modeToggleActive: { background: "#fff", color: "#000", border: "none", borderRadius: "16px", padding: "5px 14px", fontSize: "13px", fontWeight: "600", cursor: "pointer" },
-  modeToggleInactive: { background: "none", color: "#555", border: "none", borderRadius: "16px", padding: "5px 14px", fontSize: "13px", cursor: "pointer" },
+  modeToggle: { display: "flex", gap: "4px", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "999px", padding: "3px", alignSelf: "flex-start" },
+  modeToggleActive: { background: "#d9ff5f", color: "#1f2b08", border: "none", borderRadius: "999px", padding: "5px 14px", fontSize: "13px", fontWeight: "700", cursor: "pointer" },
+  modeToggleInactive: { background: "none", color: "#7d786f", border: "none", borderRadius: "999px", padding: "5px 14px", fontSize: "13px", cursor: "pointer" },
 
   // Synthesis card
-  synthesisCard: { background: "#141420", border: "1px solid #2a2a40", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "12px" },
+  synthesisCard: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "18px", padding: "16px", display: "flex", flexDirection: "column", gap: "12px" },
   synthesisHeader: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-  synthesisLabel: { fontSize: "11px", color: "#7c6fcd", textTransform: "uppercase", letterSpacing: "1px", fontWeight: "600" },
-  synthesisText: { fontSize: "14px", color: "#ccc", lineHeight: 1.65, margin: 0, whiteSpace: "pre-wrap" },
-  synthesisSources: { display: "flex", flexDirection: "column", gap: "6px", paddingTop: "8px", borderTop: "1px solid #1e1e30" },
-  synthesisSourcesLabel: { fontSize: "10px", color: "#555", textTransform: "uppercase", letterSpacing: "1px" },
+  synthesisLabel: { fontSize: "11px", color: "#d9ff5f", textTransform: "uppercase", letterSpacing: "0.12em", fontWeight: "700", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
+  synthesisText: { fontSize: "14px", color: "#aca79b", lineHeight: 1.65, margin: 0, whiteSpace: "pre-wrap" },
+  synthesisSources: { display: "flex", flexDirection: "column", gap: "6px", paddingTop: "8px", borderTop: "1px solid rgba(255,255,255,0.08)" },
+  synthesisSourcesLabel: { fontSize: "10px", color: "#7d786f", textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
   synthesisSourceChips: { display: "flex", flexWrap: "wrap", gap: "6px" },
-  synthesisSourceChip: { background: "#1a1a2a", border: "1px solid #2a2a40", color: "#888", borderRadius: "6px", padding: "3px 8px", fontSize: "12px", textDecoration: "none", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "180px" },
-  synthesisInsufficient: { background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px" },
+  synthesisSourceChip: { background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "999px", padding: "3px 8px", fontSize: "12px", textDecoration: "none", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "180px" },
+  synthesisInsufficient: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "18px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px" },
 
   // Related saves on receipt
-  relatedSavesSection: { display: "flex", flexDirection: "column", gap: "6px", paddingTop: "10px", borderTop: "1px solid #2a2a2a" },
-  relatedSavesLabel: { fontSize: "11px", color: "#555" },
-  relatedSaveChip: { background: "none", border: "1px solid #2a2a2a", color: "#888", borderRadius: "8px", padding: "6px 10px", fontSize: "12px", cursor: "pointer", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  relatedSavesSection: { display: "flex", flexDirection: "column", gap: "6px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.08)" },
+  relatedSavesLabel: { fontSize: "11px", color: "#7d786f" },
+  relatedSaveChip: { background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "10px", padding: "6px 10px", fontSize: "12px", cursor: "pointer", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
 
   // Calendar (Library tab)
-  calNavBtn: { background: "none", border: "none", color: "#fff", fontSize: 20, cursor: "pointer", padding: "4px 12px", borderRadius: 6 },
+  calNavBtn: { background: "none", border: "none", color: "#d9ff5f", fontSize: 20, cursor: "pointer", padding: "4px 12px", borderRadius: 6 },
   calGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3, marginBottom: 12 },
-  calDayHeader: { textAlign: "center", fontSize: 11, color: "#555", fontWeight: 600, padding: "4px 0 8px" },
+  calDayHeader: { textAlign: "center", fontSize: 11, color: "#7d786f", fontWeight: 600, padding: "4px 0 8px" },
   calCell: { borderRadius: 8, padding: "6px 4px 8px", minHeight: 54, display: "flex", flexDirection: "column", alignItems: "center", gap: 5, transition: "background 0.12s" },
-  calCellToday: { boxShadow: "inset 0 0 0 1.5px #fff" },
-  calCellSelected: { background: "#2a2a2a" },
-  calDayNum: { fontSize: 13, color: "#666" },
+  calCellToday: { boxShadow: "inset 0 0 0 1.5px #d9ff5f" },
+  calCellSelected: { background: "#202024" },
+  calDayNum: { fontSize: 13, color: "#7d786f" },
   calDots: { display: "flex", gap: 2, flexWrap: "wrap", justifyContent: "center", alignItems: "center" },
   calDot: { width: 5, height: 5, borderRadius: "50%", flexShrink: 0 },
-  calDotMore: { fontSize: 9, color: "#555", lineHeight: 1 },
-  calDayPanel: { background: "#1a1a1a", borderRadius: 12, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 0, marginTop: 4, border: "1px solid #222" },
+  calDotMore: { fontSize: 9, color: "#7d786f", lineHeight: 1 },
+  calDayPanel: { background: "#202024", borderRadius: 18, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 0, marginTop: 4, border: "1px solid rgba(255,255,255,0.08)" },
   calDayPanelHeader: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 },
-  calDayPanelTitle: { fontSize: 14, fontWeight: 600, color: "#fff", textAlign: "left" },
-  calSaveCard: { display: "flex", flexDirection: "column", gap: 6, padding: "14px 16px", border: "1px solid rgba(94,77,53,0.16)", borderRadius: 18, background: "#fffdf8", textDecoration: "none", color: "#2f2a22", textAlign: "left", marginTop: 8 },
-  calSaveTitle: { fontSize: 15, fontWeight: 400, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", fontFamily: "Georgia, 'Times New Roman', serif", color: "#2f2a22" },
-  calSaveSource: { fontSize: 11, color: "#756b5d" },
-  libraryFeed: { display: "flex", flexDirection: "column", gap: 20, marginTop: 24, paddingTop: 20, borderTop: "1px solid #222" },
-  libraryFeedLabel: { fontSize: 11, color: "#555", textTransform: "uppercase", letterSpacing: "1px", textAlign: "left" },
+  calDayPanelTitle: { fontSize: 14, fontWeight: 600, color: "#f6f3ea", textAlign: "left" },
+  calSaveCard: { display: "flex", flexDirection: "column", gap: 6, padding: "14px 16px", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 18, background: "#202024", textDecoration: "none", color: "#f6f3ea", textAlign: "left", marginTop: 8 },
+  calSaveTitle: { fontSize: 15, fontWeight: 400, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", fontFamily: "Georgia, 'Times New Roman', serif", color: "#f6f3ea" },
+  calSaveSource: { fontSize: 11, color: "#7d786f" },
+  libraryFeed: { display: "flex", flexDirection: "column", gap: 20, marginTop: 24, paddingTop: 20, borderTop: "1px solid rgba(255,255,255,0.08)" },
+  libraryFeedLabel: { fontSize: 11, color: "#7d786f", textTransform: "uppercase", letterSpacing: "0.12em", textAlign: "left", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
   libraryFeedDay: { display: "flex", flexDirection: "column", gap: 0 },
   // Ask step text
-  askStepText: { color: "#666", fontSize: "13px", textAlign: "center", margin: "2px 0 0" },
+  askStepText: { color: "#7d786f", fontSize: "13px", textAlign: "center", margin: "2px 0 0" },
   // Search card trash button + title link
-  cardTrashBtn: { background: "none", border: "none", cursor: "pointer", color: "#444", padding: "2px 4px", marginLeft: "auto", flexShrink: 0, display: "flex", alignItems: "center" },
+  cardTrashBtn: { background: "none", border: "none", cursor: "pointer", color: "#7d786f", padding: "2px 4px", marginLeft: "auto", flexShrink: 0, display: "flex", alignItems: "center" },
   cardTitleLink: { display: "block", textDecoration: "none", color: "inherit" },
 
 }
