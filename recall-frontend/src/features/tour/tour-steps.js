@@ -3,6 +3,7 @@ export const TOUR_OPEN_DELAY_MS = 600
 export const tourSteps = [
   {
     id: "import-x",
+    highlight: "import-x",
     eyebrow: "Import",
     title: "Import your X bookmarks",
     description: "Grab everything you've saved on X in one click. Use Connect X to import bookmarks and ReCall will pull them into your library.",
@@ -12,6 +13,7 @@ export const tourSteps = [
   },
   {
     id: "search-saves",
+    highlight: "search",
     eyebrow: "Search",
     title: "Search everything you've saved",
     description: "Ask ReCall in plain English. It searches across every link, tweet, and post you've imported.",
@@ -21,6 +23,7 @@ export const tourSteps = [
   },
   {
     id: "connect-llm",
+    highlight: "connect-llm",
     eyebrow: "Connect",
     title: "Connect ReCall to any LLM",
     description: "Point ChatGPT, Claude, or your own model at ReCall as a knowledge source via the MCP endpoint.",

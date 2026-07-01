@@ -1,16 +1,31 @@
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import { TourStep } from "./TourStep"
 import { useFeatureTour } from "./useFeatureTour"
-import { FEATURE_TOUR_REPLAY_EVENT } from "./tour-events"
+import { emitFeatureTourStep, FEATURE_TOUR_REPLAY_EVENT } from "./tour-events"
 
-export function FeatureTour({ autoOpen = true }) {
+export function FeatureTour({ autoOpen = true, onStepChange }) {
   const tour = useFeatureTour({ autoOpen })
+  const onStepChangeRef = useRef(onStepChange)
+
+  useEffect(() => {
+    onStepChangeRef.current = onStepChange
+  }, [onStepChange])
 
   useEffect(() => {
     const handleReplay = () => tour.openFromStart()
     window.addEventListener(FEATURE_TOUR_REPLAY_EVENT, handleReplay)
     return () => window.removeEventListener(FEATURE_TOUR_REPLAY_EVENT, handleReplay)
   }, [tour])
+
+  useEffect(() => {
+    if (!tour.open || !tour.step) {
+      onStepChangeRef.current?.(null, -1)
+      emitFeatureTourStep(null, -1)
+      return
+    }
+    onStepChangeRef.current?.(tour.step, tour.index)
+    emitFeatureTourStep(tour.step, tour.index)
+  }, [tour.index, tour.open, tour.step])
 
   if (!tour.open || !tour.step) return null
 

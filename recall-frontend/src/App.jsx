@@ -330,6 +330,7 @@ export default function App() {
     window.location.pathname === '/terms' ? 'terms' : 'privacy'
   )
   const [showSettings, setShowSettings] = useState(false)
+  const [activeTourHighlight, setActiveTourHighlight] = useState(null)
   const [deletingAccount, setDeletingAccount] = useState(false)
   const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false)
   const [tokenCopied, setTokenCopied] = useState(false)
@@ -1938,6 +1939,37 @@ export default function App() {
       <p style={styles.overlayStep}>① Tap <strong>⋮</strong> in Chrome → <strong>"Add to Home Screen"</strong></p>
     </div>
   )
+  const tourHighlightStyle = (key, extra = {}) => activeTourHighlight === key
+    ? { ...extra, ...styles.tourHighlight }
+    : extra
+  const handleFeatureTourStep = (step) => {
+    const highlight = step?.highlight || null
+    setActiveTourHighlight(highlight)
+    if (!highlight) return
+
+    if (highlight === "import-x") {
+      setView("save")
+      setShowSettings(true)
+      setOpenSettingsSection("import")
+      setXBookmarkletFallback(false)
+      return
+    }
+
+    if (highlight === "search") {
+      setView("search")
+      setShowSettings(false)
+      setOpenSettingsSection(null)
+      window.setTimeout(() => searchInputRef.current?.focus(), 80)
+      return
+    }
+
+    if (highlight === "connect-llm") {
+      setView("save")
+      setShowSettings(true)
+      setOpenSettingsSection("connect")
+      if (mcpConnections === null) fetchMcpConnections()
+    }
+  }
 
   return (
     <div style={styles.container}>
@@ -1949,7 +1981,8 @@ export default function App() {
           <button onClick={signOut} style={styles.signOut}>Sign out</button>
         </div>
       </div>
-      <FeatureTour />
+      <FeatureTour onStepChange={handleFeatureTourStep} />
+      {activeTourHighlight && <div style={styles.tourBackdrop} aria-hidden="true" />}
 
       {message && <p style={xConnecting ? styles.neutral : (isError ? styles.error : styles.success)}>{message}</p>}
 
@@ -2016,7 +2049,7 @@ export default function App() {
           {openSettingsSection === 'connect' && (
             <div style={styles.settingsAccordionBody}>
               <div style={styles.tokenSection}>
-                <div style={styles.tokenRow}>
+                <div style={{ ...styles.tokenRow, ...tourHighlightStyle("connect-llm", { borderRadius: "14px" }) }}>
                   <input readOnly value={`${BACKEND}/mcp`} style={styles.tokenInput} onFocus={e => e.target.select()} />
                   <button
                     onClick={() => { navigator.clipboard.writeText(`${BACKEND}/mcp`); setTokenCopied(true); setTimeout(() => setTokenCopied(false), 2000) }}
@@ -2071,7 +2104,7 @@ export default function App() {
                   <button
                     onClick={connectXForImport}
                     disabled={xConnecting}
-                    style={{ ...styles.shortcutAddButton, border: "none" }}
+                    style={{ ...styles.shortcutAddButton, border: "none", ...tourHighlightStyle("import-x") }}
                   >
                     {xConnecting ? "Connecting…" : "𝕏 Connect X to import bookmarks"}
                   </button>
@@ -2311,7 +2344,7 @@ export default function App() {
         <div style={styles.section}>
 
           {/* Search bar */}
-          <div style={styles.searchBarWrapper}>
+          <div style={{ ...styles.searchBarWrapper, ...tourHighlightStyle("search", { borderRadius: "14px" }) }}>
             <input
               ref={searchInputRef}
               style={styles.searchBarInput}
@@ -3088,6 +3121,8 @@ const styles = {
   tagline: { color: "#aca79b", fontSize: "16px", margin: 0 },
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 0", width: "100%", maxWidth: "760px", boxSizing: "border-box" },
   headerIconButton: { width: "42px", height: "42px", padding: 0 },
+  tourBackdrop: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.62)", zIndex: 60, pointerEvents: "none" },
+  tourHighlight: { position: "relative", zIndex: 70, boxShadow: "0 0 0 2px rgba(217,255,95,0.95), 0 0 0 9999px rgba(0,0,0,0.02), 0 18px 52px -18px rgba(217,255,95,0.85)", filter: "none" },
   tabs: { display: "flex", gap: "8px", marginBottom: "24px", justifyContent: "center", width: "100%", maxWidth: "760px" },
   tab: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "8px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px" },
   tabActive: { background: "#d9ff5f", border: "1px solid #d9ff5f", color: "#1f2b08", padding: "8px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px", fontWeight: "700" },
