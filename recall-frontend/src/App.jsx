@@ -3360,14 +3360,14 @@ const styles = {
   milestoneSub: { fontSize: "12px", color: "#aca79b", margin: 0 },
 
   // Settings panel
-  settingsPanel: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "18px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px", marginBottom: "4px", color: "#f6f3ea" },
-  settingsLinks: { display: "flex", gap: "8px", flexWrap: "wrap" },
+  settingsPanel: { width: "100%", maxWidth: "760px", boxSizing: "border-box", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "18px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px", margin: "0 auto 4px", color: "#f6f3ea" },
+  settingsLinks: { display: "flex", gap: "8px", flexWrap: "wrap", width: "100%" },
   settingsLink: { background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "6px 14px", borderRadius: "999px", cursor: "pointer", fontSize: "13px" },
   settingsDivider: { height: "1px", background: "rgba(255,255,255,0.08)" },
   settingsSectionHeading: { fontSize: "11px", fontWeight: "700", color: "#d9ff5f", textTransform: "uppercase", letterSpacing: "0.12em", margin: 0, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
   settingsAccordionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: "11px", fontWeight: "700", color: "#d9ff5f", textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
   settingsAccordionChevron: { fontSize: "13px", color: "#7d786f", textTransform: "none", letterSpacing: 0 },
-  settingsAccordionBody: { display: "flex", flexDirection: "column", gap: "10px", marginTop: "10px" },
+  settingsAccordionBody: { display: "flex", flexDirection: "column", gap: "10px", marginTop: "10px", width: "100%", boxSizing: "border-box" },
   shortcutAddButton: { display: "inline-block", textAlign: "center", background: "#d9ff5f", border: "none", color: "#1f2b08", borderRadius: "999px", padding: "10px 16px", fontSize: "14px", fontWeight: "700", cursor: "pointer", textDecoration: "none" },
   tokenSection: { display: "flex", flexDirection: "column", gap: "8px" },
   tokenRow: { display: "flex", gap: "6px", alignItems: "center" },
