@@ -56,6 +56,11 @@
   to { transform: translateY(0); }
 }
 
+@keyframes tourSlideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 body {
   margin: 0;
 }
@@ -76,6 +81,12 @@ body {
   .landing-nav-links,
   .landing-sign-in-link {
     display: none !important;
+  }
+
+  .feature-tour-shell {
+    left: 8px !important;
+    right: 8px !important;
+    bottom: 8px !important;
   }
 }
 

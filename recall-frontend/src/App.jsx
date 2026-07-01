@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react"
 import { createClient } from "@supabase/supabase-js"
 import posthog from './posthog-lazy.js'
+import { FeatureTour, HelpMenuButton } from "./features/tour"
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -1943,10 +1944,12 @@ export default function App() {
       <div style={styles.header}>
         <h1 style={styles.logoSmall}>ReCall</h1>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <HelpMenuButton style={styles.headerIconButton} />
           <button onClick={() => { setShowSettings(s => !s); setConfirmDeleteAccount(false); setTokenCopied(false) }} style={styles.signOut} title="Settings">⚙</button>
           <button onClick={signOut} style={styles.signOut}>Sign out</button>
         </div>
       </div>
+      <FeatureTour />
 
       {message && <p style={xConnecting ? styles.neutral : (isError ? styles.error : styles.success)}>{message}</p>}
 
@@ -3084,6 +3087,7 @@ const styles = {
   logoSmall: { fontSize: "24px", fontWeight: "400", margin: 0, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em" },
   tagline: { color: "#aca79b", fontSize: "16px", margin: 0 },
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 0", width: "100%", maxWidth: "760px", boxSizing: "border-box" },
+  headerIconButton: { width: "42px", height: "42px", padding: 0 },
   tabs: { display: "flex", gap: "8px", marginBottom: "24px", justifyContent: "center", width: "100%", maxWidth: "760px" },
   tab: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "8px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px" },
   tabActive: { background: "#d9ff5f", border: "1px solid #d9ff5f", color: "#1f2b08", padding: "8px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px", fontWeight: "700" },
