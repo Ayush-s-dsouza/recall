@@ -1091,6 +1091,21 @@ def _html_to_text(html: str) -> str:
     except Exception:
         return ""
 
+_FORWARDED_HEADER_RE = re.compile(
+    r'-{2,}\s*Forwarded message\s*-{2,}\s*\n'
+    r'(?:(?:From|Date|Subject|To|Cc|Bcc|Reply-To):.*(?:\n|$))+',
+    re.IGNORECASE
+)
+
+def _strip_forwarded_header(text: str) -> str:
+    """Gmail's 'Forward' action prepends a '---------- Forwarded message ---------' block with
+    From/Date/Subject/To lines to the body — strip it so content_text is the newsletter itself,
+    not email plumbing. Not anchored to the start of the string so a personal note the forwarder
+    typed above the boilerplate is preserved."""
+    if not text:
+        return text
+    return _FORWARDED_HEADER_RE.sub('', text, count=1).strip()
+
 async def process_newsletter_email(payload: dict) -> dict:
     """Entry point for the CloudMailin inbound-email webhook. A sibling to process_save, not a
     branch inside it — the input is a parsed email, not a URL to fetch. Resolves the sender to
@@ -1124,7 +1139,7 @@ async def process_newsletter_email(payload: dict) -> dict:
     else:
         url = f"newsletter://{time.time()}"
 
-    clean_text = _html_to_text(html) if html else plain.strip()
+    clean_text = _strip_forwarded_header(_html_to_text(html) if html else plain.strip())
     from_header = headers.get("from") or ""
     sender_name_match = re.match(r'^"?([^"<]+)"?\s*<', from_header)
     if sender_name_match:
