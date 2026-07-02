@@ -1196,6 +1196,10 @@ async def process_newsletter_email(payload: dict) -> dict:
     send_save_ready_push(user_id, title, "Newsletter")
     return {"success": True, "title": title, "tag": tag, "id": inserted_id}
 
+SEARCH_MIN_SEMANTIC_SIMILARITY = 0.35  # cosine similarity floor for /search's semantic branch — see CLAUDE.md Known Issue #33
+SEARCH_SEMANTIC_WEIGHT = 1.0           # weight on match_saves' real cosine similarity in the fusion score
+SEARCH_FTS_WEIGHT = 0.4                # weight on FTS rank-decay in the fusion score
+
 async def expand_search_query(query: str) -> str:
     """Expand a short query with related synonyms/concepts to improve semantic recall."""
     if len(query.split()) >= 6:
@@ -1208,8 +1212,10 @@ async def expand_search_query(query: str) -> str:
                 lambda: gemini_client.models.generate_content(
                     model="gemini-2.5-flash",
                     contents=(
-                        "Rewrite this search query as a short phrase with 3-5 related synonyms "
-                        "and concepts to improve semantic search. Return only the expanded query, no explanation.\n"
+                        "Rewrite this search query as a short phrase for semantic search. Stay tightly "
+                        "focused on the same specific topic — add at most 2-3 closely related terms "
+                        "(e.g. an acronym's expansion, an obvious synonym), and do not introduce broader "
+                        "or adjacent categories/concepts. Return only the expanded query, no explanation.\n"
                         f"Query: {query}"
                     ),
                     config=_NO_THINKING
@@ -1222,7 +1228,8 @@ async def expand_search_query(query: str) -> str:
         return query
 
 async def do_search(query: str, user_id: str) -> dict:
-    """Semantic + full-text search over a user's saves, fused via RRF. Shared by /search
+    """Semantic + full-text search over a user's saves, combined via a magnitude-aware
+    fusion score (see CLAUDE.md "4. Search" and Known Issue #33). Shared by /search
     and the recall_search MCP tool."""
     # Expand short queries before embedding to improve semantic recall; FTS uses original
     q_expanded = await expand_search_query(query)
@@ -1230,7 +1237,8 @@ async def do_search(query: str, user_id: str) -> dict:
     semantic_result = supabase.rpc("match_saves", {
         "query_embedding": query_embedding,
         "match_user_id": user_id,
-        "match_count": 20
+        "match_count": 20,
+        "match_threshold": SEARCH_MIN_SEMANTIC_SIMILARITY
     }).execute()
 
     # Full-text search over content + title — exclude media saves
@@ -1241,39 +1249,49 @@ async def do_search(query: str, user_id: str) -> dict:
             .eq("content_type", "article") \
             .eq("status", "ready") \
             .filter("content_text", "fts", query) \
+            .order("created_at", desc=True) \
             .limit(20) \
             .execute()
         fts_rows = fts_result.data
     except Exception:
         fts_rows = []
 
-    # Reciprocal Rank Fusion (k=60 is standard)
-    K = 60
+    # Fusion: the semantic side contributes its real, already-thresholded cosine
+    # similarity (match_saves excludes anything below SEARCH_MIN_SEMANTIC_SIMILARITY
+    # before this code ever sees it) instead of a rank-slot fraction. The FTS side has no
+    # numeric relevance score available via PostgREST's `.filter(col, "fts", query)`
+    # builder, so it keeps a rank-decay term, confined to its own smaller weight so a
+    # merely-coincidental keyword hit can't manufacture a semantic-grade score. Items in
+    # both lists get both terms summed, preserving the "boost the intersection" property
+    # of the RRF design this replaced. See CLAUDE.md "4. Search" and Known Issue #33.
     scores = {}
     metadata = {}
 
-    # Post-filter semantic results to exclude media saves and still-pending placeholders
+    # Post-filter semantic results to exclude media saves and still-pending placeholders.
+    # Defense in depth only — 010_match_saves_threshold.sql now also enforces
+    # content_type = 'article' AND status = 'ready' directly in the RPC's WHERE clause.
     semantic_rows = [r for r in semantic_result.data
                       if r.get("content_type", "article") == "article"
                       and r.get("status", "ready") == "ready"]
 
-    for rank, row in enumerate(semantic_rows):
+    for row in semantic_rows:
         rid = row["id"]
-        scores[rid] = scores.get(rid, 0) + 1 / (K + rank + 1)
+        scores[rid] = scores.get(rid, 0) + SEARCH_SEMANTIC_WEIGHT * row.get("similarity", 0.0)
         metadata[rid] = row
 
     for rank, row in enumerate(fts_rows):
         rid = row["id"]
-        scores[rid] = scores.get(rid, 0) + 1 / (K + rank + 1)
+        scores[rid] = scores.get(rid, 0) + SEARCH_FTS_WEIGHT * (1 / (1 + rank))
         if rid not in metadata:
             metadata[rid] = row
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:20]
-    max_score = ranked[0][1] if ranked else 1
     results = []
     for rid, score in ranked:
         row = metadata[rid]
-        row["similarity"] = score / max_score
+        # Fused relevance score, not a raw probability — never shown to the user (see
+        # CLAUDE.md "4. Search", "no raw match %"); kept only for internal debugging/tuning.
+        row["similarity"] = round(score, 4)
         # Build a short excerpt from content_text
         content = (row.get("content_text") or "").strip()
         if len(content) > 220:

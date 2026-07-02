@@ -240,16 +240,17 @@ Each card shows tag + title + source label. Trash icon (🗑) expands the card t
 7. Two filter dropdowns (Source + Tag) replace the old pill row — only shown when >1 distinct value exists in results; each resets `displayCount`
 8. "Show more" button reveals results 5 at a time (`displayCount` state); pagination applies within the active filter combination
 
-**Backend (`main.py` → `POST /search`)**
+**Backend (`recall_core.py` → `do_search()`, shared by `POST /search` and the `recall_search` MCP tool)**
 
-Hybrid search with Reciprocal Rank Fusion (RRF):
-1. Embeds the query using `get_embedding()`
-2. **Semantic search**: Supabase RPC `match_saves` — cosine similarity, top 20
-3. **Full-text search**: `saves` table, selects `id, url, title, tag, created_at, content_text`, limit 20
-4. **RRF fusion** (k=60): `1/(k + rank + 1)` per list, summed — boosts items in both
-5. Top 20 fused results returned (frontend paginates with `displayCount`)
-6. Each result gets an `excerpt` field: first ~220 chars of `content_text`, trimmed to word boundary with `…`
-7. `content_text` and `embedding` are stripped from the response before sending to client
+Hybrid search with a magnitude-aware fusion score (replaced pure rank-based RRF — see Known Issue #33):
+1. `expand_search_query()` rewrites short queries (<6 words) via Gemini into a short, tightly-scoped phrase before embedding; FTS always uses the original query
+2. Embeds the (possibly expanded) query using `get_embedding()`
+3. **Semantic search**: Supabase RPC `match_saves`, called with `match_threshold: SEARCH_MIN_SEMANTIC_SIMILARITY` (0.35) — rows below this cosine similarity are excluded by the RPC itself and never returned, so a search can legitimately come back with fewer than 20 (or zero) semantic matches. Returns a real `similarity` column (`1 - cosine distance`).
+4. **Full-text search**: `saves` table, selects `id, url, title, tag, created_at, content_text`, limit 20, ordered by `created_at desc` — no relevance floor here since a literal keyword match is inherently a real signal, unlike a weak semantic neighbor
+5. **Fusion**: `score = SEARCH_SEMANTIC_WEIGHT * similarity + SEARCH_FTS_WEIGHT * (1 / (1 + fts_rank))`, summed per save ID when a save appears in both lists — so the intersection is still boosted. Weights: `SEARCH_SEMANTIC_WEIGHT = 1.0`, `SEARCH_FTS_WEIGHT = 0.4` (see Known Issue #33)
+6. Top 20 fused results returned (frontend paginates with `displayCount`)
+7. Each result gets an `excerpt` field: first ~220 chars of `content_text`, trimmed to word boundary with `…`
+8. `content_text` and `embedding` are stripped from the response before sending to client
 
 ### 5. Search UI — Empty & Edge States
 
@@ -459,12 +460,13 @@ One row per device/browser a user has enabled notifications on. Rows are deleted
 
 ### RPC: `match_saves`
 
-Postgres function using `pgvector` cosine similarity. Parameters:
+Postgres function using `pgvector` cosine similarity. Defined in `recall-backend/sql/010_match_saves_threshold.sql` (the original version predated version control — see Known Issue #33). Parameters:
 - `query_embedding vector(768)`
 - `match_user_id uuid`
 - `match_count int`
+- `match_threshold float default 0.0` — rows with cosine similarity below this are excluded before `match_count` is applied. `/search` passes `SEARCH_MIN_SEMANTIC_SIMILARITY` (0.35, `recall_core.py`); `/ask` passes `ASK_MIN_RELEVANCE` (0.5, `main.py`). A caller that omits it gets the old unfiltered behavior (default `0.0`).
 
-Returns rows ordered by `embedding <=> query_embedding` (cosine distance), filtered to the user's rows.
+Explicitly returns `id, url, title, content_text, tag, content_type, status, created_at, similarity` (`similarity = 1 - (embedding <=> query_embedding)`). Filters to `user_id = match_user_id`, `content_type = 'article'`, `status = 'ready'`, and the threshold above; orders by `embedding <=> query_embedding` ascending (closest first); limits to `match_count`.
 
 ### Remote MCP server (Claude/ChatGPT connector) — OAuth 2.1 tables
 
@@ -665,6 +667,8 @@ A lightning bolt / cursor-shaped path:
 31. **`REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` are currently unset by design, not by oversight** — as of mid-2026, Reddit gates new API app registration behind a manual "Responsible Builder Policy" review (a support ticket, not an instant form); the legacy self-serve "create app" flow on `old.reddit.com/prefs/apps` accepts the captcha but silently rejects the submission with a policy notice instead of issuing credentials, and `developers.reddit.com` (Devvit) is a different product for apps that run *inside* Reddit, not a source of plain script-app credentials. Until/unless a manual application is approved, `fetch_reddit()` runs entirely on its unauthenticated `.json` fallback (see "Reddit post + comment fetching" above) — this is the expected, working state, not a degraded one to "fix" by chasing credentials again without a clear new path.
 
 32. **Newsletter forwarding uses one shared inbound address, not a unique address per user** — a deliberate tradeoff to avoid buying/owning a custom domain (per-user addresses like `save+token@yourdomain.com` need MX records on a domain you control). Consequences: (a) a user must forward from the *same* email address they signed into ReCall with, or the webhook drops the email as unmatched; (b) Gmail auto-forward resolution relies on the `X-Forwarded-For` header (see "Newsletter saving via email forwarding" #16) — non-Gmail providers may not add this header on filter-based auto-forwards and will fall back to (and likely fail) the `From`-based match, so auto-forward-by-sender is effectively Gmail-only for now; (c) CloudMailin's free tier caps at 10,000 emails/month across the whole app, not per-user — fine at portfolio scale, would need a paid tier or per-user addressing to scale further.
+
+33. **`SEARCH_MIN_SEMANTIC_SIMILARITY` / `SEARCH_SEMANTIC_WEIGHT` / `SEARCH_FTS_WEIGHT` (`recall_core.py`) and `ASK_MIN_RELEVANCE` (`main.py`) are empirically-tuned constants, not scientifically derived ones** — `match_saves` (see `recall-backend/sql/010_match_saves_threshold.sql`) now enforces a real cosine-similarity floor via its `match_threshold` parameter, fixing a bug where semantic search always returned its full quota of "least-bad" neighbors even when nothing in a user's library was actually relevant to the query (e.g. searching "usdt" surfaced an unrelated SEO tweet and a health article purely because they were the closest of a bad bunch). `/search`'s fusion score is now `SEARCH_SEMANTIC_WEIGHT * similarity + SEARCH_FTS_WEIGHT * (1 / (1 + fts_rank))` instead of pure rank-based RRF, so a confident semantic match can outrank a weak item that merely also contains the literal query term. All four numbers (0.35, 1.0, 0.4, 0.5) were chosen by reasoning about `gemini-embedding-001`'s typical similarity ranges, not measured against real query/result pairs. If real usage shows the threshold is too strict (relevant saves disappearing from search) or too loose (unrelated saves still slipping through), or the fusion weights let weak-keyword-only matches outrank strong semantic ones (or vice versa), retune these constants rather than assuming the underlying approach is wrong — see the "Verification"/tuning notes below. Don't raise `ASK_MIN_RELEVANCE` or `SEARCH_MIN_SEMANTIC_SIMILARITY` without checking both call sites — they're intentionally different values because `/ask` is precision-oriented (synthesizes a written, cited answer, so a false positive is worse) while `/search` is recall-oriented (a human scans a list, so it should stay more permissive). Also note: the full-text search branch in `do_search` has no `ts_rank`-based ordering available through PostgREST's `.filter(col, "fts", query)` builder — its "rank" is a `created_at desc` tiebreak, not true text-relevance order. This is a known limitation, not a bug to chase; a proper fix would mean adding a second dedicated RPC (mirroring `match_saves`) that computes `ts_rank`/`ts_rank_cd` explicitly. To tune the thresholds/weights against real data, temporarily add a `print(..., flush=True)` in `do_search` logging each semantic candidate's title + similarity, read it via Railway's log viewer against a few real queries, adjust, then remove the debug line.
 
 ---
 

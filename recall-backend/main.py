@@ -349,12 +349,13 @@ async def ask_recall(req: AskRequest, request: Request):
     semantic_result = supabase.rpc("match_saves", {
         "query_embedding": query_embedding,
         "match_user_id": user_id,
-        "match_count": 8
+        "match_count": 8,
+        "match_threshold": ASK_MIN_RELEVANCE
     }).execute()
 
-    # Filter to articles with sufficient semantic relevance.
-    # similarity comes from match_saves RPC if it returns that column (requires SQL update).
-    # Default 1.0 means "assume relevant" when column absent — preserves behaviour before SQL migration.
+    # match_saves now enforces ASK_MIN_RELEVANCE itself (see
+    # recall-backend/sql/010_match_saves_threshold.sql), so every row it returns already
+    # clears the relevance bar — this is redundant defense in depth, not the primary filter.
     article_saves = [
         r for r in (semantic_result.data or [])
         if r.get("content_type", "article") == "article"
