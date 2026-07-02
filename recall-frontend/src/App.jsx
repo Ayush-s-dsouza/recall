@@ -2469,7 +2469,7 @@ export default function App() {
       {/* Folder picker bottom sheet */}
       {folderPickerSaveId && (
         <div style={styles.overlay} onClick={() => { setFolderPickerSaveId(null); setNewFolderName("") }}>
-          <div style={{ ...styles.bottomSheet, position: "relative", maxHeight: "70vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+          <div style={{ ...styles.bottomSheet, position: "relative", maxHeight: "70vh", overflowY: "auto", borderRadius: "24px" }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <span style={{ fontWeight: 600, color: "#f6f3ea", fontSize: 15 }}>Add to folders</span>
               <button onClick={() => { setFolderPickerSaveId(null); setNewFolderName("") }} style={styles.savedArticleGhostButton}>✕</button>
