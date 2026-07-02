@@ -1809,7 +1809,7 @@ export default function App() {
   if (view === 'legal') {
     return (
       <div style={styles.container}>
-        <div style={{ display: "flex", alignItems: "center", padding: "20px 0 16px" }}>
+        <div style={{ display: "flex", alignItems: "center", width: "100%", maxWidth: "760px", margin: "0 auto", padding: "20px 0 16px", boxSizing: "border-box" }}>
           <button
             onClick={() => { setView('search'); window.history.pushState({}, '', '/') }}
             style={styles.backButton}
