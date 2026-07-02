@@ -1085,6 +1085,13 @@ def _html_to_text(html: str) -> str:
         soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["script", "style", "head"]):
             tag.decompose()
+        # Gmail wraps the "---------- Forwarded message ---------" + From/Date/Subject/To block
+        # in a `gmail_attr` div. Removing it here (before flattening to text) sidesteps the header
+        # fields getting split across multiple lines below whenever a value (sender/recipient) is
+        # a mailto link — get_text()'s separator has no way to know those fragments shared one
+        # visual line, which is what broke the text-regex-only approach this replaces.
+        for tag in soup.find_all(class_="gmail_attr"):
+            tag.decompose()
         text = soup.get_text(separator="\n")
         lines = [l.strip() for l in text.split("\n") if l.strip()]
         return "\n".join(lines)[:5000]
