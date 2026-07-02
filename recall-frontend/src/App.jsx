@@ -1194,9 +1194,17 @@ export default function App() {
 
   const enableSaveNotifications = async () => {
     if (!pushSupported) return
+    setMessage("")
+    setIsError(false)
     try {
       const permission = await Notification.requestPermission()
-      if (permission !== "granted") return
+      if (permission !== "granted") {
+        setMessage(permission === "denied"
+          ? "Notifications are blocked for ReCall in your browser. Enable them in your browser's site settings, then try again."
+          : "Notification permission wasn't granted — try again if you'd like updates.")
+        setIsError(true)
+        return
+      }
       const registration = await navigator.serviceWorker.register("/sw.js")
       await navigator.serviceWorker.ready
       let subscription = await registration.pushManager.getSubscription()
@@ -1215,6 +1223,8 @@ export default function App() {
       setPushEnabled(true)
     } catch (e) {
       console.error("[push] subscribe failed", e)
+      setMessage("Couldn't enable notifications — try again.")
+      setIsError(true)
     }
   }
 
