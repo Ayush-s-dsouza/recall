@@ -1091,11 +1091,12 @@ def _html_to_text(html: str) -> str:
     except Exception:
         return ""
 
-_FORWARDED_HEADER_RE = re.compile(
-    r'-{2,}\s*Forwarded message\s*-{2,}\s*\n'
-    r'(?:(?:From|Date|Subject|To|Cc|Bcc|Reply-To):.*(?:\n|$))+',
-    re.IGNORECASE
-)
+_FORWARD_MARKER_RE = re.compile(r'-{2,}\s*Forwarded message\s*-{2,}\s*\n', re.IGNORECASE)
+# Tried in order: whichever header field is last present wins, so the block is stripped through
+# its true end even when an earlier field's label and value land on separate lines (e.g. "From:"
+# and the sender's name/email get split onto two lines when the name is a link in the source
+# HTML, which get_text()'s "\n" separator doesn't know is the same visual line).
+_FORWARD_END_ANCHORS = ("To", "Subject", "Date", "From")
 
 def _strip_forwarded_header(text: str) -> str:
     """Gmail's 'Forward' action prepends a '---------- Forwarded message ---------' block with
@@ -1104,7 +1105,16 @@ def _strip_forwarded_header(text: str) -> str:
     typed above the boilerplate is preserved."""
     if not text:
         return text
-    return _FORWARDED_HEADER_RE.sub('', text, count=1).strip()
+    marker = _FORWARD_MARKER_RE.search(text)
+    if not marker:
+        return text.strip()
+    before, after = text[:marker.start()], text[marker.end():]
+    for anchor in _FORWARD_END_ANCHORS:
+        end_re = re.compile(r'(?:.*\n){0,10}?\s*' + anchor + r':.*(?:\n|$)', re.IGNORECASE)
+        m = end_re.match(after)
+        if m:
+            return (before + after[m.end():]).strip()
+    return (before + after).strip()
 
 async def process_newsletter_email(payload: dict) -> dict:
     """Entry point for the CloudMailin inbound-email webhook. A sibling to process_save, not a
