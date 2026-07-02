@@ -1199,8 +1199,14 @@ export default function App() {
     try {
       const permission = await Notification.requestPermission()
       if (permission !== "granted") {
+        let deniedMessage = "Notifications are blocked for ReCall in your browser. Enable them in your browser's site settings, then try again."
+        if (permission === "denied" && isStandalone) {
+          deniedMessage = isAndroid
+            ? "Notifications are blocked for ReCall. Long-press the ReCall icon on your home screen → App info → Notifications → turn on, then come back and try again."
+            : "Notifications are blocked for ReCall. Open your phone's Settings app → scroll to ReCall → Notifications → Allow Notifications, then come back and try again."
+        }
         setMessage(permission === "denied"
-          ? "Notifications are blocked for ReCall in your browser. Enable them in your browser's site settings, then try again."
+          ? deniedMessage
           : "Notification permission wasn't granted — try again if you'd like updates.")
         setIsError(true)
         return
@@ -1345,15 +1351,20 @@ export default function App() {
   }
 
   const setSaveFolders = async (saveId, folderIds) => {
-    // Update local state immediately so the pill appears before the network round-trip
     const folderObjs = folders.filter(f => folderIds.includes(f.id))
       .map(f => ({ folder_id: f.id, folders: { id: f.id, name: f.name } }))
-    setTodaySaves(prev => prev.map(s => s.id === saveId ? { ...s, save_folders: folderObjs } : s))
+    // Compute new arrays synchronously before the first await so closure values are current.
+    // Write to both state and sessionStorage so pills survive a page refresh.
+    const newTodaySaves = todaySaves.map(s => s.id === saveId ? { ...s, save_folders: folderObjs } : s)
+    const newResults = results.map(r => r.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r)
+    setTodaySaves(newTodaySaves)
     setSaveReceipt(r => r?.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r)
-    setResults(prev => prev.map(r => r.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r))
+    setResults(newResults)
     setCalendarSaves(prev => Object.fromEntries(Object.entries(prev).map(([k, saves]) =>
       [k, saves.map(s => s.id === saveId ? { ...s, save_folders: folderObjs } : s)]
     )))
+    sessionStorage.setItem("recall_today_saves", JSON.stringify(newTodaySaves))
+    sessionStorage.setItem("recall_last_results", JSON.stringify(newResults))
     const token = await getToken()
     const res = await fetch(`${BACKEND}/save/${saveId}/folders`, {
       method: "PATCH",
@@ -1363,7 +1374,7 @@ export default function App() {
     if (res.ok) {
       fetchFolders()
     } else {
-      fetchTodaySaves()
+      fetchTodaySaves()   // reverts state + sessionStorage on failure
       fetchFolders()
     }
   }
