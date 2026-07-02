@@ -1386,11 +1386,13 @@ def do_get_folders(user_id: str) -> dict:
         .execute()
     folders = []
     for f in (result.data or []):
+        sf = f.get("save_folders") or []
         folders.append({
             "id": f["id"],
             "name": f["name"],
             "created_at": f["created_at"],
-            "save_count": len(f.get("save_folders") or []),
+            "save_count": len(sf),
+            "save_ids": [row["save_id"] for row in sf],
         })
     return {"folders": folders}
 

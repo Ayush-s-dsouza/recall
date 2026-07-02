@@ -368,7 +368,9 @@ export default function App() {
   const [selectedFolder, setSelectedFolder] = useState(null)
 
   // Folders
-  const [folders, setFolders] = useState([])
+  const [folders, setFolders] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem("recall_folders") || "[]") } catch { return [] }
+  })
   const [folderPickerSaveId, setFolderPickerSaveId] = useState(null)
   const [pickerFolderIds, setPickerFolderIds] = useState(new Set())
   const [newFolderName, setNewFolderName] = useState("")
@@ -649,22 +651,18 @@ export default function App() {
 
   const fetchFolders = async () => {
     try {
-      // Folder membership (save_ids) is fetched here and used for all pill rendering
-      // via getSaveFolders() — avoids a broken Supabase nested join (saves→save_folders→folders).
-      // The folders→save_folders direction works because folders has RLS; the reverse doesn't.
-      const { data } = await supabase
-        .from("folders")
-        .select("id, name, created_at, save_folders(save_id)")
-        .order("created_at")
-      const mapped = (data || []).map(f => ({
-        id: f.id,
-        name: f.name,
-        created_at: f.created_at,
-        save_count: (f.save_folders || []).length,
-        save_ids: (f.save_folders || []).map(sf => sf.save_id)
-      }))
-      setFolders(mapped)
-      return mapped
+      // Use the backend (service role) — the anon Supabase client can't reliably read
+      // save_folders even with SELECT grants (no RLS policy = PostgREST returns empty embeds).
+      // Backend returns save_ids per folder; we cache in sessionStorage so page reloads
+      // show pills instantly without waiting for this round-trip.
+      const token = await getToken()
+      const res = await fetch(`${BACKEND}/folders?token=${encodeURIComponent(token)}`)
+      if (!res.ok) return []
+      const data = await res.json()
+      const folderList = data.folders || []
+      setFolders(folderList)
+      sessionStorage.setItem("recall_folders", JSON.stringify(folderList))
+      return folderList
     } catch {
       return []
     }
@@ -1109,6 +1107,7 @@ export default function App() {
     sessionStorage.removeItem("recall_suggestions")
     sessionStorage.removeItem("recall_today_saves")
     sessionStorage.removeItem("recall_library_filters")
+    sessionStorage.removeItem("recall_folders")
     setRecentSearches([])
     setSuggestedChips(null)
     setHasSearched(false)
@@ -1350,24 +1349,30 @@ export default function App() {
   }
 
   const setSaveFolders = async (saveId, folderIds) => {
-    // Optimistically update folders state — that's the single source of truth for pill rendering.
-    // No need to touch todaySaves/results/calendarSaves; getSaveFolders() derives pills from folders.
-    setFolders(prev => prev.map(f => {
+    // Compute updated folders synchronously (before any await — closure is current)
+    const newFolders = folders.map(f => {
       const inNew = folderIds.includes(f.id)
       const inOld = (f.save_ids || []).includes(saveId)
       if (inNew === inOld) return f
       return inNew
         ? { ...f, save_ids: [...(f.save_ids || []), saveId], save_count: (f.save_count || 0) + 1 }
         : { ...f, save_ids: (f.save_ids || []).filter(id => id !== saveId), save_count: Math.max(0, (f.save_count || 0) - 1) }
-    }))
+    })
+    // Optimistic update — also write to sessionStorage so pills survive a page refresh
+    setFolders(newFolders)
+    sessionStorage.setItem("recall_folders", JSON.stringify(newFolders))
     const token = await getToken()
     const res = await fetch(`${BACKEND}/save/${saveId}/folders`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folder_ids: folderIds, token })
     })
-    // fetchFolders confirms the write (or reverts on failure) — updates save_ids for all subsequent reads
-    fetchFolders()
+    if (!res.ok) {
+      // Revert by re-fetching authoritative data from backend
+      fetchFolders()
+    }
+    // Success: don't re-fetch — optimistic state and sessionStorage are already correct.
+    // fetchFolders would hit Railway (potential cold start) and could overwrite correct state.
   }
 
   const createFolder = async (name) => {
