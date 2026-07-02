@@ -3,8 +3,8 @@ import { TourStep } from "./TourStep"
 import { useFeatureTour } from "./useFeatureTour"
 import { emitFeatureTourStep, FEATURE_TOUR_REPLAY_EVENT } from "./tour-events"
 
-export function FeatureTour({ autoOpen = true, onStepChange }) {
-  const tour = useFeatureTour({ autoOpen })
+export function FeatureTour({ autoOpen = true, onStepChange, restartKey = null, steps }) {
+  const tour = useFeatureTour({ autoOpen, steps })
   const onStepChangeRef = useRef(onStepChange)
 
   useEffect(() => {
@@ -15,7 +15,12 @@ export function FeatureTour({ autoOpen = true, onStepChange }) {
     const handleReplay = () => tour.openFromStart()
     window.addEventListener(FEATURE_TOUR_REPLAY_EVENT, handleReplay)
     return () => window.removeEventListener(FEATURE_TOUR_REPLAY_EVENT, handleReplay)
-  }, [tour])
+  }, [tour.openFromStart])
+
+  useEffect(() => {
+    if (restartKey === null || restartKey === undefined) return
+    tour.openFromStart()
+  }, [restartKey, tour.openFromStart])
 
   useEffect(() => {
     if (!tour.open || !tour.step) {

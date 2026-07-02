@@ -144,6 +144,18 @@ const SHARE_SHEET_VIDEO_URL = null // replace with YouTube URL when ready
 const SAVE_TO_RECALL_SHORTCUT_URL = "https://www.icloud.com/shortcuts/fd37dd0550924fafb19a0f984ded9825" // "Save to ReCall" shortcut — regenerate via Shortcuts app → long-press → Share → Copy iCloud Link if ever rebuilt
 const EMAIL_INBOUND_ADDRESS = import.meta.env.VITE_EMAIL_INBOUND_ADDRESS || "" // shared CloudMailin inbound address for newsletter forwarding — same address for every user, matched to an account by sender email
 const LOADING_STEPS = ["Fetching...", "Reading...", "Analyzing...", "Almost there..."]
+const PRE_SIGNUP_TOUR_STEPS = [
+  {
+    id: "pre-signup-save",
+    highlight: "sign-in",
+    eyebrow: "Saved",
+    title: "Sign in to use this memory",
+    description: "Your first save is ready. Sign in with Google to keep it, search across it, and let an LLM use it as context.",
+    videoUrl: "https://media.w3.org/2010/05/bunny/movie.mp4",
+    poster: "",
+    primaryLabel: "Got it",
+  },
+]
 
 function getAppScheme(url) {
   if (!url) return null
@@ -394,6 +406,15 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [preAuthUrl, setPreAuthUrl] = useState(() => sessionStorage.getItem("recall_pre_auth_url") || "")
   const [landingPreviewError, setLandingPreviewError] = useState("")
+  const [preSignupSave, setPreSignupSave] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem("recall_pre_signup_save")
+      return saved ? JSON.parse(saved) : null
+    } catch {
+      return null
+    }
+  })
+  const [preSignupTourKey, setPreSignupTourKey] = useState(null)
   const [landingSavedArticles] = useState(() => {
     try {
       const saved = sessionStorage.getItem("recall_landing_saved_articles")
@@ -459,6 +480,7 @@ export default function App() {
   const searchInputRef = useRef(null)
   const importFileInputRef = useRef(null)
   const importPollRef = useRef(null)
+  const preSignupTourTimeoutRef = useRef(null)
   const xBookmarkletRef = useRef(null)
   const linkedinBookmarkletRef = useRef(null)
   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
@@ -471,6 +493,18 @@ export default function App() {
     if (view === 'mcp-consent') return // transient, query-param-driven — never persist as the default view
     sessionStorage.setItem("recall_view", view)
   }, [view])
+
+  useEffect(() => {
+    if (!authLoading && !user && preSignupSave && preSignupTourKey === null) {
+      if (preSignupSave.status === "pending") return
+      setView("save")
+      clearTimeout(preSignupTourTimeoutRef.current)
+      preSignupTourTimeoutRef.current = window.setTimeout(() => {
+        setActiveTourHighlight("sign-in")
+        setPreSignupTourKey(Date.now())
+      }, 5000)
+    }
+  }, [authLoading, preSignupSave, preSignupTourKey, user])
 
   useEffect(() => {
     const handleBeforeInstall = (e) => {
@@ -490,7 +524,10 @@ export default function App() {
     }
   }, [])
 
-  useEffect(() => () => clearInterval(importPollRef.current), [])
+  useEffect(() => () => {
+    clearInterval(importPollRef.current)
+    clearTimeout(preSignupTourTimeoutRef.current)
+  }, [])
 
   // React's JSX `href` prop sanitizes/blocks javascript: URLs as an XSS precaution
   // (throws "React has blocked a javascript: URL..." on click). Set these directly
@@ -822,6 +859,9 @@ export default function App() {
           setIsError(false)
           sessionStorage.removeItem("recall_pre_auth_url")
           sessionStorage.removeItem("recall_landing_preview")
+          sessionStorage.removeItem("recall_pre_signup_save")
+          setPreSignupSave(null)
+          setActiveTourHighlight(null)
         }
         // Bookmarklet import — consume scraped tweet IDs
         const scrapedPending = sessionStorage.getItem('x_scraped_pending')
@@ -1002,6 +1042,9 @@ export default function App() {
           setIsError(false)
           sessionStorage.removeItem("recall_pre_auth_url")
           sessionStorage.removeItem("recall_landing_preview")
+          sessionStorage.removeItem("recall_pre_signup_save")
+          setPreSignupSave(null)
+          setActiveTourHighlight(null)
         }
         // Skipped on /mcp/consent — see matching guard above for why.
         if (!localStorage.getItem('recall_onboarded') && window.location.pathname !== '/mcp/consent') {
@@ -1199,6 +1242,116 @@ export default function App() {
     }
     setLandingPreviewError("")
     signIn(trimmed)
+  }
+
+  const buildClientPreview = async (url) => {
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), 15000)
+    const res = await fetch(`https://r.jina.ai/${url}`, {
+      headers: { "X-Return-Format": "text" },
+      signal: controller.signal,
+    })
+    window.clearTimeout(timeoutId)
+    if (!res.ok) throw new Error("preview_failed")
+    const text = await res.text()
+    if (text.trim().length < 150) throw new Error("thin_content")
+    const lines = text.split("\n")
+    const titleLine = lines.find(line => line.startsWith("Title:"))
+    const firstHeading = lines.find(line => /^#{1,2}\s+\S/.test(line))?.replace(/^#{1,2}\s+/, "").trim()
+    const sourceLabel = getSourceLabel(url)
+    const rawTitle = titleLine?.replace(/^Title:\s*/, "").trim()
+    const title = rawTitle && rawTitle.toLowerCase() !== sourceLabel.toLowerCase()
+      ? rawTitle
+      : (firstHeading || sourceLabel)
+    const contentStart = lines.findIndex(line => line.startsWith("Markdown Content:") || line.startsWith("URL Source:"))
+    const contentText = lines.slice(contentStart >= 0 ? contentStart + 1 : 0).join("\n").trim().slice(0, 5000)
+    const lower = `${title} ${contentText}`.toLowerCase()
+    const tag =
+      /artificial intelligence|machine learning|\bai\b|software|data|code|tech|internet|platform/.test(lower) ? "Tech" :
+      /design|product|ux|user|onboarding/.test(lower) ? "Product" :
+      /stock|market|crypto|fund|finance|bank|econom/.test(lower) ? "Finance" :
+      /health|study|doctor|medical|fitness/.test(lower) ? "Health" :
+      /business|company|startup|strategy/.test(lower) ? "Business" :
+      "Other"
+    return { success: true, url, title, content_text: contentText, tag, content_type: "article" }
+  }
+
+  const saveBeforeSignup = async (url = preAuthUrl) => {
+    const trimmed = url.trim()
+    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+      setLandingPreviewError("Paste a full link to save it.")
+      return
+    }
+
+    clearTimeout(preSignupTourTimeoutRef.current)
+    sessionStorage.setItem("recall_pre_auth_url", trimmed)
+    setLandingPreviewError("")
+    setLoading(true)
+    setMessage("")
+    setIsError(false)
+    setActiveTourHighlight(null)
+    setPreSignupTourKey(null)
+    setUrlInput("")
+    setSaveReceipt(null)
+    setView("save")
+    setShowSettings(false)
+    const pendingPreview = {
+      id: "pre-signup-save",
+      url: trimmed,
+      title: getSourceLabel(trimmed),
+      content_text: "",
+      tag: null,
+      created_at: new Date().toISOString(),
+      status: "pending",
+      preview: true,
+    }
+    setPreSignupSave(pendingPreview)
+    window.setTimeout(() => window.scrollTo({ top: 0, behavior: "smooth" }), 0)
+
+    try {
+      let data
+      try {
+        const controller = new AbortController()
+        const timeoutId = window.setTimeout(() => controller.abort(), 20000)
+        const res = await fetch(`${BACKEND}/save/preview`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: trimmed }),
+          signal: controller.signal,
+        })
+        window.clearTimeout(timeoutId)
+        if (!res.ok) throw new Error()
+        data = await res.json()
+      } catch {
+        data = await buildClientPreview(trimmed)
+      }
+      if (data.thin_content) {
+        throw new Error("thin_content")
+      }
+      const preview = {
+        id: "pre-signup-save",
+        url: data.url || trimmed,
+        title: data.title || getSourceLabel(trimmed),
+        content_text: data.content_text || "",
+        tag: data.tag || "Auto tagged",
+        content_type: data.content_type || "article",
+        created_at: new Date().toISOString(),
+        preview: true,
+      }
+      sessionStorage.setItem("recall_pre_signup_save", JSON.stringify(preview))
+      setPreSignupSave(preview)
+      preSignupTourTimeoutRef.current = window.setTimeout(() => {
+        setActiveTourHighlight("sign-in")
+        setPreSignupTourKey(Date.now())
+      }, 5000)
+    } catch {
+      setPreSignupSave(null)
+      sessionStorage.removeItem("recall_pre_signup_save")
+      setLandingPreviewError("Couldn't read that link. Try another article URL.")
+      setView("search")
+    } finally {
+      setLoading(false)
+    }
   }
 
   const getToken = async () => {
@@ -1495,6 +1648,11 @@ export default function App() {
 
   const handleSave = async (url, fromShareSheet = false) => {
     url = url.trim()
+    if (!user) {
+      setPreAuthUrl(url)
+      saveBeforeSignup(url)
+      return
+    }
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
       setMessage("Links only, please!")
       setIsError(true)
@@ -1743,11 +1901,13 @@ export default function App() {
                 <span>{getSiteName(save.url)}</span>
                 <span>saving now</span>
               </div>
-              <button
-                onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(save.id) }}
-                style={styles.deleteButton}
-                aria-label="Delete"
-              ><TrashIcon /></button>
+              {!save.preview && (
+                <button
+                  onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(save.id) }}
+                  style={styles.deleteButton}
+                  aria-label="Delete"
+                ><TrashIcon /></button>
+              )}
             </div>
             <span className="shimmer" style={styles.savedArticleTitleShimmer} />
             <span className="shimmer" style={styles.savedArticleCaptionShimmer} />
@@ -1763,18 +1923,20 @@ export default function App() {
                 <span>{getSiteName(save.url)}</span>
                 <span>saved {formatRelativeTime(save.created_at)}</span>
               </div>
-              <div style={styles.savedArticleControls}>
-                <button
-                  onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTodayTitleId(save.id); setDraftTodayTitle(save.title || "") }}
-                  style={styles.editButton}
-                  title="Edit name"
-                >✎</button>
-                <button
-                  onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(save.id) }}
-                  style={styles.deleteButton}
-                  aria-label="Delete"
-                ><TrashIcon /></button>
-              </div>
+              {!save.preview && (
+                <div style={styles.savedArticleControls}>
+                  <button
+                    onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingTodayTitleId(save.id); setDraftTodayTitle(save.title || "") }}
+                    style={styles.editButton}
+                    title="Edit name"
+                  >✎</button>
+                  <button
+                    onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(save.id) }}
+                    style={styles.deleteButton}
+                    aria-label="Delete"
+                  ><TrashIcon /></button>
+                </div>
+              )}
             </div>
             <div style={styles.savedArticleBody}>
               <span style={styles.savedArticleTitle}>{save.title || getSourceLabel(save.url)}</span>
@@ -1912,7 +2074,7 @@ export default function App() {
     )
   }
 
-  if (!user) {
+  if (!user && !preSignupSave) {
     const howSteps = [
       {
         n: "01",
@@ -2004,14 +2166,18 @@ export default function App() {
                       setPreAuthUrl(e.target.value)
                       setLandingPreviewError("")
                     }}
-                    onKeyDown={e => { if (e.key === "Enter") startLandingSignIn() }}
+                    onKeyDown={e => { if (e.key === "Enter") saveBeforeSignup() }}
                   />
-                  <button onClick={startLandingSignIn} style={styles.lovableComposerButton}>
-                    Start free <ArrowRightIcon />
+                  <button
+                    onClick={() => saveBeforeSignup()}
+                    disabled={loading}
+                    style={{ ...styles.lovableComposerButton, opacity: loading ? 0.72 : 1 }}
+                  >
+                    {loading ? "Saving..." : "Save"} <ArrowRightIcon />
                   </button>
                 </div>
                 {landingPreviewError && <p style={styles.lovableError}>{landingPreviewError}</p>}
-                <p style={styles.lovableComposerNote}>Bring in one link first. ReCall opens with it ready to save after Google sign-in.</p>
+                <p style={styles.lovableComposerNote}>Bring in one link first. ReCall will show how it looks before you sign in.</p>
               </div>
 
               <div style={styles.lovablePreviewStack}>
@@ -2126,20 +2292,42 @@ export default function App() {
       setShowSettings(true)
       setOpenSettingsSection("connect")
       if (mcpConnections === null) fetchMcpConnections()
+      return
+    }
+
+    if (highlight === "sign-in") {
+      setView("save")
+      setShowSettings(false)
+      setOpenSettingsSection(null)
     }
   }
+  const visibleTodaySaves = !user && preSignupSave ? [preSignupSave] : todaySaves
 
   return (
     <div style={styles.container}>
       <div style={styles.header}>
         <h1 style={styles.logoSmall}>ReCall</h1>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          <HelpMenuButton style={styles.headerIconButton} />
-          <button onClick={() => { setShowSettings(s => !s); setConfirmDeleteAccount(false); setTokenCopied(false) }} style={styles.signOut} title="Settings">⚙</button>
-          <button onClick={signOut} style={styles.signOut}>Sign out</button>
+          {user ? (
+            <>
+              <HelpMenuButton style={styles.headerIconButton} />
+              <button onClick={() => { setShowSettings(s => !s); setConfirmDeleteAccount(false); setTokenCopied(false) }} style={styles.signOut} title="Settings">⚙</button>
+              <button onClick={signOut} style={styles.signOut}>Sign out</button>
+            </>
+          ) : (
+            <button
+              onClick={() => signIn(preSignupSave?.url || preAuthUrl)}
+              style={{ ...styles.signOut, ...tourHighlightStyle("sign-in") }}
+            >Sign in</button>
+          )}
         </div>
       </div>
-      <FeatureTour onStepChange={handleFeatureTourStep} />
+      <FeatureTour
+        autoOpen={!!user}
+        onStepChange={handleFeatureTourStep}
+        restartKey={!user && preSignupSave ? preSignupTourKey : null}
+        steps={!user && preSignupSave ? PRE_SIGNUP_TOUR_STEPS : undefined}
+      />
       {activeTourHighlight && <div style={styles.tourBackdrop} aria-hidden="true" />}
 
       {message && <p style={xConnecting ? styles.neutral : (isError ? styles.error : styles.success)}>{message}</p>}
@@ -3122,11 +3310,11 @@ export default function App() {
             </a>
           )}
 
-          {todaySaves.length > 0 && (
+          {visibleTodaySaves.length > 0 && (
             <div style={styles.todaySection}>
               <p style={styles.todayHeader}>Today</p>
               <div style={styles.todayList}>
-                {todaySaves.map(s => renderSavedArticleCard(s))}
+                {visibleTodaySaves.map(s => renderSavedArticleCard(s))}
               </div>
             </div>
           )}
