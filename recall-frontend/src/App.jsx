@@ -663,12 +663,21 @@ export default function App() {
 
   const fetchFolders = async () => {
     try {
-      const token = await getToken()
-      const res = await fetch(`${BACKEND}/folders?token=${encodeURIComponent(token)}`)
-      if (!res.ok) return
-      const data = await res.json()
-      setFolders(data.folders || [])
-      return data.folders || []
+      // Query Supabase directly — avoids Railway cold start (was 10-15s delay).
+      // RLS (user_id = auth.uid()) scopes results to the signed-in user automatically.
+      // Requires GRANT SELECT ON folders TO anon, authenticated (009_grant_folders.sql).
+      const { data } = await supabase
+        .from("folders")
+        .select("id, name, created_at, save_folders(save_id)")
+        .order("created_at")
+      const mapped = (data || []).map(f => ({
+        id: f.id,
+        name: f.name,
+        created_at: f.created_at,
+        save_count: (f.save_folders || []).length
+      }))
+      setFolders(mapped)
+      return mapped
     } catch {
       return []
     }
