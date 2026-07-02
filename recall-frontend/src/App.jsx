@@ -1115,7 +1115,6 @@ export default function App() {
     setHasSearched(false)
     setResults([])
     setQuery("")
-    setSelectedTag(null)
     posthog.reset()
   }
 
@@ -1450,6 +1449,7 @@ export default function App() {
   }
 
   const handleSave = async (url, fromShareSheet = false) => {
+    url = url.trim()
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
       setMessage("Links only, please!")
       setIsError(true)
@@ -1461,7 +1461,6 @@ export default function App() {
     setIsFreshReceipt(false)
     setSaveReceipt({ url, optimistic: true })
     setEditingTitle(false)
-    setEditingTag(false)
     try {
       const token = await getToken()
       const controller = new AbortController()
@@ -1516,7 +1515,6 @@ export default function App() {
     if (onboardingStep === 'firstSearch') advanceOnboarding('firstSearch')
     setLoading(true)
     setSelectedSource(null)
-    setSelectedTag(null)
     setHasSearched(true)
     setDisplayCount(5)
     setRecentSearches(prev => {
