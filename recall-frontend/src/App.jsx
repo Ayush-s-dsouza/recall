@@ -564,25 +564,11 @@ export default function App() {
     return () => { clearTimeout(t1); clearTimeout(t2) }
   }, [askLoading])
 
-  // Seed the picker's checked state from whichever list owns the save.
+  // Seed the picker's checked state from folders state (single source of truth).
   useEffect(() => {
     if (!folderPickerSaveId) { setPickerFolderIds(new Set()); return }
-    const todaySave = todaySaves.find(s => s.id === folderPickerSaveId)
-    if (todaySave) {
-      setPickerFolderIds(new Set((todaySave.save_folders || []).map(sf => sf.folder_id)))
-      return
-    }
-    if (saveReceipt?.id === folderPickerSaveId) {
-      setPickerFolderIds(new Set((saveReceipt.folders || []).map(f => f.id)))
-      return
-    }
-    const resultSave = results.find(r => r.id === folderPickerSaveId)
-    if (resultSave) {
-      setPickerFolderIds(new Set((resultSave.folders || []).map(f => f.id)))
-      return
-    }
-    setPickerFolderIds(new Set())
-  }, [folderPickerSaveId]) // eslint-disable-line react-hooks/exhaustive-deps
+    setPickerFolderIds(new Set(getSaveFolders(folderPickerSaveId).map(f => f.id)))
+  }, [folderPickerSaveId, folders]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function playSuccessChime() {
     try {
@@ -651,7 +637,7 @@ export default function App() {
     today.setHours(0, 0, 0, 0)
     const { data } = await supabase
       .from("saves")
-      .select("id, url, title, tag, content_type, status, created_at, content_text, save_folders(folder_id, folders(id, name))")
+      .select("id, url, title, tag, content_type, status, created_at, content_text")
       .gte("created_at", today.toISOString())
       .order("created_at", { ascending: false })
       .limit(20)
@@ -663,9 +649,9 @@ export default function App() {
 
   const fetchFolders = async () => {
     try {
-      // Query Supabase directly — avoids Railway cold start (was 10-15s delay).
-      // RLS (user_id = auth.uid()) scopes results to the signed-in user automatically.
-      // Requires GRANT SELECT ON folders TO anon, authenticated (009_grant_folders.sql).
+      // Folder membership (save_ids) is fetched here and used for all pill rendering
+      // via getSaveFolders() — avoids a broken Supabase nested join (saves→save_folders→folders).
+      // The folders→save_folders direction works because folders has RLS; the reverse doesn't.
       const { data } = await supabase
         .from("folders")
         .select("id, name, created_at, save_folders(save_id)")
@@ -674,7 +660,8 @@ export default function App() {
         id: f.id,
         name: f.name,
         created_at: f.created_at,
-        save_count: (f.save_folders || []).length
+        save_count: (f.save_folders || []).length,
+        save_ids: (f.save_folders || []).map(sf => sf.save_id)
       }))
       setFolders(mapped)
       return mapped
@@ -682,6 +669,10 @@ export default function App() {
       return []
     }
   }
+
+  // Single source of truth for a save's folder memberships.
+  // Reads from folders state (populated by fetchFolders) instead of per-save nested joins.
+  const getSaveFolders = (saveId) => folders.filter(f => (f.save_ids || []).includes(saveId))
 
   const fetchLibraryFilters = async () => {
     const { data } = await supabase.from("saves").select("url")
@@ -695,19 +686,27 @@ export default function App() {
   const browseByFilter = async (folderName, source) => {
     setLoading(true)
     setHasSearched(true)
-    const { data } = await supabase
+    let query = supabase
       .from("saves")
-      .select("id, url, title, tag, created_at, content_text, save_folders(folder_id, folders(id, name))")
+      .select("id, url, title, tag, created_at, content_text")
       .order("created_at", { ascending: false })
-      .limit(100)
+    if (folderName) {
+      // Fetch only saves in this folder by their IDs (from folders state) — avoids nested join
+      const folder = folders.find(f => f.name === folderName)
+      const folderSaveIds = folder?.save_ids || []
+      if (folderSaveIds.length === 0) { setResults([]); setLoading(false); return }
+      query = query.in("id", folderSaveIds)
+    } else {
+      query = query.limit(100)
+    }
+    const { data } = await query
     let rows = data || []
-    if (folderName) rows = rows.filter(r => (r.save_folders || []).some(sf => sf.folders?.name === folderName))
     if (source) rows = rows.filter(r => getSourceLabel(r.url) === source)
     setResults(rows.map(r => {
       const content = (r.content_text || "").trim()
       const excerpt = content.length > 220 ? content.slice(0, 220).replace(/\s\S*$/, "") + "…" : content
-      const { content_text, save_folders, ...rest } = r
-      return { ...rest, excerpt, folders: (save_folders || []).map(sf => sf.folders).filter(Boolean) }
+      const { content_text, ...rest } = r
+      return { ...rest, excerpt }
     }))
     setLoading(false)
   }
@@ -1351,32 +1350,24 @@ export default function App() {
   }
 
   const setSaveFolders = async (saveId, folderIds) => {
-    const folderObjs = folders.filter(f => folderIds.includes(f.id))
-      .map(f => ({ folder_id: f.id, folders: { id: f.id, name: f.name } }))
-    // Compute new arrays synchronously before the first await so closure values are current.
-    // Write to both state and sessionStorage so pills survive a page refresh.
-    const newTodaySaves = todaySaves.map(s => s.id === saveId ? { ...s, save_folders: folderObjs } : s)
-    const newResults = results.map(r => r.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r)
-    setTodaySaves(newTodaySaves)
-    setSaveReceipt(r => r?.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r)
-    setResults(newResults)
-    setCalendarSaves(prev => Object.fromEntries(Object.entries(prev).map(([k, saves]) =>
-      [k, saves.map(s => s.id === saveId ? { ...s, save_folders: folderObjs } : s)]
-    )))
-    sessionStorage.setItem("recall_today_saves", JSON.stringify(newTodaySaves))
-    sessionStorage.setItem("recall_last_results", JSON.stringify(newResults))
+    // Optimistically update folders state — that's the single source of truth for pill rendering.
+    // No need to touch todaySaves/results/calendarSaves; getSaveFolders() derives pills from folders.
+    setFolders(prev => prev.map(f => {
+      const inNew = folderIds.includes(f.id)
+      const inOld = (f.save_ids || []).includes(saveId)
+      if (inNew === inOld) return f
+      return inNew
+        ? { ...f, save_ids: [...(f.save_ids || []), saveId], save_count: (f.save_count || 0) + 1 }
+        : { ...f, save_ids: (f.save_ids || []).filter(id => id !== saveId), save_count: Math.max(0, (f.save_count || 0) - 1) }
+    }))
     const token = await getToken()
     const res = await fetch(`${BACKEND}/save/${saveId}/folders`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folder_ids: folderIds, token })
     })
-    if (res.ok) {
-      fetchFolders()
-    } else {
-      fetchTodaySaves()   // reverts state + sessionStorage on failure
-      fetchFolders()
-    }
+    // fetchFolders confirms the write (or reverts on failure) — updates save_ids for all subsequent reads
+    fetchFolders()
   }
 
   const createFolder = async (name) => {
@@ -1604,7 +1595,7 @@ export default function App() {
     setCalendarLoading(true)
     const { data } = await supabase
       .from("saves")
-      .select("id, url, title, tag, created_at, content_text, save_folders(folder_id, folders(id, name))")
+      .select("id, url, title, tag, created_at, content_text")
       .order("created_at", { ascending: false })
     if (data) {
       const grouped = {}
@@ -1757,12 +1748,12 @@ export default function App() {
               <span style={styles.savedArticleCaption}>{getSaveCaption(save)}</span>
             </div>
             <div style={styles.savedArticleTagRow}>
-              {(save.save_folders || []).map(sf => (
+              {getSaveFolders(save.id).map(f => (
                 <button
-                  key={sf.folder_id}
+                  key={f.id}
                   onClick={e => { e.preventDefault(); e.stopPropagation(); setFolderPickerSaveId(save.id) }}
                   style={styles.folderDisplayPill}
-                >📁 {sf.folders?.name}</button>
+                >📁 {f.name}</button>
               ))}
               <button
                 onClick={e => { e.preventDefault(); e.stopPropagation(); setFolderPickerSaveId(save.id) }}
@@ -2748,7 +2739,7 @@ export default function App() {
           {results.length > 0 && !loading && (() => {
             const filtered = results.filter(r =>
               (!selectedSource || getSourceLabel(r.url) === selectedSource) &&
-              (!selectedFolder || (r.folders || []).some(f => f.name === selectedFolder))
+              (!selectedFolder || getSaveFolders(r.id).some(f => f.name === selectedFolder))
             )
             const visible = filtered.slice(0, displayCount)
             return (
@@ -2768,7 +2759,7 @@ export default function App() {
                         <>
                           <div style={styles.cardMeta}>
                             <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", flex: 1 }}>
-                              {(r.folders || []).map(f => (
+                              {getSaveFolders(r.id).map(f => (
                                 <button
                                   key={f.id}
                                   onClick={() => { setSelectedFolder(f.name); setDisplayCount(5) }}
@@ -2960,7 +2951,7 @@ export default function App() {
               ) : (
                 <>
                   <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
-                    {(saveReceipt.folders || []).map(f => (
+                    {getSaveFolders(saveReceipt.id).map(f => (
                       <span key={f.id} style={styles.folderDisplayPill}>📁 {f.name}</span>
                     ))}
                     <button
