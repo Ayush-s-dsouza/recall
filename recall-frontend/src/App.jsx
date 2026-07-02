@@ -1334,6 +1334,7 @@ export default function App() {
     setSaveReceipt(r => r?.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r)
     setResults(prev => prev.map(r => r.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r))
     console.log("[setSaveFolders] saveId:", saveId, "folderIds:", folderIds, "folderObjs:", folderObjs)
+    console.log("[setSaveFolders] in todaySaves:", todaySaves.some(s => s.id === saveId), "in results:", results.some(r => r.id === saveId), "is receipt:", saveReceipt?.id === saveId)
     const token = await getToken()
     const res = await fetch(`${BACKEND}/save/${saveId}/folders`, {
       method: "PATCH",
