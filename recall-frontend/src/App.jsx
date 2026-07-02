@@ -232,6 +232,14 @@ function getSourceLabel(url) {
   }
 }
 
+function FolderIcon({ size = 12 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+    </svg>
+  )
+}
+
 function TrashIcon({ size = 14 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1772,7 +1780,7 @@ export default function App() {
                     key={f.id}
                     onClick={e => { e.preventDefault(); e.stopPropagation(); setRemoveFolderConfirm({ saveId: save.id, folderId: f.id, folderName: f.name }) }}
                     style={styles.folderDisplayPill}
-                  >📁 {f.name}</button>
+                  ><FolderIcon /> {f.name}</button>
                 )
               ))}
               <button
@@ -2483,7 +2491,7 @@ export default function App() {
                         </>
                       ) : (
                         <>
-                          <span style={{ flex: 1, color: "#f6f3ea", fontSize: 14 }}>📁 {f.name}</span>
+                          <span style={{ flex: 1, color: "#f6f3ea", fontSize: 14 }}><FolderIcon /> {f.name}</span>
                           <span style={{ color: "#666", fontSize: 12 }}>{f.save_count} saves</span>
                           <button onClick={() => { setEditingFolderId(f.id); setDraftFolderName(f.name) }} style={styles.editButton} title="Rename">✎</button>
                           <button onClick={() => deleteFolder(f.id)} style={styles.deleteButton} aria-label="Delete folder"><TrashIcon /></button>
@@ -2541,7 +2549,7 @@ export default function App() {
                         }}
                         style={{ width: 16, height: 16, accentColor: "#d9ff5f", flexShrink: 0 }}
                       />
-                      <span style={{ color: "#f6f3ea", fontSize: 14, flex: 1 }}>📁 {f.name}</span>
+                      <span style={{ color: "#f6f3ea", fontSize: 14, flex: 1 }}><FolderIcon /> {f.name}</span>
                       <span style={{ color: "#555", fontSize: 12 }}>{f.save_count}</span>
                     </label>
                   )
@@ -2806,7 +2814,7 @@ export default function App() {
                                   key={f.id}
                                   onClick={e => { e.preventDefault(); setRemoveFolderConfirm({ saveId: r.id, folderId: f.id, folderName: f.name }) }}
                                   style={styles.folderDisplayPill}
-                                >📁 {f.name}</button>
+                                ><FolderIcon /> {f.name}</button>
                               )
                             ))}
                             <button
@@ -2994,7 +3002,7 @@ export default function App() {
                           <button onClick={() => setRemoveFolderConfirm(null)} style={styles.folderRemoveNo}>Cancel</button>
                         </span>
                       ) : (
-                        <button key={f.id} onClick={() => setRemoveFolderConfirm({ saveId: saveReceipt.id, folderId: f.id, folderName: f.name })} style={styles.folderDisplayPill}>📁 {f.name}</button>
+                        <button key={f.id} onClick={() => setRemoveFolderConfirm({ saveId: saveReceipt.id, folderId: f.id, folderName: f.name })} style={styles.folderDisplayPill}><FolderIcon /> {f.name}</button>
                       )
                     ))}
                     <button
