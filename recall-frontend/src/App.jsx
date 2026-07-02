@@ -2651,7 +2651,15 @@ export default function App() {
           {/* Zero-results state */}
           {hasSearched && !loading && results.length === 0 && (
             <div style={styles.zeroResults}>
-              <p style={styles.zeroResultsMain}>Nothing found for "{query}"</p>
+              <p style={styles.zeroResultsMain}>
+                {query.trim()
+                  ? `Nothing found for "${query}"`
+                  : selectedFolder
+                    ? `Nothing in "${selectedFolder}" yet`
+                    : selectedSource
+                      ? `Nothing from ${selectedSource} yet`
+                      : "Nothing found"}
+              </p>
               <p style={styles.zeroResultsSub}>Try different words, or save more content.</p>
               <button
                 style={styles.zeroResultsCta}
