@@ -33,6 +33,11 @@ from recall_core import (
     do_update_tag,
     do_update_title,
     do_delete_save,
+    do_get_folders,
+    do_create_folder,
+    do_rename_folder,
+    do_delete_folder,
+    do_set_save_folders,
     process_newsletter_email,
     TWEET_URL_RE,
 )
@@ -159,6 +164,18 @@ class PushUnsubscribeRequest(BaseModel):
     token: str
     endpoint: str
 
+class FolderCreateRequest(BaseModel):
+    name: str
+    token: str
+
+class FolderRenameRequest(BaseModel):
+    name: str
+    token: str
+
+class SaveFoldersRequest(BaseModel):
+    folder_ids: list[str]
+    token: str
+
 
 @app.post("/save")
 @limiter.limit("10/minute")
@@ -252,6 +269,55 @@ async def update_title(save_id: str, req: UpdateTitleRequest):
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
     return do_update_title(save_id, req.title, user_id)
+
+@app.patch("/save/{save_id}/folders")
+async def set_save_folders(save_id: str, req: SaveFoldersRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    try:
+        return do_set_save_folders(save_id, req.folder_ids, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/folders")
+async def get_folders(token: str):
+    try:
+        user_id = get_user_id(token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return do_get_folders(user_id)
+
+@app.post("/folders")
+async def create_folder(req: FolderCreateRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    try:
+        return do_create_folder(req.name, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.patch("/folders/{folder_id}")
+async def rename_folder(folder_id: str, req: FolderRenameRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    try:
+        return do_rename_folder(folder_id, req.name, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/folders/{folder_id}")
+async def delete_folder(folder_id: str, req: DeleteRequest):
+    try:
+        user_id = get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return do_delete_folder(folder_id, user_id)
 
 @app.post("/suggestions")
 async def get_suggestions(req: SuggestionsRequest):

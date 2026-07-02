@@ -140,7 +140,6 @@ const LINKEDIN_BOOKMARKLET_SCRIPT = `(function(){
 })();`
 const LINKEDIN_BOOKMARKLET_CODE = "javascript:" + LINKEDIN_BOOKMARKLET_SCRIPT.replace(/\s+/g, " ").trim()
 
-const VALID_TAGS = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
 const SHARE_SHEET_VIDEO_URL = null // replace with YouTube URL when ready
 const SAVE_TO_RECALL_SHORTCUT_URL = "https://www.icloud.com/shortcuts/fd37dd0550924fafb19a0f984ded9825" // "Save to ReCall" shortcut — regenerate via Shortcuts app → long-press → Share → Copy iCloud Link if ever rebuilt
 const EMAIL_INBOUND_ADDRESS = import.meta.env.VITE_EMAIL_INBOUND_ADDRESS || "" // shared CloudMailin inbound address for newsletter forwarding — same address for every user, matched to an account by sender email
@@ -352,13 +351,12 @@ export default function App() {
 
   const [isFreshReceipt, setIsFreshReceipt] = useState(false)
   const [loadingStep, setLoadingStep] = useState(0)
-  const [editingTag, setEditingTag] = useState(false)
   const [editingTodayTitleId, setEditingTodayTitleId] = useState(null)
   const [draftTodayTitle, setDraftTodayTitle] = useState("")
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [deletingId, setDeletingId] = useState(null)
   const [libraryFilters, setLibraryFilters] = useState(() => {
-    try { return JSON.parse(sessionStorage.getItem("recall_library_filters") || '{"tags":[],"sources":[]}') } catch { return { tags: [], sources: [] } }
+    try { return JSON.parse(sessionStorage.getItem("recall_library_filters") || '{"sources":[]}') } catch { return { sources: [] } }
   })
   const [hasSearched, setHasSearched] = useState(false)
   const [displayCount, setDisplayCount] = useState(5)
@@ -367,7 +365,15 @@ export default function App() {
     catch { return [] }
   })
   const [searchInputFocused, setSearchInputFocused] = useState(false)
-  const [selectedTag, setSelectedTag] = useState(null)
+  const [selectedFolder, setSelectedFolder] = useState(null)
+
+  // Folders
+  const [folders, setFolders] = useState([])
+  const [folderPickerSaveId, setFolderPickerSaveId] = useState(null)
+  const [pickerFolderIds, setPickerFolderIds] = useState(new Set())
+  const [newFolderName, setNewFolderName] = useState("")
+  const [editingFolderId, setEditingFolderId] = useState(null)
+  const [draftFolderName, setDraftFolderName] = useState("")
   const [suggestedChips, setSuggestedChips] = useState(() => {
     try { const c = sessionStorage.getItem("recall_suggestions"); return c ? JSON.parse(c) : null } catch { return null }
   })
@@ -558,6 +564,26 @@ export default function App() {
     return () => { clearTimeout(t1); clearTimeout(t2) }
   }, [askLoading])
 
+  // Initialise folder picker's checked state from whichever list owns the save
+  useEffect(() => {
+    if (!folderPickerSaveId) { setPickerFolderIds(new Set()); return }
+    const todaySave = todaySaves.find(s => s.id === folderPickerSaveId)
+    if (todaySave?.save_folders) {
+      setPickerFolderIds(new Set(todaySave.save_folders.map(sf => sf.folder_id)))
+      return
+    }
+    if (saveReceipt?.id === folderPickerSaveId) {
+      setPickerFolderIds(new Set((saveReceipt.folders || []).map(f => f.id)))
+      return
+    }
+    const resultSave = results.find(r => r.id === folderPickerSaveId)
+    if (resultSave) {
+      setPickerFolderIds(new Set((resultSave.folders || []).map(f => f.id)))
+      return
+    }
+    setPickerFolderIds(new Set())
+  }, [folderPickerSaveId])
+
   function playSuccessChime() {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)()
@@ -625,7 +651,7 @@ export default function App() {
     today.setHours(0, 0, 0, 0)
     const { data } = await supabase
       .from("saves")
-      .select("id, url, title, tag, content_type, status, created_at, content_text")
+      .select("id, url, title, tag, content_type, status, created_at, content_text, save_folders(folder_id, folders(id, name))")
       .gte("created_at", today.toISOString())
       .order("created_at", { ascending: false })
       .limit(20)
@@ -635,33 +661,44 @@ export default function App() {
     }
   }
 
+  const fetchFolders = async () => {
+    try {
+      const token = await getToken()
+      const res = await fetch(`${BACKEND}/folders?token=${encodeURIComponent(token)}`)
+      if (!res.ok) return
+      const data = await res.json()
+      setFolders(data.folders || [])
+      return data.folders || []
+    } catch {
+      return []
+    }
+  }
+
   const fetchLibraryFilters = async () => {
-    const { data } = await supabase.from("saves").select("tag, url")
+    const { data } = await supabase.from("saves").select("url")
     if (!data?.length) return
-    const tags = [...new Set(data.map(r => r.tag).filter(Boolean))].sort()
     const sources = [...new Set(data.map(r => getSourceLabel(r.url)).filter(s => s && s !== "Page"))].sort()
-    const filters = { tags, sources }
+    const filters = { sources }
     setLibraryFilters(filters)
     sessionStorage.setItem("recall_library_filters", JSON.stringify(filters))
   }
 
-  const browseByFilter = async (tag, source) => {
+  const browseByFilter = async (folderName, source) => {
     setLoading(true)
     setHasSearched(true)
-    let q = supabase
+    const { data } = await supabase
       .from("saves")
-      .select("id, url, title, tag, created_at, content_text")
+      .select("id, url, title, tag, created_at, content_text, save_folders(folder_id, folders(id, name))")
       .order("created_at", { ascending: false })
       .limit(100)
-    if (tag) q = q.eq("tag", tag)
-    const { data } = await q
     let rows = data || []
+    if (folderName) rows = rows.filter(r => (r.save_folders || []).some(sf => sf.folders?.name === folderName))
     if (source) rows = rows.filter(r => getSourceLabel(r.url) === source)
     setResults(rows.map(r => {
       const content = (r.content_text || "").trim()
       const excerpt = content.length > 220 ? content.slice(0, 220).replace(/\s\S*$/, "") + "…" : content
-      const { content_text, ...rest } = r
-      return { ...rest, excerpt }
+      const { content_text, save_folders, ...rest } = r
+      return { ...rest, excerpt, folders: (save_folders || []).map(sf => sf.folders).filter(Boolean) }
     }))
     setLoading(false)
   }
@@ -746,6 +783,7 @@ export default function App() {
         posthog.identify(session.user.id)
         fetchTodaySaves()
         fetchLibraryFilters()
+        fetchFolders()
         fetchSuggestions()
         fetchSaveCount()
         const preAuthSavedUrl = sessionStorage.getItem("recall_pre_auth_url")
@@ -925,6 +963,7 @@ export default function App() {
         }
         fetchTodaySaves()
         fetchLibraryFilters()
+        fetchFolders()
         fetchSuggestions()
         fetchSaveCount()
         const preAuthSavedUrl = sessionStorage.getItem("recall_pre_auth_url")
@@ -1287,17 +1326,62 @@ export default function App() {
     posthog.capture('title_edited')
   }
 
-  const updateSaveTag = async (newTag) => {
+  const setSaveFolders = async (saveId, folderIds) => {
     const token = await getToken()
-    await fetch(`${BACKEND}/save/${saveReceipt.id}/tag`, {
+    await fetch(`${BACKEND}/save/${saveId}/folders`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tag: newTag, token })
+      body: JSON.stringify({ folder_ids: folderIds, token })
     })
-    setSaveReceipt(r => ({ ...r, tag: newTag }))
-    setTodaySaves(prev => prev.map(s => s.id === saveReceipt.id ? { ...s, tag: newTag } : s))
-    setEditingTag(false)
-    posthog.capture('tag_edited')
+    // Build normalized folder objects for local state updates
+    const folderObjs = folders.filter(f => folderIds.includes(f.id))
+      .map(f => ({ folder_id: f.id, folders: { id: f.id, name: f.name } }))
+    setTodaySaves(prev => prev.map(s => s.id === saveId ? { ...s, save_folders: folderObjs } : s))
+    setSaveReceipt(r => r?.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r)
+    setResults(prev => prev.map(r => r.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r))
+    fetchFolders() // refresh save counts
+  }
+
+  const createFolder = async (name) => {
+    const token = await getToken()
+    const res = await fetch(`${BACKEND}/folders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim(), token })
+    })
+    const data = await res.json()
+    if (!res.ok) return
+    setNewFolderName("")
+    const newFolders = await fetchFolders()
+    // Auto-add the new folder to the save currently in the picker
+    if (folderPickerSaveId && data.id) {
+      const newIds = [...pickerFolderIds, data.id]
+      setPickerFolderIds(new Set(newIds))
+      await setSaveFolders(folderPickerSaveId, newIds)
+    }
+  }
+
+  const renameFolder = async (folderId, name) => {
+    if (!name.trim()) return
+    const token = await getToken()
+    await fetch(`${BACKEND}/folders/${folderId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim(), token })
+    })
+    setEditingFolderId(null)
+    fetchFolders()
+  }
+
+  const deleteFolder = async (folderId) => {
+    const token = await getToken()
+    await fetch(`${BACKEND}/folders/${folderId}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token })
+    })
+    fetchFolders()
+    fetchTodaySaves() // refresh folder pills on today's list
   }
 
   const updateTodayTitle = async (id, newTitle) => {
@@ -1545,10 +1629,6 @@ export default function App() {
   finalizeSaveRef.current = finalizeSave
 
   const renderSavedArticleCard = (save) => {
-    const tagLabel =
-      save.content_type === "video" ? "Video" :
-      save.content_type === "image" ? "Image" :
-      (save.tag || "Auto tagged")
     const isEditing = editingTodayTitleId === save.id
 
     if (isEditing) {
@@ -1641,7 +1721,17 @@ export default function App() {
               <span style={styles.savedArticleCaption}>{getSaveCaption(save)}</span>
             </div>
             <div style={styles.savedArticleTagRow}>
-              <span style={styles.savedArticleTag}><TagIcon />{tagLabel}</span>
+              {(save.save_folders || []).map(sf => (
+                <button
+                  key={sf.folder_id}
+                  onClick={e => { e.preventDefault(); e.stopPropagation(); setFolderPickerSaveId(save.id) }}
+                  style={styles.folderDisplayPill}
+                >📁 {sf.folders?.name}</button>
+              ))}
+              <button
+                onClick={e => { e.preventDefault(); e.stopPropagation(); setFolderPickerSaveId(save.id) }}
+                style={styles.addFolderButton}
+              >+ Folder</button>
             </div>
           </>
         )}
@@ -2317,6 +2407,48 @@ export default function App() {
             </div>
           )}
 
+          <button
+            onClick={() => setOpenSettingsSection(openSettingsSection !== 'folders' ? 'folders' : null)}
+            style={styles.settingsAccordionHeader}
+          >
+            <span>Folders {folders.length > 0 ? `(${folders.length})` : ""}</span>
+            <span style={styles.settingsAccordionChevron}>{openSettingsSection === 'folders' ? "▾" : "▸"}</span>
+          </button>
+          {openSettingsSection === 'folders' && (
+            <div style={styles.settingsAccordionBody}>
+              {folders.length === 0 ? (
+                <p style={styles.overlayNote}>No folders yet. Save something and tap "+ Folder" to create one.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {folders.map(f => (
+                    <div key={f.id} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      {editingFolderId === f.id ? (
+                        <>
+                          <input
+                            style={{ ...styles.savedArticleTitleInput, flex: 1 }}
+                            value={draftFolderName}
+                            onChange={e => setDraftFolderName(e.target.value)}
+                            onKeyDown={e => { if (e.key === "Enter") renameFolder(f.id, draftFolderName) }}
+                            autoFocus
+                          />
+                          <button onClick={() => renameFolder(f.id, draftFolderName)} style={styles.confirmButton}>✓</button>
+                          <button onClick={() => setEditingFolderId(null)} style={styles.savedArticleGhostButton}>✕</button>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ flex: 1, color: "#f6f3ea", fontSize: 14 }}>📁 {f.name}</span>
+                          <span style={{ color: "#666", fontSize: 12 }}>{f.save_count} saves</span>
+                          <button onClick={() => { setEditingFolderId(f.id); setDraftFolderName(f.name) }} style={styles.editButton} title="Rename">✎</button>
+                          <button onClick={() => deleteFolder(f.id)} style={styles.deleteButton} aria-label="Delete folder"><TrashIcon /></button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={styles.settingsDivider} />
           {!confirmDeleteAccount ? (
             <button onClick={() => setConfirmDeleteAccount(true)} style={styles.deleteAccountButton}>Delete account</button>
@@ -2331,6 +2463,58 @@ export default function App() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Folder picker bottom sheet */}
+      {folderPickerSaveId && (
+        <div style={styles.overlay} onClick={() => { setFolderPickerSaveId(null); setNewFolderName("") }}>
+          <div style={{ ...styles.bottomSheet, position: "relative", maxHeight: "70vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <span style={{ fontWeight: 600, color: "#f6f3ea", fontSize: 15 }}>Add to folders</span>
+              <button onClick={() => { setFolderPickerSaveId(null); setNewFolderName("") }} style={styles.savedArticleGhostButton}>✕</button>
+            </div>
+            {folders.length === 0 ? (
+              <p style={{ ...styles.overlayNote, marginBottom: 12 }}>Create your first folder below.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: 16 }}>
+                {folders.map(f => {
+                  const isChecked = pickerFolderIds.has(f.id)
+                  return (
+                    <label key={f.id} style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => {
+                          const newIds = isChecked
+                            ? [...pickerFolderIds].filter(id => id !== f.id)
+                            : [...pickerFolderIds, f.id]
+                          setPickerFolderIds(new Set(newIds))
+                          setSaveFolders(folderPickerSaveId, newIds)
+                        }}
+                        style={{ width: 16, height: 16, accentColor: "#d9ff5f", flexShrink: 0 }}
+                      />
+                      <span style={{ color: "#f6f3ea", fontSize: 14, flex: 1 }}>📁 {f.name}</span>
+                      <span style={{ color: "#555", fontSize: 12 }}>{f.save_count}</span>
+                    </label>
+                  )
+                })}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: "8px" }}>
+              <input
+                style={{ ...styles.input, flex: 1, fontSize: 13, padding: "8px 12px" }}
+                placeholder="New folder name…"
+                value={newFolderName}
+                onChange={e => setNewFolderName(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && newFolderName.trim()) createFolder(newFolderName) }}
+              />
+              <button
+                onClick={() => { if (newFolderName.trim()) createFolder(newFolderName) }}
+                style={{ ...styles.confirmButton, opacity: newFolderName.trim() ? 1 : 0.4 }}
+              >Add</button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -2492,7 +2676,7 @@ export default function App() {
           )}
 
           {/* Filter dropdowns — always visible when library has variety */}
-          {!loading && (libraryFilters.sources.length > 1 || libraryFilters.tags.length > 1) && (
+          {!loading && (libraryFilters.sources.length > 1 || folders.length > 1) && (
             <div style={styles.filterRow}>
               {libraryFilters.sources.length > 1 && (
                 <div style={styles.filterDropdownWrapper}>
@@ -2503,7 +2687,7 @@ export default function App() {
                       const newSource = e.target.value || null
                       setSelectedSource(newSource)
                       setDisplayCount(5)
-                      if (!query.trim()) browseByFilter(selectedTag, newSource)
+                      if (!query.trim()) browseByFilter(selectedFolder, newSource)
                     }}
                   >
                     <option value="">All sources</option>
@@ -2511,20 +2695,20 @@ export default function App() {
                   </select>
                 </div>
               )}
-              {libraryFilters.tags.length > 1 && (
+              {folders.length > 1 && (
                 <div style={styles.filterDropdownWrapper}>
                   <select
                     style={styles.filterDropdown}
-                    value={selectedTag || ""}
+                    value={selectedFolder || ""}
                     onChange={e => {
-                      const newTag = e.target.value || null
-                      setSelectedTag(newTag)
+                      const newFolder = e.target.value || null
+                      setSelectedFolder(newFolder)
                       setDisplayCount(5)
-                      if (!query.trim()) browseByFilter(newTag, selectedSource)
+                      if (!query.trim()) browseByFilter(newFolder, selectedSource)
                     }}
                   >
-                    <option value="">All tags</option>
-                    {libraryFilters.tags.map(t => <option key={t} value={t}>{t}</option>)}
+                    <option value="">All folders</option>
+                    {folders.map(f => <option key={f.id} value={f.name}>{f.name}</option>)}
                   </select>
                 </div>
               )}
@@ -2535,7 +2719,7 @@ export default function App() {
           {results.length > 0 && !loading && (() => {
             const filtered = results.filter(r =>
               (!selectedSource || getSourceLabel(r.url) === selectedSource) &&
-              (!selectedTag || r.tag === selectedTag)
+              (!selectedFolder || (r.folders || []).some(f => f.name === selectedFolder))
             )
             const visible = filtered.slice(0, displayCount)
             return (
@@ -2554,7 +2738,19 @@ export default function App() {
                       ) : (
                         <>
                           <div style={styles.cardMeta}>
-                            <span style={styles.cardTag}>{r.tag}</span>
+                            <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", flex: 1 }}>
+                              {(r.folders || []).map(f => (
+                                <button
+                                  key={f.id}
+                                  onClick={() => { setSelectedFolder(f.name); setDisplayCount(5) }}
+                                  style={styles.folderDisplayPill}
+                                >📁 {f.name}</button>
+                              ))}
+                              <button
+                                onClick={() => setFolderPickerSaveId(r.id)}
+                                style={styles.addFolderButton}
+                              >+ Folder</button>
+                            </div>
                             {r.created_at && <span style={styles.cardDate}>{formatDate(r.created_at)}</span>}
                             <button style={styles.cardTrashBtn} onClick={() => setConfirmDeleteId(r.id)} aria-label="Delete"><TrashIcon /></button>
                           </div>
@@ -2734,25 +2930,15 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  {editingTag ? (
-                    <div style={styles.tagPicker}>
-                      {VALID_TAGS.map(t => (
-                        <button
-                          key={t}
-                          onClick={() => updateSaveTag(t)}
-                          style={t === saveReceipt.tag ? styles.tagPillActive : styles.tagPill}
-                        >{t}</button>
-                      ))}
-                    </div>
-                  ) : (
+                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                    {(saveReceipt.folders || []).map(f => (
+                      <span key={f.id} style={styles.folderDisplayPill}>📁 {f.name}</span>
+                    ))}
                     <button
-                      onClick={() => { setEditingTag(true); setEditingTitle(false) }}
-                      style={styles.receiptTagButton}
-                    >
-                      <span style={styles.receiptTag}>{saveReceipt.tag}</span>
-                      <span style={{ fontSize: "10px", color: "#7d786f" }}>▾</span>
-                    </button>
-                  )}
+                      onClick={() => setFolderPickerSaveId(saveReceipt.id)}
+                      style={styles.addFolderButton}
+                    >+ Folder</button>
+                  </div>
                   <div style={styles.receiptTitleRow}>
                     {editingTitle ? (
                       <>
@@ -2774,7 +2960,7 @@ export default function App() {
                       <>
                         <span style={styles.receiptTitle}>{saveReceipt.title}</span>
                         <button
-                          onClick={() => { setEditingTitle(true); setEditingTag(false); setDraftTitle(saveReceipt.title) }}
+                          onClick={() => { setEditingTitle(true); setDraftTitle(saveReceipt.title) }}
                           style={styles.editButton}
                           title="Edit name"
                         >✎</button>
@@ -2833,7 +3019,8 @@ export default function App() {
 
           {/* Don't gate this on !optimistic — url + fromShareSheet are already known the
               instant the share sheet hands off, so this shouldn't wait on the /save round trip. */}
-          {saveReceipt?.fromShareSheet && !saveReceipt.thin_content && !saveReceipt.duplicate && (
+          {saveReceipt?.fromShareSheet && !saveReceipt.thin_content && !saveReceipt.duplicate &&
+            (getAppScheme(saveReceipt.url) || window.history.length > 1) && (
             <a
               href={getAppScheme(saveReceipt.url) ?? undefined}
               onClick={e => {
@@ -3137,11 +3324,8 @@ const styles = {
   error: { color: "#ef4444", fontSize: "14px", margin: 0 },
   neutral: { color: "#aca79b", fontSize: "14px", margin: 0 },
   receiptCard: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "22px", display: "flex", flexDirection: "column", gap: "12px", transition: "box-shadow 0.8s ease", color: "#f6f3ea", boxShadow: "0 30px 90px -56px rgba(0,0,0,0.95)" },
-  receiptTagButton: { background: "none", border: "none", color: "#aca79b", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: "4px", alignSelf: "flex-start" },
-  receiptTag: { fontSize: "11px", color: "#d9ff5f", textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
-  tagPicker: { display: "flex", flexWrap: "wrap", gap: "6px" },
-  tagPill: { background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "999px", padding: "4px 12px", fontSize: "12px", cursor: "pointer" },
-  tagPillActive: { background: "#d9ff5f", border: "1px solid #d9ff5f", color: "#1f2b08", borderRadius: "999px", padding: "4px 12px", fontSize: "12px", cursor: "pointer", fontWeight: "700" },
+  folderDisplayPill: { display: "inline-flex", alignItems: "center", background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "999px", padding: "3px 10px", fontSize: "12px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
+  addFolderButton: { display: "inline-flex", alignItems: "center", background: "none", border: "1px dashed rgba(255,255,255,0.18)", color: "#666", borderRadius: "999px", padding: "3px 10px", fontSize: "12px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
   receiptTitleRow: { display: "flex", alignItems: "center", gap: "8px" },
   receiptTitle: { fontSize: "22px", fontWeight: "400", flex: 1, lineHeight: 1.25, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em" },
   receiptTitleInput: { flex: 1, background: "#171719", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "10px", color: "#f6f3ea", fontSize: "15px", fontWeight: "600", padding: "6px 10px", outline: "none" },
@@ -3177,7 +3361,7 @@ const styles = {
   savedArticleTitle: { color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif", fontSize: "24px", lineHeight: 1.15, letterSpacing: "-0.02em", fontWeight: 400, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
   savedArticleCaption: { color: "#aca79b", fontSize: "15px", lineHeight: 1.55, maxWidth: "680px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
   savedArticleTagRow: { display: "flex", justifyContent: "flex-start", flexWrap: "wrap", gap: "8px" },
-  savedArticleTag: { display: "inline-flex", alignItems: "center", gap: "6px", borderRadius: "999px", background: "#25252a", border: "1px solid rgba(255,255,255,0.10)", color: "#aca79b", padding: "7px 11px", fontSize: "12px" },
+  savedArticleTag: { display: "inline-flex", alignItems: "center", gap: "6px", borderRadius: "999px", background: "#25252a", border: "1px solid rgba(255,255,255,0.10)", color: "#aca79b", padding: "4px 10px", fontSize: "12px" },
   savedArticleStatus: { color: "#aca79b", fontSize: "13px", padding: "4px 0" },
   savedArticleTitleInput: { width: "100%", background: "#171719", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "14px", color: "#f6f3ea", fontSize: "20px", fontFamily: "Georgia, 'Times New Roman', serif", padding: "12px 14px", outline: "none", boxSizing: "border-box" },
   savedArticleEditActions: { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "8px" },

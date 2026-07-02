@@ -1287,13 +1287,26 @@ async def do_search(query: str, user_id: str) -> dict:
         row.pop("embedding", None)
         results.append(row)
 
+    # Attach folder memberships — one batch query for all result IDs
+    if results:
+        save_ids = [r["id"] for r in results]
+        folder_rows = supabase.table("save_folders") \
+            .select("save_id, folders(id, name)") \
+            .in_("save_id", save_ids) \
+            .execute()
+        folders_by_save: dict[str, list] = {}
+        for fr in (folder_rows.data or []):
+            folders_by_save.setdefault(fr["save_id"], []).append(fr["folders"])
+        for r in results:
+            r["folders"] = folders_by_save.get(r["id"], [])
+
     return {"results": results}
 
 def do_suggestions(user_id: str) -> dict:
-    """Tag/source-based search-chip suggestions. Shared by /suggestions and the
+    """Folder/source-based search-chip suggestions. Shared by /suggestions and the
     recall_suggestions MCP tool."""
     result = supabase.table("saves") \
-        .select("tag, url") \
+        .select("url") \
         .eq("user_id", user_id) \
         .eq("status", "ready") \
         .execute()
@@ -1301,24 +1314,27 @@ def do_suggestions(user_id: str) -> dict:
     if not result.data:
         return {"chips": [], "has_saves": False}
 
-    # Count tags and sources across all saves
-    tag_counts = {}
-    source_counts = {}
+    # Count source frequency across all saves
+    source_counts: dict[str, int] = {}
     for row in result.data:
-        t = row.get("tag") or "Other"
-        tag_counts[t] = tag_counts.get(t, 0) + 1
         src = get_source_label(row.get("url", ""))
         if src and src != "Page":
             source_counts[src] = source_counts.get(src, 0) + 1
-
-    sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
     sorted_sources = sorted(source_counts.items(), key=lambda x: x[1], reverse=True)
 
+    # Count folder usage for this user
+    folder_result = supabase.table("folders") \
+        .select("name, save_folders(save_id)") \
+        .eq("user_id", user_id) \
+        .execute()
+    folder_counts = [(f["name"], len(f.get("save_folders") or [])) for f in (folder_result.data or [])]
+    folder_counts.sort(key=lambda x: x[1], reverse=True)
+
     chips = []
-    if sorted_tags:
-        chips.append(f"my {sorted_tags[0][0].lower()} reads")
-    if len(sorted_tags) > 1:
-        chips.append(f"{sorted_tags[1][0].lower()} articles")
+    if folder_counts:
+        chips.append(f"things in {folder_counts[0][0]}")
+    if len(folder_counts) > 1 and len(chips) < 3:
+        chips.append(f"my {folder_counts[1][0].lower()} saves")
     if sorted_sources and len(chips) < 3:
         chips.append(f"things from {sorted_sources[0][0]}")
 
@@ -1357,4 +1373,86 @@ def do_delete_save(save_id: str, user_id: str) -> dict:
         }).execute()
     except Exception:
         pass
+    return {"success": True}
+
+
+# --- Folder management ---
+
+def do_get_folders(user_id: str) -> dict:
+    result = supabase.table("folders") \
+        .select("id, name, created_at, save_folders(save_id)") \
+        .eq("user_id", user_id) \
+        .order("created_at") \
+        .execute()
+    folders = []
+    for f in (result.data or []):
+        folders.append({
+            "id": f["id"],
+            "name": f["name"],
+            "created_at": f["created_at"],
+            "save_count": len(f.get("save_folders") or []),
+        })
+    return {"folders": folders}
+
+
+def do_create_folder(name: str, user_id: str) -> dict:
+    name = name.strip()
+    if not name:
+        raise ValueError("Folder name cannot be empty")
+    if len(name) > 50:
+        raise ValueError("Folder name must be 50 characters or fewer")
+    try:
+        result = supabase.table("folders").insert({
+            "user_id": user_id,
+            "name": name,
+        }).execute()
+    except Exception as e:
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            raise ValueError(f'A folder named "{name}" already exists')
+        raise
+    return {"success": True, "id": result.data[0]["id"], "name": name}
+
+
+def do_rename_folder(folder_id: str, name: str, user_id: str) -> dict:
+    name = name.strip()
+    if not name:
+        raise ValueError("Folder name cannot be empty")
+    if len(name) > 50:
+        raise ValueError("Folder name must be 50 characters or fewer")
+    try:
+        supabase.table("folders").update({"name": name}) \
+            .eq("id", folder_id).eq("user_id", user_id).execute()
+    except Exception as e:
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            raise ValueError(f'A folder named "{name}" already exists')
+        raise
+    return {"success": True}
+
+
+def do_delete_folder(folder_id: str, user_id: str) -> dict:
+    # CASCADE on save_folders FK means memberships are removed automatically
+    supabase.table("folders").delete() \
+        .eq("id", folder_id).eq("user_id", user_id).execute()
+    return {"success": True}
+
+
+def do_set_save_folders(save_id: str, folder_ids: list, user_id: str) -> dict:
+    # Validate the save belongs to this user
+    check = supabase.table("saves").select("id") \
+        .eq("id", save_id).eq("user_id", user_id).execute()
+    if not check.data:
+        raise ValueError("Save not found")
+    # Validate all requested folders belong to this user
+    if folder_ids:
+        folder_check = supabase.table("folders").select("id") \
+            .in_("id", folder_ids).eq("user_id", user_id).execute()
+        found_ids = {f["id"] for f in (folder_check.data or [])}
+        if len(found_ids) != len(folder_ids):
+            raise ValueError("One or more folders not found")
+    # Atomically replace all memberships for this save
+    supabase.table("save_folders").delete().eq("save_id", save_id).execute()
+    if folder_ids:
+        supabase.table("save_folders").insert([
+            {"save_id": save_id, "folder_id": fid} for fid in folder_ids
+        ]).execute()
     return {"success": True}
