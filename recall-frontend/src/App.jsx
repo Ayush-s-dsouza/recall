@@ -370,6 +370,7 @@ export default function App() {
   // Folders
   const [folders, setFolders] = useState([])
   const [folderPickerSaveId, setFolderPickerSaveId] = useState(null)
+  const [pickerFolderIds, setPickerFolderIds] = useState(new Set())
   const [newFolderName, setNewFolderName] = useState("")
   const [editingFolderId, setEditingFolderId] = useState(null)
   const [draftFolderName, setDraftFolderName] = useState("")
@@ -563,19 +564,25 @@ export default function App() {
     return () => { clearTimeout(t1); clearTimeout(t2) }
   }, [askLoading])
 
-  // Derive current folder IDs for the save currently open in the picker.
-  // Reading from canonical state (not a separate pickerFolderIds copy) ensures
-  // the checkboxes always reflect the optimistic updates made by setSaveFolders.
-  const pickerCurrentFolderIds = (() => {
-    if (!folderPickerSaveId) return new Set()
+  // Seed the picker's checked state from whichever list owns the save.
+  useEffect(() => {
+    if (!folderPickerSaveId) { setPickerFolderIds(new Set()); return }
     const todaySave = todaySaves.find(s => s.id === folderPickerSaveId)
-    if (todaySave) return new Set((todaySave.save_folders || []).map(sf => sf.folder_id))
-    if (saveReceipt?.id === folderPickerSaveId)
-      return new Set((saveReceipt.folders || []).map(f => f.id))
+    if (todaySave) {
+      setPickerFolderIds(new Set((todaySave.save_folders || []).map(sf => sf.folder_id)))
+      return
+    }
+    if (saveReceipt?.id === folderPickerSaveId) {
+      setPickerFolderIds(new Set((saveReceipt.folders || []).map(f => f.id)))
+      return
+    }
     const resultSave = results.find(r => r.id === folderPickerSaveId)
-    if (resultSave) return new Set((resultSave.folders || []).map(f => f.id))
-    return new Set()
-  })()
+    if (resultSave) {
+      setPickerFolderIds(new Set((resultSave.folders || []).map(f => f.id)))
+      return
+    }
+    setPickerFolderIds(new Set())
+  }, [folderPickerSaveId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function playSuccessChime() {
     try {
@@ -1332,7 +1339,8 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folder_ids: folderIds, token })
     })
-    fetchFolders() // refresh save counts
+    fetchFolders()    // refresh save counts
+    fetchTodaySaves() // refresh today's list so pills reflect ground truth from DB
   }
 
   const createFolder = async (name) => {
@@ -1348,8 +1356,9 @@ export default function App() {
     const newFolders = await fetchFolders()
     // Auto-add the new folder to the save currently in the picker
     if (folderPickerSaveId && data.id) {
-      const existingIds = [...pickerCurrentFolderIds]
-      await setSaveFolders(folderPickerSaveId, [...existingIds, data.id])
+      const newIds = [...pickerFolderIds, data.id]
+      setPickerFolderIds(new Set(newIds))
+      await setSaveFolders(folderPickerSaveId, newIds)
     }
   }
 
@@ -2471,7 +2480,7 @@ export default function App() {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: 16 }}>
                 {folders.map(f => {
-                  const isChecked = pickerCurrentFolderIds.has(f.id)
+                  const isChecked = pickerFolderIds.has(f.id)
                   return (
                     <label key={f.id} style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}>
                       <input
@@ -2479,8 +2488,9 @@ export default function App() {
                         checked={isChecked}
                         onChange={() => {
                           const newIds = isChecked
-                            ? [...pickerCurrentFolderIds].filter(id => id !== f.id)
-                            : [...pickerCurrentFolderIds, f.id]
+                            ? [...pickerFolderIds].filter(id => id !== f.id)
+                            : [...pickerFolderIds, f.id]
+                          setPickerFolderIds(new Set(newIds))
                           setSaveFolders(folderPickerSaveId, newIds)
                         }}
                         style={{ width: 16, height: 16, accentColor: "#d9ff5f", flexShrink: 0 }}
