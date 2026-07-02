@@ -1780,7 +1780,7 @@ export default function App() {
                     key={f.id}
                     onClick={e => { e.preventDefault(); e.stopPropagation(); setRemoveFolderConfirm({ saveId: save.id, folderId: f.id, folderName: f.name }) }}
                     style={styles.folderDisplayPill}
-                  ><FolderIcon /> {f.name}</button>
+                  ><FolderIcon />{f.name}</button>
                 )
               ))}
               <button
@@ -2462,6 +2462,7 @@ export default function App() {
             </div>
           )}
 
+          <div style={styles.settingsDivider} />
           <button
             onClick={() => setOpenSettingsSection(openSettingsSection !== 'folders' ? 'folders' : null)}
             style={styles.settingsAccordionHeader}
@@ -2474,9 +2475,9 @@ export default function App() {
               {folders.length === 0 ? (
                 <p style={styles.overlayNote}>No folders yet. Save something and tap "+ Folder" to create one.</p>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%" }}>
                   {folders.map(f => (
-                    <div key={f.id} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <div key={f.id} style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%" }}>
                       {editingFolderId === f.id ? (
                         <>
                           <input
@@ -2491,7 +2492,7 @@ export default function App() {
                         </>
                       ) : (
                         <>
-                          <span style={{ flex: 1, color: "#f6f3ea", fontSize: 14 }}><FolderIcon /> {f.name}</span>
+                          <span style={{ flex: 1, color: "#f6f3ea", fontSize: 14, display: "inline-flex", alignItems: "center", gap: "6px" }}><FolderIcon size={13} />{f.name}</span>
                           <span style={{ color: "#666", fontSize: 12 }}>{f.save_count} saves</span>
                           <button onClick={() => { setEditingFolderId(f.id); setDraftFolderName(f.name) }} style={styles.editButton} title="Rename">✎</button>
                           <button onClick={() => deleteFolder(f.id)} style={styles.deleteButton} aria-label="Delete folder"><TrashIcon /></button>
@@ -2549,7 +2550,7 @@ export default function App() {
                         }}
                         style={{ width: 16, height: 16, accentColor: "#d9ff5f", flexShrink: 0 }}
                       />
-                      <span style={{ color: "#f6f3ea", fontSize: 14, flex: 1 }}><FolderIcon /> {f.name}</span>
+                      <span style={{ color: "#f6f3ea", fontSize: 14, flex: 1, display: "inline-flex", alignItems: "center", gap: "6px" }}><FolderIcon size={13} />{f.name}</span>
                       <span style={{ color: "#555", fontSize: 12 }}>{f.save_count}</span>
                     </label>
                   )
@@ -2814,7 +2815,7 @@ export default function App() {
                                   key={f.id}
                                   onClick={e => { e.preventDefault(); setRemoveFolderConfirm({ saveId: r.id, folderId: f.id, folderName: f.name }) }}
                                   style={styles.folderDisplayPill}
-                                ><FolderIcon /> {f.name}</button>
+                                ><FolderIcon />{f.name}</button>
                               )
                             ))}
                             <button
@@ -3002,7 +3003,7 @@ export default function App() {
                           <button onClick={() => setRemoveFolderConfirm(null)} style={styles.folderRemoveNo}>Cancel</button>
                         </span>
                       ) : (
-                        <button key={f.id} onClick={() => setRemoveFolderConfirm({ saveId: saveReceipt.id, folderId: f.id, folderName: f.name })} style={styles.folderDisplayPill}><FolderIcon /> {f.name}</button>
+                        <button key={f.id} onClick={() => setRemoveFolderConfirm({ saveId: saveReceipt.id, folderId: f.id, folderName: f.name })} style={styles.folderDisplayPill}><FolderIcon />{f.name}</button>
                       )
                     ))}
                     <button
@@ -3395,7 +3396,7 @@ const styles = {
   error: { color: "#ef4444", fontSize: "14px", margin: 0 },
   neutral: { color: "#aca79b", fontSize: "14px", margin: 0 },
   receiptCard: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "22px", display: "flex", flexDirection: "column", gap: "12px", transition: "box-shadow 0.8s ease", color: "#f6f3ea", boxShadow: "0 30px 90px -56px rgba(0,0,0,0.95)" },
-  folderDisplayPill: { display: "inline-flex", alignItems: "center", background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "999px", padding: "3px 10px", fontSize: "12px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
+  folderDisplayPill: { display: "inline-flex", alignItems: "center", gap: "5px", background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "999px", padding: "3px 10px", fontSize: "12px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
   addFolderButton: { display: "inline-flex", alignItems: "center", background: "none", border: "1px dashed rgba(255,255,255,0.18)", color: "#666", borderRadius: "999px", padding: "3px 10px", fontSize: "12px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
   folderRemoveConfirm: { display: "inline-flex", alignItems: "center", gap: "6px", background: "#1e1a14", border: "1px solid rgba(251,191,36,0.3)", color: "#aca79b", borderRadius: "999px", padding: "3px 10px", fontSize: "12px", whiteSpace: "nowrap", flexShrink: 0 },
   folderRemoveYes: { background: "none", border: "none", color: "#ef4444", fontSize: "12px", cursor: "pointer", padding: "0", fontWeight: 500 },
