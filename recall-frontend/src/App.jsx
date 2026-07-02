@@ -373,6 +373,7 @@ export default function App() {
   })
   const [folderPickerSaveId, setFolderPickerSaveId] = useState(null)
   const [pickerFolderIds, setPickerFolderIds] = useState(new Set())
+  const [removeFolderConfirm, setRemoveFolderConfirm] = useState(null) // { saveId, folderId, folderName }
   const [newFolderName, setNewFolderName] = useState("")
   const [editingFolderId, setEditingFolderId] = useState(null)
   const [draftFolderName, setDraftFolderName] = useState("")
@@ -1375,6 +1376,12 @@ export default function App() {
     // fetchFolders would hit Railway (potential cold start) and could overwrite correct state.
   }
 
+  const handleRemoveFromFolder = async (saveId, folderId) => {
+    const currentIds = getSaveFolders(saveId).map(f => f.id)
+    await setSaveFolders(saveId, currentIds.filter(id => id !== folderId))
+    setRemoveFolderConfirm(null)
+  }
+
   const createFolder = async (name) => {
     const token = await getToken()
     const res = await fetch(`${BACKEND}/folders`, {
@@ -1754,11 +1761,19 @@ export default function App() {
             </div>
             <div style={styles.savedArticleTagRow}>
               {getSaveFolders(save.id).map(f => (
-                <button
-                  key={f.id}
-                  onClick={e => { e.preventDefault(); e.stopPropagation(); setFolderPickerSaveId(save.id) }}
-                  style={styles.folderDisplayPill}
-                >📁 {f.name}</button>
+                removeFolderConfirm?.saveId === save.id && removeFolderConfirm?.folderId === f.id ? (
+                  <span key={f.id} style={styles.folderRemoveConfirm}>
+                    Remove from "{f.name}"?
+                    <button onClick={e => { e.preventDefault(); e.stopPropagation(); handleRemoveFromFolder(save.id, f.id) }} style={styles.folderRemoveYes}>Yes</button>
+                    <button onClick={e => { e.preventDefault(); e.stopPropagation(); setRemoveFolderConfirm(null) }} style={styles.folderRemoveNo}>Cancel</button>
+                  </span>
+                ) : (
+                  <button
+                    key={f.id}
+                    onClick={e => { e.preventDefault(); e.stopPropagation(); setRemoveFolderConfirm({ saveId: save.id, folderId: f.id, folderName: f.name }) }}
+                    style={styles.folderDisplayPill}
+                  >📁 {f.name}</button>
+                )
               ))}
               <button
                 onClick={e => { e.preventDefault(); e.stopPropagation(); setFolderPickerSaveId(save.id) }}
@@ -2765,11 +2780,19 @@ export default function App() {
                           <div style={styles.cardMeta}>
                             <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", flex: 1 }}>
                               {getSaveFolders(r.id).map(f => (
-                                <button
-                                  key={f.id}
-                                  onClick={() => { setSelectedFolder(f.name); setDisplayCount(5) }}
-                                  style={styles.folderDisplayPill}
-                                >📁 {f.name}</button>
+                                removeFolderConfirm?.saveId === r.id && removeFolderConfirm?.folderId === f.id ? (
+                                  <span key={f.id} style={styles.folderRemoveConfirm}>
+                                    Remove from "{f.name}"?
+                                    <button onClick={() => handleRemoveFromFolder(r.id, f.id)} style={styles.folderRemoveYes}>Yes</button>
+                                    <button onClick={() => setRemoveFolderConfirm(null)} style={styles.folderRemoveNo}>Cancel</button>
+                                  </span>
+                                ) : (
+                                  <button
+                                    key={f.id}
+                                    onClick={() => setRemoveFolderConfirm({ saveId: r.id, folderId: f.id, folderName: f.name })}
+                                    style={styles.folderDisplayPill}
+                                  >📁 {f.name}</button>
+                                )
                               ))}
                               <button
                                 onClick={() => setFolderPickerSaveId(r.id)}
@@ -2957,7 +2980,15 @@ export default function App() {
                 <>
                   <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
                     {getSaveFolders(saveReceipt.id).map(f => (
-                      <span key={f.id} style={styles.folderDisplayPill}>📁 {f.name}</span>
+                      removeFolderConfirm?.saveId === saveReceipt.id && removeFolderConfirm?.folderId === f.id ? (
+                        <span key={f.id} style={styles.folderRemoveConfirm}>
+                          Remove from "{f.name}"?
+                          <button onClick={() => handleRemoveFromFolder(saveReceipt.id, f.id)} style={styles.folderRemoveYes}>Yes</button>
+                          <button onClick={() => setRemoveFolderConfirm(null)} style={styles.folderRemoveNo}>Cancel</button>
+                        </span>
+                      ) : (
+                        <button key={f.id} onClick={() => setRemoveFolderConfirm({ saveId: saveReceipt.id, folderId: f.id, folderName: f.name })} style={styles.folderDisplayPill}>📁 {f.name}</button>
+                      )
                     ))}
                     <button
                       onClick={() => setFolderPickerSaveId(saveReceipt.id)}
@@ -3351,6 +3382,9 @@ const styles = {
   receiptCard: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "22px", display: "flex", flexDirection: "column", gap: "12px", transition: "box-shadow 0.8s ease", color: "#f6f3ea", boxShadow: "0 30px 90px -56px rgba(0,0,0,0.95)" },
   folderDisplayPill: { display: "inline-flex", alignItems: "center", background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "999px", padding: "3px 10px", fontSize: "12px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
   addFolderButton: { display: "inline-flex", alignItems: "center", background: "none", border: "1px dashed rgba(255,255,255,0.18)", color: "#666", borderRadius: "999px", padding: "3px 10px", fontSize: "12px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
+  folderRemoveConfirm: { display: "inline-flex", alignItems: "center", gap: "6px", background: "#1e1a14", border: "1px solid rgba(251,191,36,0.3)", color: "#aca79b", borderRadius: "999px", padding: "3px 10px", fontSize: "12px", whiteSpace: "nowrap", flexShrink: 0 },
+  folderRemoveYes: { background: "none", border: "none", color: "#ef4444", fontSize: "12px", cursor: "pointer", padding: "0", fontWeight: 500 },
+  folderRemoveNo: { background: "none", border: "none", color: "#666", fontSize: "12px", cursor: "pointer", padding: "0" },
   receiptTitleRow: { display: "flex", alignItems: "center", gap: "8px" },
   receiptTitle: { fontSize: "22px", fontWeight: "400", flex: 1, lineHeight: 1.25, color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif", letterSpacing: "-0.02em" },
   receiptTitleInput: { flex: 1, background: "#171719", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "10px", color: "#f6f3ea", fontSize: "15px", fontWeight: "600", padding: "6px 10px", outline: "none" },
