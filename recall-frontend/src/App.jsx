@@ -1327,18 +1327,18 @@ export default function App() {
   }
 
   const setSaveFolders = async (saveId, folderIds) => {
+    // Update local state immediately so the pill appears before the network round-trip
+    const folderObjs = folders.filter(f => folderIds.includes(f.id))
+      .map(f => ({ folder_id: f.id, folders: { id: f.id, name: f.name } }))
+    setTodaySaves(prev => prev.map(s => s.id === saveId ? { ...s, save_folders: folderObjs } : s))
+    setSaveReceipt(r => r?.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r)
+    setResults(prev => prev.map(r => r.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r))
     const token = await getToken()
     await fetch(`${BACKEND}/save/${saveId}/folders`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folder_ids: folderIds, token })
     })
-    // Build normalized folder objects for local state updates
-    const folderObjs = folders.filter(f => folderIds.includes(f.id))
-      .map(f => ({ folder_id: f.id, folders: { id: f.id, name: f.name } }))
-    setTodaySaves(prev => prev.map(s => s.id === saveId ? { ...s, save_folders: folderObjs } : s))
-    setSaveReceipt(r => r?.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r)
-    setResults(prev => prev.map(r => r.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r))
     fetchFolders() // refresh save counts
   }
 
