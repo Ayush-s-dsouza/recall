@@ -1333,20 +1333,18 @@ export default function App() {
     setTodaySaves(prev => prev.map(s => s.id === saveId ? { ...s, save_folders: folderObjs } : s))
     setSaveReceipt(r => r?.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r)
     setResults(prev => prev.map(r => r.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r))
-    console.log("[setSaveFolders] saveId:", saveId, "folderIds:", folderIds, "folderObjs:", folderObjs)
-    console.log("[setSaveFolders] in todaySaves:", todaySaves.some(s => s.id === saveId), "in results:", results.some(r => r.id === saveId), "is receipt:", saveReceipt?.id === saveId)
+    setCalendarSaves(prev => Object.fromEntries(Object.entries(prev).map(([k, saves]) =>
+      [k, saves.map(s => s.id === saveId ? { ...s, save_folders: folderObjs } : s)]
+    )))
     const token = await getToken()
     const res = await fetch(`${BACKEND}/save/${saveId}/folders`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folder_ids: folderIds, token })
     })
-    const resText = await res.text()
-    console.log("[setSaveFolders] response:", res.status, resText)
     if (res.ok) {
       fetchFolders()
     } else {
-      console.error("[setSaveFolders] FAILED:", res.status, resText)
       fetchTodaySaves()
       fetchFolders()
     }
@@ -1578,7 +1576,7 @@ export default function App() {
     setCalendarLoading(true)
     const { data } = await supabase
       .from("saves")
-      .select("id, url, title, tag, created_at, content_text")
+      .select("id, url, title, tag, created_at, content_text, save_folders(folder_id, folders(id, name))")
       .order("created_at", { ascending: false })
     if (data) {
       const grouped = {}
