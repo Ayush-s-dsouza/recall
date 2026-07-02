@@ -1333,16 +1333,19 @@ export default function App() {
     setTodaySaves(prev => prev.map(s => s.id === saveId ? { ...s, save_folders: folderObjs } : s))
     setSaveReceipt(r => r?.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r)
     setResults(prev => prev.map(r => r.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r))
+    console.log("[setSaveFolders] saveId:", saveId, "folderIds:", folderIds, "folderObjs:", folderObjs)
     const token = await getToken()
     const res = await fetch(`${BACKEND}/save/${saveId}/folders`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folder_ids: folderIds, token })
     })
+    const resText = await res.text()
+    console.log("[setSaveFolders] response:", res.status, resText)
     if (res.ok) {
-      fetchFolders() // refresh save counts
+      fetchFolders()
     } else {
-      // Backend failed — revert the optimistic update
+      console.error("[setSaveFolders] FAILED:", res.status, resText)
       fetchTodaySaves()
       fetchFolders()
     }
