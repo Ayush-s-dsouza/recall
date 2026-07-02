@@ -1334,13 +1334,18 @@ export default function App() {
     setSaveReceipt(r => r?.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r)
     setResults(prev => prev.map(r => r.id === saveId ? { ...r, folders: folderObjs.map(sf => sf.folders) } : r))
     const token = await getToken()
-    await fetch(`${BACKEND}/save/${saveId}/folders`, {
+    const res = await fetch(`${BACKEND}/save/${saveId}/folders`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folder_ids: folderIds, token })
     })
-    fetchFolders()    // refresh save counts
-    fetchTodaySaves() // refresh today's list so pills reflect ground truth from DB
+    if (res.ok) {
+      fetchFolders() // refresh save counts
+    } else {
+      // Backend failed — revert the optimistic update
+      fetchTodaySaves()
+      fetchFolders()
+    }
   }
 
   const createFolder = async (name) => {
