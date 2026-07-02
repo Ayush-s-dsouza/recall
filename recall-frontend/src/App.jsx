@@ -2637,30 +2637,15 @@ export default function App() {
             </div>
           )}
 
-          {/* Empty state — personalised chips or new-user nudge */}
-          {!hasSearched && !loading && (
-            suggestedChips === null ? null : suggestedChips.length === 0 ? (
-              <div style={styles.emptyState}>
-                <p style={styles.emptyStateHint}>Nothing saved yet.</p>
-                <button
-                  style={styles.emptyStateCta}
-                  onClick={() => setView("save")}
-                >Save your first link →</button>
-              </div>
-            ) : (
-              <div style={styles.emptyState}>
-                <p style={styles.emptyStateHint}>Try searching for…</p>
-                <div style={styles.exampleChips}>
-                  {suggestedChips.map(chip => (
-                    <button
-                      key={chip}
-                      style={styles.exampleChip}
-                      onClick={() => { setQuery(chip); handleSearch(chip) }}
-                    >{chip}</button>
-                  ))}
-                </div>
-              </div>
-            )
+          {/* Empty state — new-user nudge only */}
+          {!hasSearched && !loading && suggestedChips !== null && suggestedChips.length === 0 && (
+            <div style={styles.emptyState}>
+              <p style={styles.emptyStateHint}>Nothing saved yet.</p>
+              <button
+                style={styles.emptyStateCta}
+                onClick={() => setView("save")}
+              >Save your first link →</button>
+            </div>
           )}
 
           {/* Zero-results state */}
@@ -2676,7 +2661,7 @@ export default function App() {
           )}
 
           {/* Filter dropdowns — always visible when library has variety */}
-          {!loading && (libraryFilters.sources.length > 1 || folders.length > 1) && (
+          {!loading && (libraryFilters.sources.length > 1 || folders.length > 0) && (
             <div style={styles.filterRow}>
               {libraryFilters.sources.length > 1 && (
                 <div style={styles.filterDropdownWrapper}>
@@ -2695,7 +2680,7 @@ export default function App() {
                   </select>
                 </div>
               )}
-              {folders.length > 1 && (
+              {folders.length > 0 && (
                 <div style={styles.filterDropdownWrapper}>
                   <select
                     style={styles.filterDropdown}
