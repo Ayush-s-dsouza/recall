@@ -2766,50 +2766,57 @@ export default function App() {
               <>
                 <div style={styles.results}>
                   {visible.map(r => (
-                    <div key={r.id} style={styles.card}>
+                    <a key={r.id} href={confirmDeleteId === r.id ? undefined : r.url} target="_blank" rel="noreferrer" style={styles.savedArticleCard}>
                       {confirmDeleteId === r.id ? (
                         <div style={styles.deleteConfirm}>
                           <span style={styles.deleteConfirmText}>Remove from ReCall?</span>
-                          <button style={styles.deleteConfirmYes} onClick={() => deleteSave(r.id)}>
+                          <button style={styles.deleteConfirmYes} onClick={e => { e.preventDefault(); deleteSave(r.id) }}>
                             {deletingId === r.id ? "Removing…" : "Delete"}
                           </button>
-                          <button style={styles.deleteConfirmNo} onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                          <button style={styles.deleteConfirmNo} onClick={e => { e.preventDefault(); setConfirmDeleteId(null) }}>Cancel</button>
                         </div>
                       ) : (
                         <>
-                          <div style={styles.cardMeta}>
-                            <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", flex: 1 }}>
-                              {getSaveFolders(r.id).map(f => (
-                                removeFolderConfirm?.saveId === r.id && removeFolderConfirm?.folderId === f.id ? (
-                                  <span key={f.id} style={styles.folderRemoveConfirm}>
-                                    Remove from "{f.name}"?
-                                    <button onClick={() => handleRemoveFromFolder(r.id, f.id)} style={styles.folderRemoveYes}>Yes</button>
-                                    <button onClick={() => setRemoveFolderConfirm(null)} style={styles.folderRemoveNo}>Cancel</button>
-                                  </span>
-                                ) : (
-                                  <button
-                                    key={f.id}
-                                    onClick={() => setRemoveFolderConfirm({ saveId: r.id, folderId: f.id, folderName: f.name })}
-                                    style={styles.folderDisplayPill}
-                                  >📁 {f.name}</button>
-                                )
-                              ))}
-                              <button
-                                onClick={() => setFolderPickerSaveId(r.id)}
-                                style={styles.addFolderButton}
-                              >+ Folder</button>
+                          <div style={styles.savedArticleTop}>
+                            <div style={styles.savedArticleMeta}>
+                              <span style={styles.savedArticleSourceTile} />
+                              <span>{getSiteName(r.url)}</span>
+                              {r.created_at && <span>{formatDate(r.created_at)}</span>}
                             </div>
-                            {r.created_at && <span style={styles.cardDate}>{formatDate(r.created_at)}</span>}
-                            <button style={styles.cardTrashBtn} onClick={() => setConfirmDeleteId(r.id)} aria-label="Delete"><TrashIcon /></button>
+                            <button
+                              onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDeleteId(r.id) }}
+                              style={styles.deleteButton}
+                              aria-label="Delete"
+                            ><TrashIcon /></button>
                           </div>
-                          <a href={r.url} target="_blank" rel="noreferrer" style={styles.cardTitleLink}>
-                            <div style={styles.cardTitle}>{r.title || getSourceLabel(r.url)}</div>
-                            {r.excerpt && <div style={styles.cardExcerpt}>{r.excerpt}</div>}
-                            <div style={styles.cardSource}>{getSourceLabel(r.url)}</div>
-                          </a>
+                          <div style={styles.savedArticleBody}>
+                            <span style={styles.savedArticleTitle}>{r.title || getSourceLabel(r.url)}</span>
+                            {r.excerpt && <span style={styles.savedArticleCaption}>{r.excerpt}</span>}
+                          </div>
+                          <div style={styles.savedArticleTagRow}>
+                            {getSaveFolders(r.id).map(f => (
+                              removeFolderConfirm?.saveId === r.id && removeFolderConfirm?.folderId === f.id ? (
+                                <span key={f.id} style={styles.folderRemoveConfirm}>
+                                  Remove from "{f.name}"?
+                                  <button onClick={e => { e.preventDefault(); handleRemoveFromFolder(r.id, f.id) }} style={styles.folderRemoveYes}>Yes</button>
+                                  <button onClick={e => { e.preventDefault(); setRemoveFolderConfirm(null) }} style={styles.folderRemoveNo}>Cancel</button>
+                                </span>
+                              ) : (
+                                <button
+                                  key={f.id}
+                                  onClick={e => { e.preventDefault(); setRemoveFolderConfirm({ saveId: r.id, folderId: f.id, folderName: f.name }) }}
+                                  style={styles.folderDisplayPill}
+                                >📁 {f.name}</button>
+                              )
+                            ))}
+                            <button
+                              onClick={e => { e.preventDefault(); setFolderPickerSaveId(r.id) }}
+                              style={styles.addFolderButton}
+                            >+ Folder</button>
+                          </div>
                         </>
                       )}
-                    </div>
+                    </a>
                   ))}
                 </div>
 
