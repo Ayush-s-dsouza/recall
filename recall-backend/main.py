@@ -345,7 +345,7 @@ async def ask_recall(req: AskRequest, request: Request):
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    query_embedding = await get_embedding(req.query)
+    query_embedding = await get_embedding(req.query, task_type="RETRIEVAL_QUERY")
     semantic_result = supabase.rpc("match_saves", {
         "query_embedding": query_embedding,
         "match_user_id": user_id,

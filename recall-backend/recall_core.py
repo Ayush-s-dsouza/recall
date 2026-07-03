@@ -37,8 +37,17 @@ try:
     _NO_THINKING = types.GenerateContentConfig(
         thinking_config=types.ThinkingConfig(thinking_budget=0)
     )
+    # Dedicated config for expand_search_query only — same thinking-disabled behavior as
+    # _NO_THINKING, plus temperature=0 so identical search queries produce identical
+    # rewrites (and thus stable results) instead of drifting run to run. Kept separate
+    # from _NO_THINKING so tagging/extraction call sites aren't affected.
+    _SEARCH_EXPAND_CONFIG = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
+        temperature=0
+    )
 except AttributeError:
     _NO_THINKING = types.GenerateContentConfig()
+    _SEARCH_EXPAND_CONFIG = types.GenerateContentConfig(temperature=0)
 
 # --- SSRF protection ---
 _PRIVATE_RANGES = [
@@ -145,7 +154,11 @@ def send_save_ready_push(user_id: str, title: str, source_label: str):
         except Exception as e:
             print(f"[push] send failed: {e!r}", flush=True)
 
-async def get_embedding(text: str):
+async def get_embedding(text: str, task_type: str = "RETRIEVAL_DOCUMENT"):
+    """task_type: RETRIEVAL_DOCUMENT for saved content (default), RETRIEVAL_QUERY for
+    search queries — Gemini's embedding space is asymmetric between the two, and using
+    the same generic embedding for both compresses similarity scores (see CLAUDE.md
+    Known Issue #33)."""
     api_key = os.getenv("GEMINI_API_KEY")
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(
@@ -153,6 +166,7 @@ async def get_embedding(text: str):
             json={
                 "model": "models/gemini-embedding-001",
                 "content": {"parts": [{"text": text[:8000]}]},
+                "taskType": task_type,
                 "outputDimensionality": 768
             }
         )
@@ -554,10 +568,13 @@ async def _fetch_tweet_card_title(tweet_url: str) -> str:
         print(f"[syndication] exception: {e}", flush=True)
         return "", ""
 
-X_AUTHWALL_SIGNATURES = [
+X_JUNK_SIGNATURES = [
+    # login-wall copy (logged-out fetches of gated tweets)
     "see what's happening", "continue with google", "continue with apple",
     "continue with phone", "by continuing, you agree to our terms of service",
     "don't miss what's happening", "log in to x",
+    # deleted/nonexistent-tweet 404 copy (X's own error page, not the tweet)
+    "this page doesn't exist", "nothing to see here",
 ]
 
 async def fetch_tweet(url: str):
@@ -573,12 +590,13 @@ async def fetch_tweet(url: str):
     if " on X" in og_title or og_title.endswith("on Twitter"):
         og_title = ""
     # Logged-out fetches of some tweets (e.g. /i/status/ links, or ones X otherwise
-    # gates) get served X's own signup/login wall instead of the tweet — that's still
-    # >150 chars so fetch_with_jina's length check doesn't catch it, and it was silently
-    # overwriting real api_text/jina_title with login-wall boilerplate.
-    jina_is_authwall = jina_text and any(sig in jina_text.lower() for sig in X_AUTHWALL_SIGNATURES)
-    if jina_is_authwall:
-        print(f"[tweet] jina login-wall signature detected, discarding jina content url={url}", flush=True)
+    # gates) get served X's own signup/login wall instead of the tweet, and deleted/
+    # nonexistent tweets get served X's own 404 page — both are still >150 chars so
+    # fetch_with_jina's length check doesn't catch them, and they were silently
+    # overwriting real api_text/jina_title with X's own boilerplate.
+    jina_is_junk = jina_text and any(sig in jina_text.lower() for sig in X_JUNK_SIGNATURES)
+    if jina_is_junk:
+        print(f"[tweet] jina login-wall/not-found signature detected, discarding jina content url={url}", flush=True)
         content = api_text
         jina_title = ""
     else:
@@ -691,6 +709,13 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
     skip the duplicate check (already done) and UPDATE that row instead of inserting a new one.
     """
     url = await resolve_linkedin_redirect(url)
+    if "linkedin.com/safety/go" in url:
+        # resolve_linkedin_redirect couldn't actually resolve this wrapper (the fetch of
+        # its target failed) and handed back the unresolved wrapper itself — proceeding
+        # would save LinkedIn's own interstitial page as if it were the article.
+        _finalize_placeholder(placeholder_id, user_id, url)
+        return {"thin_content": True, "url": url}
+    validate_url(url)
 
     if not placeholder_id:
         existing = supabase.table("saves") \
@@ -1218,7 +1243,7 @@ async def expand_search_query(query: str) -> str:
                         "or adjacent categories/concepts. Return only the expanded query, no explanation.\n"
                         f"Query: {query}"
                     ),
-                    config=_NO_THINKING
+                    config=_SEARCH_EXPAND_CONFIG
                 )
             ),
             timeout=8.0
@@ -1233,7 +1258,7 @@ async def do_search(query: str, user_id: str) -> dict:
     and the recall_search MCP tool."""
     # Expand short queries before embedding to improve semantic recall; FTS uses original
     q_expanded = await expand_search_query(query)
-    query_embedding = await get_embedding(q_expanded)
+    query_embedding = await get_embedding(q_expanded, task_type="RETRIEVAL_QUERY")
     semantic_result = supabase.rpc("match_saves", {
         "query_embedding": query_embedding,
         "match_user_id": user_id,
