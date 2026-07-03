@@ -51,20 +51,35 @@ def main():
         .select("id, user_id, url, title, content_text, created_at") \
         .execute().data or []
 
-    print(f"[scan] {len(rows)} total saves checked", flush=True)
     flagged = []
     for row in rows:
         reasons = flag_reasons(row)
         if reasons:
             flagged.append((row, reasons))
 
-    print(f"[scan] {len(flagged)} flagged\n", flush=True)
-    for row, reasons in flagged:
-        print(f"id={row['id']}  created_at={row.get('created_at')}", flush=True)
-        print(f"  url:   {row.get('url')}", flush=True)
-        print(f"  title: {row.get('title')}", flush=True)
-        print(f"  reasons: {', '.join(reasons)}", flush=True)
-        print(flush=True)
+    # Full detail goes to a UTF-8 file — Windows consoles default to cp1252 and choke on
+    # emoji/CJK characters that show up in scraped content (e.g. LinkedIn's language
+    # picker). Console output stays a plain-ASCII summary.
+    report_path = Path(__file__).resolve().parent / "junk_scan_report.txt"
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(f"{len(rows)} total saves checked, {len(flagged)} flagged\n\n")
+        for row, reasons in flagged:
+            f.write(f"id={row['id']}  created_at={row.get('created_at')}\n")
+            f.write(f"  url:   {row.get('url')}\n")
+            f.write(f"  title: {row.get('title')}\n")
+            f.write(f"  reasons: {', '.join(reasons)}\n\n")
+
+    from collections import Counter
+    category_counts = Counter()
+    for _, reasons in flagged:
+        for r in reasons:
+            key = r.split(":")[0]
+            category_counts[key] += 1
+
+    print(f"[scan] {len(rows)} total saves checked, {len(flagged)} flagged", flush=True)
+    for category, count in category_counts.most_common():
+        print(f"  {category}: {count}", flush=True)
+    print(f"[scan] full detail written to {report_path}", flush=True)
 
 
 if __name__ == "__main__":

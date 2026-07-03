@@ -1221,7 +1221,7 @@ async def process_newsletter_email(payload: dict) -> dict:
     send_save_ready_push(user_id, title, "Newsletter")
     return {"success": True, "title": title, "tag": tag, "id": inserted_id}
 
-SEARCH_MIN_SEMANTIC_SIMILARITY = 0.35  # cosine similarity floor for /search's semantic branch — see CLAUDE.md Known Issue #33
+SEARCH_MIN_SEMANTIC_SIMILARITY = 0.60  # cosine similarity floor for /search's semantic branch — re-derived empirically after the RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT task_type fix, see CLAUDE.md Known Issue #34
 SEARCH_SEMANTIC_WEIGHT = 1.0           # weight on match_saves' real cosine similarity in the fusion score
 SEARCH_FTS_WEIGHT = 0.4                # weight on FTS rank-decay in the fusion score
 

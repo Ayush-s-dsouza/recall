@@ -89,7 +89,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ASK_MIN_RELEVANCE = 0.5  # cosine similarity floor for /ask context — filters weakly-related saves
+ASK_MIN_RELEVANCE = 0.65  # cosine similarity floor for /ask context — re-derived empirically after the RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT task_type fix, see CLAUDE.md Known Issue #34
 MAX_IMPORT_ITEMS = 500  # cap per bulk import job to bound Gemini/Jina usage
 IMPORT_DELAY_SECONDS = int(os.getenv("IMPORT_DELAY_SECONDS", "3"))
 

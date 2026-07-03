@@ -7,6 +7,9 @@ recall-backend/venv/
 recall-backend/__pycache__/
 *.pyc
 
+# scan_junk_saves.py output — contains real scraped user content, not source code
+recall-backend/scripts/junk_scan_report.txt
+
 # Node
 recall-frontend/node_modules/
 recall-frontend/dist/
