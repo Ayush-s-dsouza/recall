@@ -37,31 +37,22 @@ try:
     _NO_THINKING = types.GenerateContentConfig(
         thinking_config=types.ThinkingConfig(thinking_budget=0)
     )
-    # Dedicated config for expand_search_query only — same thinking-disabled behavior as
-    # _NO_THINKING, plus temperature=0 so identical search queries produce identical
-    # rewrites (and thus stable results) instead of drifting run to run. Kept separate
-    # from _NO_THINKING so tagging/extraction call sites aren't affected.
-    _SEARCH_EXPAND_CONFIG = types.GenerateContentConfig(
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
-        temperature=0
-    )
-    # Dedicated config for filter_search_relevance only. Unlike every other Gemini call
-    # site in this file, this one keeps thinking ENABLED — measured directly: with
-    # thinking disabled, the model judges candidates on surface wording alone and misses
-    # named-entity knowledge (e.g. failed to recognize "Paradigm" as a crypto VC fund) and
-    # over-includes content-free candidates (e.g. kept a tweet that was just bare links,
-    # no text). thinking_budget=1024 fixed both in testing; smaller budgets (64-512) were
-    # faster but reverted to the same shallow, entity-blind judgments. See CLAUDE.md Known
-    # Issue #35 — this is a deliberate latency-for-accuracy tradeoff (~5s vs ~1.5s per
-    # search when the filter engages), not an oversight.
-    _SEARCH_FILTER_CONFIG = types.GenerateContentConfig(
+    # Dedicated config for extract_topics only (round 4 — see CLAUDE.md Known Issue #36).
+    # Unlike every other Gemini call site in this file, this one keeps thinking ENABLED —
+    # measured directly in round 3 (the query-time relevance filter this replaced): with
+    # thinking disabled, the model judges content on surface wording alone and misses
+    # named-entity knowledge (e.g. failed to recognize "Paradigm" as a crypto VC fund).
+    # thinking_budget=1024 fixed this in testing; smaller budgets (64-512) reverted to the
+    # same shallow, entity-blind judgments. Spent at save time, where the extra ~3-5s is
+    # invisible to the user (background enrichment, see Known Issue #1b) rather than at
+    # query time, where it isn't.
+    _TOPIC_EXTRACTION_CONFIG = types.GenerateContentConfig(
         thinking_config=types.ThinkingConfig(thinking_budget=1024),
         temperature=0
     )
 except AttributeError:
     _NO_THINKING = types.GenerateContentConfig()
-    _SEARCH_EXPAND_CONFIG = types.GenerateContentConfig(temperature=0)
-    _SEARCH_FILTER_CONFIG = types.GenerateContentConfig(temperature=0)
+    _TOPIC_EXTRACTION_CONFIG = types.GenerateContentConfig(temperature=0)
 
 # --- SSRF protection ---
 _PRIVATE_RANGES = [
@@ -236,6 +227,44 @@ async def extract_save_metadata_async(raw_title: str, content: str, extra_contex
         )
     except asyncio.TimeoutError:
         return raw_title, "Other"
+
+def extract_topics(title: str, content: str, extra_context: str = "") -> str:
+    """Distill a save down to a short, concentrated topic/entity phrase, embedded separately
+    at save time so query-time search can compare against a clean signal instead of a diluted
+    full-content vector — see CLAUDE.md Known Issue #36."""
+    context_block = content[:1500]
+    if extra_context:
+        context_block += f"\n\nAdditional context:\n{extra_context[:800]}"
+    if len(context_block.strip()) < 30:
+        return title or ""
+    prompt = f"""Name the 3-6 topics and named entities (companies, funds, products,
+protocols, people) this content is really about. Use your knowledge of what named
+entities are/do — e.g. if a fund or company is mentioned, name the industry it's known
+for. Be specific and concrete, not generic.
+
+Title: {title}
+Content: {context_block}
+
+Respond with a single comma-separated line, nothing else. Example: crypto, venture
+capital, Paradigm fellowship"""
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash", contents=prompt, config=_TOPIC_EXTRACTION_CONFIG
+        )
+        return response.text.strip()
+    except Exception:
+        return title or ""
+
+async def extract_topics_async(title: str, content: str, extra_context: str = "") -> str:
+    """Runs extract_topics in a thread with a bounded timeout, mirroring extract_save_metadata_async."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_executor, extract_topics, title, content, extra_context),
+            timeout=12.0
+        )
+    except asyncio.TimeoutError:
+        return title or ""
 
 def decode_html_entities(s: str) -> str:
     """Decode HTML entities, including the double-encoded form some sites (e.g. LinkedIn)
@@ -985,11 +1014,14 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             return {"thin_content": True, "url": url}
 
     title, tag = await extract_save_metadata_async(title, clean_text, extra_context)
+    topics = await extract_topics_async(title, clean_text, extra_context)
     embedding = await get_embedding(f"{title} {clean_text}")
+    topic_embedding = await get_embedding(topics, task_type="RETRIEVAL_DOCUMENT") if topics else None
 
     payload = {
         "user_id": user_id, "url": url, "title": title,
         "content_text": clean_text, "embedding": embedding, "tag": tag,
+        "topics": topics, "topic_embedding": topic_embedding,
         "content_type": "article", "status": "ready"
     }
     try:
@@ -1218,11 +1250,14 @@ async def process_newsletter_email(payload: dict) -> dict:
                 "tag": row["tag"], "created_at": row["created_at"]}
 
     title, tag = await extract_save_metadata_async(subject, clean_text, extra_context)
+    topics = await extract_topics_async(title, clean_text, extra_context)
     embedding = await get_embedding(f"{title} {clean_text}")
+    topic_embedding = await get_embedding(topics, task_type="RETRIEVAL_DOCUMENT") if topics else None
 
     payload_row = {
         "user_id": user_id, "url": url, "title": title,
         "content_text": clean_text, "embedding": embedding, "tag": tag,
+        "topics": topics, "topic_embedding": topic_embedding,
         "content_type": "article", "status": "ready"
     }
     try:
@@ -1238,112 +1273,26 @@ async def process_newsletter_email(payload: dict) -> dict:
 SEARCH_MIN_SEMANTIC_SIMILARITY = 0.60  # cosine similarity floor for /search's semantic branch — re-derived empirically after the RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT task_type fix, see CLAUDE.md Known Issue #34
 SEARCH_SEMANTIC_WEIGHT = 1.0           # weight on match_saves' real cosine similarity in the fusion score
 SEARCH_FTS_WEIGHT = 0.4                # weight on FTS rank-decay in the fusion score
-SEARCH_FILTER_MIN_CANDIDATES = 4       # skip the LLM relevance filter below this many fused candidates
-SEARCH_FILTER_TIMEOUT = 15.0           # seconds — thinking-enabled judgment calls measured at 5-10s typical; generous headroom over that
-
-async def expand_search_query(query: str) -> str:
-    """Expand a short query with related synonyms/concepts to improve semantic recall."""
-    if len(query.split()) >= 6:
-        return query  # already specific enough — skip Gemini call
-    try:
-        loop = asyncio.get_running_loop()
-        response = await asyncio.wait_for(
-            loop.run_in_executor(
-                _executor,
-                lambda: gemini_client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=(
-                        "Rewrite this search query as a short phrase for semantic search. Stay tightly "
-                        "focused on the same specific topic — add at most 2-3 closely related terms "
-                        "(e.g. an acronym's expansion, an obvious synonym), and do not introduce broader "
-                        "or adjacent categories/concepts. Return only the expanded query, no explanation.\n"
-                        f"Query: {query}"
-                    ),
-                    config=_SEARCH_EXPAND_CONFIG
-                )
-            ),
-            timeout=8.0
-        )
-        return response.text.strip()
-    except Exception:
-        return query
-
-async def filter_search_relevance(query: str, ranked: list, metadata: dict) -> list:
-    """LLM relevance pass over do_search's fused/sorted candidates — raw cosine similarity
-    can't reliably separate "genuinely about the query" from "generically adjacent" for
-    broad queries in a topically narrow library (e.g. "crypto" surfacing unrelated
-    AI/startup content that merely shares a business/tech vocabulary). See CLAUDE.md
-    Known Issue #35.
-
-    Fails open in every case (Gemini error, timeout, unparseable response, or an
-    all-empty verdict) by returning `ranked` unchanged — this must never make search
-    worse than doing no filtering at all.
-    """
-    # A fused score above 1.0 only happens when a save cleared the semantic floor AND
-    # matched full-text search — a literal keyword hit is strong enough evidence to skip
-    # the judge call entirely, and guarantees an obviously-correct single result (e.g.
-    # "usdt") never depends on the LLM getting it right.
-    exempt_ids = {rid for rid, score in ranked if score > 1.0}
-    candidates = [(rid, score) for rid, score in ranked if score <= 1.0]
-
-    if len(candidates) < SEARCH_FILTER_MIN_CANDIDATES:
-        return ranked
-
-    indexed_list = "\n".join(
-        f'{i}: "{metadata[rid].get("title", "")}" — {(metadata[rid].get("content_text") or "")[:300].strip()}'
-        for i, (rid, _) in enumerate(candidates)
-    )
-    prompt = f"""The user searched for: "{query}"
-
-Below are {len(candidates)} saved articles that matched via keyword or semantic search. Some may only be tangentially related — e.g. generic AI/startup/business content that happens to score moderately similar to the query — rather than actually being about "{query}".
-
-For each article, decide if it is GENUINELY about "{query}". You may use general knowledge about named entities (companies, funds, products, protocols) mentioned to judge relevance, even if the query word itself does not appear. But if an article gives no real textual evidence either way (e.g. a bare link with no description), exclude it rather than guessing.
-
-Articles:
-{indexed_list}
-
-Return JSON only, no markdown fences:
-{{"keep": [0, 2, 5]}}"""
-
-    try:
-        loop = asyncio.get_running_loop()
-        response = await asyncio.wait_for(
-            loop.run_in_executor(
-                _executor,
-                lambda: gemini_client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt,
-                    config=_SEARCH_FILTER_CONFIG
-                )
-            ),
-            timeout=SEARCH_FILTER_TIMEOUT
-        )
-        raw = response.text.strip().strip("```json").strip("```").strip()
-        parsed = json.loads(raw)
-        keep_idx = {i for i in parsed.get("keep", []) if isinstance(i, int) and 0 <= i < len(candidates)}
-        if not keep_idx:
-            # Empty verdict is more likely a prompt/parsing misfire than a genuine "nothing
-            # relevant" judgment — match_saves already enforces a similarity floor before
-            # anything reaches here, so a full wipe is untrustworthy. Fail open.
-            return ranked
-    except Exception:
-        return ranked
-
-    kept_ids = {candidates[i][0] for i in keep_idx}
-    return [(rid, score) for rid, score in ranked if rid in exempt_ids or rid in kept_ids]
+SEARCH_TOPIC_WEIGHT = 1.5              # weight on topic_similarity (query vs precomputed topic phrase) — cleaner signal than raw content similarity, weighted higher; empirically tuned like its siblings, see CLAUDE.md Known Issue #36
+SEARCH_TOPIC_MIN_SIMILARITY = 0.58     # floor on topic_similarity — additive weighting alone re-ranks but never removes candidates, so a long generic-adjacent tail still came back in full (verified directly: "crypto" returned 16 results, most of them noise). A real cutoff was needed, same lesson as SEARCH_MIN_SEMANTIC_SIMILARITY (Known Issue #34). 0.0 means "no topic_embedding yet" (missing data) and is never gated — only a genuinely low nonzero score is. Empirically tuned, see Known Issue #36.
 
 async def do_search(query: str, user_id: str) -> dict:
     """Semantic + full-text search over a user's saves, combined via a magnitude-aware
     fusion score (see CLAUDE.md "4. Search" and Known Issue #33). Shared by /search
-    and the recall_search MCP tool."""
-    # Expand short queries before embedding to improve semantic recall; FTS uses original
-    q_expanded = await expand_search_query(query)
-    query_embedding = await get_embedding(q_expanded, task_type="RETRIEVAL_QUERY")
+    and the recall_search MCP tool.
+
+    Round 4 (Known Issue #36): no generative LLM call anywhere in this function — query
+    expansion and the query-time relevance filter (round 3, Known Issue #35) were both
+    replaced by a single query embedding compared against two precomputed vectors (content
+    + topic), keeping the whole request to one embedding API call + fast Postgres queries.
+    """
+    query_embedding = await get_embedding(query, task_type="RETRIEVAL_QUERY")
     semantic_result = supabase.rpc("match_saves", {
         "query_embedding": query_embedding,
         "match_user_id": user_id,
         "match_count": 20,
-        "match_threshold": SEARCH_MIN_SEMANTIC_SIMILARITY
+        "match_threshold": SEARCH_MIN_SEMANTIC_SIMILARITY,
+        "topic_query_embedding": query_embedding
     }).execute()
 
     # Full-text search over content + title — exclude media saves
@@ -1363,25 +1312,35 @@ async def do_search(query: str, user_id: str) -> dict:
 
     # Fusion: the semantic side contributes its real, already-thresholded cosine
     # similarity (match_saves excludes anything below SEARCH_MIN_SEMANTIC_SIMILARITY
-    # before this code ever sees it) instead of a rank-slot fraction. The FTS side has no
-    # numeric relevance score available via PostgREST's `.filter(col, "fts", query)`
-    # builder, so it keeps a rank-decay term, confined to its own smaller weight so a
-    # merely-coincidental keyword hit can't manufacture a semantic-grade score. Items in
-    # both lists get both terms summed, preserving the "boost the intersection" property
-    # of the RRF design this replaced. See CLAUDE.md "4. Search" and Known Issue #33.
+    # before this code ever sees it) instead of a rank-slot fraction, plus topic_similarity
+    # — the query embedding compared against a short, concentrated topic/entity phrase
+    # precomputed at save time (Known Issue #36), weighted higher than raw content
+    # similarity since it's the cleaner discriminator for broad queries in a topically
+    # homogeneous library. The FTS side has no numeric relevance score available via
+    # PostgREST's `.filter(col, "fts", query)` builder, so it keeps a rank-decay term,
+    # confined to its own smaller weight so a merely-coincidental keyword hit can't
+    # manufacture a semantic-grade score. Items in both lists get both terms summed,
+    # preserving the "boost the intersection" property of the RRF design this replaced.
+    # See CLAUDE.md "4. Search" and Known Issues #33/#36.
     scores = {}
     metadata = {}
 
     # Post-filter semantic results to exclude media saves and still-pending placeholders.
     # Defense in depth only — 010_match_saves_threshold.sql now also enforces
     # content_type = 'article' AND status = 'ready' directly in the RPC's WHERE clause.
+    # Also enforces the topic_similarity floor (SEARCH_TOPIC_MIN_SIMILARITY) here in Python
+    # rather than in match_saves' SQL — this constant is still being empirically tuned
+    # (Known Issue #36) and a Python-side filter is faster to retune than another migration.
     semantic_rows = [r for r in semantic_result.data
                       if r.get("content_type", "article") == "article"
-                      and r.get("status", "ready") == "ready"]
+                      and r.get("status", "ready") == "ready"
+                      and (r.get("topic_similarity", 0.0) == 0.0
+                           or r.get("topic_similarity", 0.0) >= SEARCH_TOPIC_MIN_SIMILARITY)]
 
     for row in semantic_rows:
         rid = row["id"]
-        scores[rid] = scores.get(rid, 0) + SEARCH_SEMANTIC_WEIGHT * row.get("similarity", 0.0)
+        scores[rid] = scores.get(rid, 0) + SEARCH_SEMANTIC_WEIGHT * row.get("similarity", 0.0) \
+            + SEARCH_TOPIC_WEIGHT * row.get("topic_similarity", 0.0)
         metadata[rid] = row
 
     for rank, row in enumerate(fts_rows):
@@ -1391,7 +1350,6 @@ async def do_search(query: str, user_id: str) -> dict:
             metadata[rid] = row
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:20]
-    ranked = await filter_search_relevance(query, ranked, metadata)
     results = []
     for rid, score in ranked:
         row = metadata[rid]
