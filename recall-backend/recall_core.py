@@ -736,6 +736,186 @@ def _finalize_placeholder(placeholder_id: str | None, user_id: str | None = None
     if user_id and url:
         send_save_ready_push(user_id, title or get_source_label(url), get_source_label(url))
 
+async def process_save_preview(url: str) -> dict:
+    """Read-only version of the save enrichment pipeline for logged-out previews.
+    It intentionally performs no embedding or database writes, but uses the same fetchers
+    and Gemini metadata extraction that a real saved row uses once enrichment finishes."""
+    url = await resolve_linkedin_redirect(url)
+
+    for pattern, ctype, label in MEDIA_URLS:
+        if pattern in url:
+            if "youtube.com" in url or "youtu.be" in url:
+                yt_title, yt_author = await fetch_youtube(url)
+                raw_title = f"{yt_title} · {yt_author}" if yt_title and yt_author else (yt_title or url)
+            else:
+                try:
+                    async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+                        r = await client.get(url, follow_redirects=True)
+                        og = extract_og_tags(r.text[:5000])
+                        raw_title = og.get("og:title") or url
+                except:
+                    raw_title = url
+            _, tag = await extract_save_metadata_async(raw_title, "", "")
+            return {
+                "success": True, "media": True, "content_type": ctype,
+                "label": label, "title": raw_title, "tag": tag, "url": url,
+                "content_text": f"{label} saved from {get_source_label(url)}.",
+            }
+
+    is_tweet = "x.com" in url or "twitter.com" in url
+    is_instagram = "instagram.com" in url
+    is_linkedin = "linkedin.com" in url
+    is_reddit = "reddit.com" in url or "redd.it" in url
+    extra_context = ""
+
+    if is_tweet:
+        clean_text, tweet_author, jina_title, expanded_url = await fetch_tweet(url)
+        article_title = ""
+        if expanded_url and is_safe_url(expanded_url):
+            try:
+                final_url = expanded_url
+                final_html = ""
+                if "t.co/" in final_url:
+                    async with httpx.AsyncClient(timeout=8, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+                        r = await client.get(final_url)
+                        final_url = str(r.url)
+                        final_html = r.text[:5000]
+                if "x.com/i/article/" in final_url or "twitter.com/i/article/" in final_url:
+                    (article_jina_text, article_jina_title), article_og_html = await asyncio.gather(
+                        fetch_with_jina(final_url),
+                        fetch_og_html(final_url)
+                    )
+                    article_og_title = extract_og_tags(article_og_html).get("og:title", "")
+                    article_is_js_disabled = any(
+                        sig in article_jina_text.lower()
+                        for sig in ["javascript is not available", "javascript is disabled"]
+                    )
+                    if article_jina_text and not article_is_js_disabled:
+                        clean_text = article_jina_text
+                    article_title = article_og_title or article_jina_title
+                elif "twitter.com" not in final_url and "x.com" not in final_url:
+                    if not final_html:
+                        final_html = await fetch_og_html(final_url)
+                    article_title = extract_og_tags(final_html).get("og:title", "")
+            except Exception:
+                pass
+        stub_only = not clean_text or clean_text.strip().startswith("https://t.co/") or len(clean_text) < 80
+        title = article_title or jina_title or (clean_text[:100].strip() if not stub_only else "") or tweet_author or url
+        if title == url:
+            return {"thin_content": True, "url": url}
+        if tweet_author:
+            extra_context = f"Author: {tweet_author}"
+    elif is_instagram:
+        caption, author, thumbnail_url = await fetch_instagram(url)
+        clean_text = caption
+        title = author or "Instagram"
+        if thumbnail_url and len(clean_text) < 400:
+            image_description = await analyze_image(thumbnail_url)
+            if image_description:
+                extra_context = f"Image: {image_description}"
+                clean_text = (clean_text + "\n\n" + extra_context).strip()
+    elif is_linkedin:
+        raw_html = await fetch_og_html(url)
+        og = extract_og_tags(raw_html)
+        og_title = og.get("og:title", "")
+        og_description = og.get("og:description", "") or og.get("description", "")
+        authwall_signatures = [
+            "agree & join linkedin", "login to linkedin to keep in touch",
+            "by clicking continue to join or sign in", "new to linkedin? join now",
+            "skip to main content", "linkedin login, sign in",
+        ]
+        combined = og_description or ""
+        for noise in ["Like · Comment · Share", "Like Comment Share", "1st · ", "2nd · ",
+                      "3rd · ", "Connect", "Follow", "Message", "View all comments",
+                      "Load more comments", "Sign in to view", "Join now to see"]:
+            combined = combined.replace(noise, "")
+        clean_text = re.sub(r'\s{2,}', ' ', combined).strip()
+        title = og_title or url
+        lowered = (clean_text + " " + og_title).lower()
+        if any(sig in lowered for sig in authwall_signatures):
+            return {"thin_content": True, "url": url}
+        linkedin_quality_threshold = 40
+        if len(clean_text.strip()) < linkedin_quality_threshold and og_title:
+            fallback_text = re.sub(r'\s*\|\s*\d+\s+comments?\s*$', '', og_title, flags=re.IGNORECASE)
+            fallback_text = re.sub(r'\s*\|\s*[^|]+$', '', fallback_text).strip()
+            if len(fallback_text) >= linkedin_quality_threshold:
+                clean_text = fallback_text
+        if len(clean_text.strip()) < linkedin_quality_threshold:
+            return {"thin_content": True, "url": url}
+    elif is_reddit:
+        title, body_text, subreddit, _post_hint, image_url, comments_text = await fetch_reddit(url)
+        if not title:
+            return {"thin_content": True, "url": url}
+        clean_text = body_text
+        extra_context = f"Subreddit: {subreddit}" if subreddit else ""
+        if image_url and len(clean_text) < 200:
+            image_description = await analyze_image(image_url)
+            if image_description:
+                extra_context = (extra_context + f"\nImage: {image_description}").strip()
+                clean_text = (clean_text + "\n\n" + image_description).strip()
+        if comments_text:
+            extra_context = (extra_context + f"\n\n{comments_text}").strip()
+            clean_text = (clean_text + "\n\n" + comments_text).strip()
+    else:
+        (jina_text, jina_title), raw_html = await asyncio.gather(
+            fetch_with_jina(url),
+            fetch_og_html(url)
+        )
+        title_match = re.search(r'<title>(.*?)</title>', raw_html, re.IGNORECASE)
+        html_title = decode_html_entities(title_match.group(1)) if title_match else ""
+        og = extract_og_tags(raw_html)
+        og_title = og.get("og:title", "")
+        og_description = og.get("og:description", "") or og.get("description", "")
+        og_image = og.get("og:image", "")
+        if jina_text:
+            clean_text = jina_text
+            title = jina_title or og_title or html_title or url
+        else:
+            from html.parser import HTMLParser
+            class TextExtractor(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self.text = []
+                    self.in_script = False
+                def handle_starttag(self, tag, attrs):
+                    if tag in ['script', 'style']:
+                        self.in_script = True
+                def handle_endtag(self, tag):
+                    if tag in ['script', 'style']:
+                        self.in_script = False
+                def handle_data(self, data):
+                    if not self.in_script:
+                        self.text.append(data.strip())
+            parser = TextExtractor()
+            parser.feed(raw_html)
+            clean_text = " ".join(t for t in parser.text if t)[:5000]
+            title = og_title or html_title or url
+        if og_title and (not title or title == url):
+            title = og_title
+        extra_parts = []
+        if og_description:
+            extra_parts.append(og_description)
+        if og_image and len(clean_text) < 400:
+            image_description = await analyze_image(og_image)
+            if image_description:
+                extra_parts.append(f"Image: {image_description}")
+        extra_context = "\n".join(extra_parts)
+        if extra_context:
+            clean_text = (clean_text + "\n\n" + extra_context)[:5000]
+        if len((clean_text + extra_context).strip()) < QUALITY_THRESHOLD:
+            return {"thin_content": True, "url": url}
+
+    title, tag = await extract_save_metadata_async(title, clean_text, extra_context)
+    return {
+        "success": True,
+        "title": title,
+        "tag": tag,
+        "url": url,
+        "content_text": clean_text,
+        "content_type": "article",
+    }
+
+
 async def process_save(url: str, user_id: str, placeholder_id: str | None = None) -> dict:
     """Core save pipeline shared by /save's background enrichment, the bookmark import job,
     and the recall_save MCP tool.

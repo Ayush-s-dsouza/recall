@@ -28,6 +28,7 @@ from recall_core import (
     get_embedding,
     process_save,
     process_save_fast,
+    process_save_preview,
     do_search,
     do_suggestions,
     do_update_tag,
@@ -97,6 +98,9 @@ IMPORT_DELAY_SECONDS = int(os.getenv("IMPORT_DELAY_SECONDS", "3"))
 class SaveRequest(BaseModel):
     url: str
     token: str
+
+class SavePreviewRequest(BaseModel):
+    url: str
 
 class SearchRequest(BaseModel):
     query: str
@@ -188,6 +192,15 @@ async def save_url(req: SaveRequest, request: Request):
     validate_url(req.url)
 
     result = await process_save_fast(req.url, user_id)
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail=result["detail"])
+    return result
+
+@app.post("/save/preview")
+@limiter.limit("5/minute")
+async def preview_save_url(req: SavePreviewRequest, request: Request):
+    validate_url(req.url)
+    result = await process_save_preview(req.url)
     if result.get("error"):
         raise HTTPException(status_code=500, detail=result["detail"])
     return result
