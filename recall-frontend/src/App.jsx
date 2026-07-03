@@ -427,6 +427,11 @@ export default function App() {
   const [askStep, setAskStep] = useState("")
   const [insufficientData, setInsufficientData] = useState(null)
 
+  // Search step messaging — search can now take several seconds when the backend's LLM
+  // relevance filter engages (see CLAUDE.md Known Issue #35), unlike its previous
+  // near-instant response time.
+  const [searchStep, setSearchStep] = useState("")
+
   // Total save count for multi-stage milestone track
   const [totalSaveCount, setTotalSaveCount] = useState(null)
 
@@ -574,6 +579,14 @@ export default function App() {
     const t2 = setTimeout(() => setAskStep(steps[2]), 3200)
     return () => { clearTimeout(t1); clearTimeout(t2) }
   }, [askLoading])
+
+  useEffect(() => {
+    if (!loading) { setSearchStep(""); return }
+    const steps = ["Searching your saves…", "Checking relevance…"]
+    setSearchStep(steps[0])
+    const t1 = setTimeout(() => setSearchStep(steps[1]), 1400)
+    return () => { clearTimeout(t1) }
+  }, [loading])
 
   // Seed the picker's checked state from folders state (single source of truth).
   useEffect(() => {
@@ -2647,6 +2660,7 @@ export default function App() {
             <>
               <span className="shimmer" style={styles.searchShimmerBar} />
               {askLoading && askStep && <p style={styles.askStepText}>{askStep}</p>}
+              {loading && !askLoading && searchStep && <p style={styles.askStepText}>{searchStep}</p>}
             </>
           )}
 

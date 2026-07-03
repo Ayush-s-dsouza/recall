@@ -45,9 +45,23 @@ try:
         thinking_config=types.ThinkingConfig(thinking_budget=0),
         temperature=0
     )
+    # Dedicated config for filter_search_relevance only. Unlike every other Gemini call
+    # site in this file, this one keeps thinking ENABLED — measured directly: with
+    # thinking disabled, the model judges candidates on surface wording alone and misses
+    # named-entity knowledge (e.g. failed to recognize "Paradigm" as a crypto VC fund) and
+    # over-includes content-free candidates (e.g. kept a tweet that was just bare links,
+    # no text). thinking_budget=1024 fixed both in testing; smaller budgets (64-512) were
+    # faster but reverted to the same shallow, entity-blind judgments. See CLAUDE.md Known
+    # Issue #35 — this is a deliberate latency-for-accuracy tradeoff (~5s vs ~1.5s per
+    # search when the filter engages), not an oversight.
+    _SEARCH_FILTER_CONFIG = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_budget=1024),
+        temperature=0
+    )
 except AttributeError:
     _NO_THINKING = types.GenerateContentConfig()
     _SEARCH_EXPAND_CONFIG = types.GenerateContentConfig(temperature=0)
+    _SEARCH_FILTER_CONFIG = types.GenerateContentConfig(temperature=0)
 
 # --- SSRF protection ---
 _PRIVATE_RANGES = [
@@ -1224,6 +1238,8 @@ async def process_newsletter_email(payload: dict) -> dict:
 SEARCH_MIN_SEMANTIC_SIMILARITY = 0.60  # cosine similarity floor for /search's semantic branch — re-derived empirically after the RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT task_type fix, see CLAUDE.md Known Issue #34
 SEARCH_SEMANTIC_WEIGHT = 1.0           # weight on match_saves' real cosine similarity in the fusion score
 SEARCH_FTS_WEIGHT = 0.4                # weight on FTS rank-decay in the fusion score
+SEARCH_FILTER_MIN_CANDIDATES = 4       # skip the LLM relevance filter below this many fused candidates
+SEARCH_FILTER_TIMEOUT = 15.0           # seconds — thinking-enabled judgment calls measured at 5-10s typical; generous headroom over that
 
 async def expand_search_query(query: str) -> str:
     """Expand a short query with related synonyms/concepts to improve semantic recall."""
@@ -1251,6 +1267,70 @@ async def expand_search_query(query: str) -> str:
         return response.text.strip()
     except Exception:
         return query
+
+async def filter_search_relevance(query: str, ranked: list, metadata: dict) -> list:
+    """LLM relevance pass over do_search's fused/sorted candidates — raw cosine similarity
+    can't reliably separate "genuinely about the query" from "generically adjacent" for
+    broad queries in a topically narrow library (e.g. "crypto" surfacing unrelated
+    AI/startup content that merely shares a business/tech vocabulary). See CLAUDE.md
+    Known Issue #35.
+
+    Fails open in every case (Gemini error, timeout, unparseable response, or an
+    all-empty verdict) by returning `ranked` unchanged — this must never make search
+    worse than doing no filtering at all.
+    """
+    # A fused score above 1.0 only happens when a save cleared the semantic floor AND
+    # matched full-text search — a literal keyword hit is strong enough evidence to skip
+    # the judge call entirely, and guarantees an obviously-correct single result (e.g.
+    # "usdt") never depends on the LLM getting it right.
+    exempt_ids = {rid for rid, score in ranked if score > 1.0}
+    candidates = [(rid, score) for rid, score in ranked if score <= 1.0]
+
+    if len(candidates) < SEARCH_FILTER_MIN_CANDIDATES:
+        return ranked
+
+    indexed_list = "\n".join(
+        f'{i}: "{metadata[rid].get("title", "")}" — {(metadata[rid].get("content_text") or "")[:300].strip()}'
+        for i, (rid, _) in enumerate(candidates)
+    )
+    prompt = f"""The user searched for: "{query}"
+
+Below are {len(candidates)} saved articles that matched via keyword or semantic search. Some may only be tangentially related — e.g. generic AI/startup/business content that happens to score moderately similar to the query — rather than actually being about "{query}".
+
+For each article, decide if it is GENUINELY about "{query}". You may use general knowledge about named entities (companies, funds, products, protocols) mentioned to judge relevance, even if the query word itself does not appear. But if an article gives no real textual evidence either way (e.g. a bare link with no description), exclude it rather than guessing.
+
+Articles:
+{indexed_list}
+
+Return JSON only, no markdown fences:
+{{"keep": [0, 2, 5]}}"""
+
+    try:
+        loop = asyncio.get_running_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                _executor,
+                lambda: gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                    config=_SEARCH_FILTER_CONFIG
+                )
+            ),
+            timeout=SEARCH_FILTER_TIMEOUT
+        )
+        raw = response.text.strip().strip("```json").strip("```").strip()
+        parsed = json.loads(raw)
+        keep_idx = {i for i in parsed.get("keep", []) if isinstance(i, int) and 0 <= i < len(candidates)}
+        if not keep_idx:
+            # Empty verdict is more likely a prompt/parsing misfire than a genuine "nothing
+            # relevant" judgment — match_saves already enforces a similarity floor before
+            # anything reaches here, so a full wipe is untrustworthy. Fail open.
+            return ranked
+    except Exception:
+        return ranked
+
+    kept_ids = {candidates[i][0] for i in keep_idx}
+    return [(rid, score) for rid, score in ranked if rid in exempt_ids or rid in kept_ids]
 
 async def do_search(query: str, user_id: str) -> dict:
     """Semantic + full-text search over a user's saves, combined via a magnitude-aware
@@ -1311,6 +1391,7 @@ async def do_search(query: str, user_id: str) -> dict:
             metadata[rid] = row
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:20]
+    ranked = await filter_search_relevance(query, ranked, metadata)
     results = []
     for rid, score in ranked:
         row = metadata[rid]
