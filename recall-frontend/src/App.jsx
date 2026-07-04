@@ -12,6 +12,8 @@ const supabase = HAS_SUPABASE_CONFIG
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL
 const TWITTER_CLIENT_ID = import.meta.env.VITE_TWITTER_CLIENT_ID
+const MCP_TUTORIAL_VIDEO_URL = "/tour/mcp-memory-tutorial.mp4"
+const MCP_TUTORIAL_STATUS_KEY = "recall_mcp_tutorial_status"
 
 // Bookmarklet: scrapes tweet IDs from x.com/i/bookmarks (the user's own authenticated
 // session, client-side only) and opens a new tab to ReCall with the collected IDs in
@@ -283,6 +285,17 @@ function LinkIcon({ size = 20 }) {
   )
 }
 
+function PlugIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 22v-5" />
+      <path d="M9 8V2" />
+      <path d="M15 8V2" />
+      <path d="M6 8h12v3a6 6 0 0 1-12 0V8Z" />
+    </svg>
+  )
+}
+
 function ArrowRightIcon({ size = 16 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -457,6 +470,10 @@ export default function App() {
   const [installBannerDismissed, setInstallBannerDismissed] = useState(() => localStorage.getItem('recall_install_banner_dismissed') === 'true')
   const [justInstalled, setJustInstalled] = useState(() => localStorage.getItem('recall_installed') === 'true')
   const [installStepsOpen, setInstallStepsOpen] = useState(false)
+  const [mcpTutorialStatus, setMcpTutorialStatus] = useState(() => localStorage.getItem(MCP_TUTORIAL_STATUS_KEY) || "")
+  const [showMcpPrompt, setShowMcpPrompt] = useState(false)
+  const [showMcpVideo, setShowMcpVideo] = useState(false)
+  const [mcpLearnHighlighted, setMcpLearnHighlighted] = useState(false)
 
   // Settings panel accordion — which section ('connect' | 'import' | 'shortcuts') is expanded
   const [openSettingsSection, setOpenSettingsSection] = useState(null)
@@ -655,6 +672,41 @@ export default function App() {
     }
   }
 
+  const maybePromptMcpTutorial = () => {
+    if (localStorage.getItem(MCP_TUTORIAL_STATUS_KEY)) return
+    setShowMcpPrompt(true)
+  }
+
+  const openMcpTutorialVideo = () => {
+    localStorage.setItem(MCP_TUTORIAL_STATUS_KEY, "watched")
+    setMcpTutorialStatus("watched")
+    setShowMcpPrompt(false)
+    setShowMcpVideo(true)
+    setMcpLearnHighlighted(false)
+  }
+
+  const deferMcpTutorial = () => {
+    localStorage.setItem(MCP_TUTORIAL_STATUS_KEY, "deferred")
+    setMcpTutorialStatus("deferred")
+    setShowMcpPrompt(false)
+    setShowMcpVideo(false)
+    setView("recall")
+    setMcpLearnHighlighted(true)
+    window.setTimeout(() => setMcpLearnHighlighted(false), 7000)
+  }
+
+  const openDeferredMcpTutorial = () => {
+    setShowMcpVideo(true)
+    setMcpLearnHighlighted(false)
+  }
+
+  const finishMcpTutorialVideo = () => {
+    localStorage.setItem(MCP_TUTORIAL_STATUS_KEY, "watched")
+    setMcpTutorialStatus("watched")
+    setShowMcpVideo(false)
+    setView("recall")
+  }
+
   const fetchSuggestions = async () => {
     try {
       const cached = sessionStorage.getItem("recall_suggestions")
@@ -685,6 +737,7 @@ export default function App() {
         setFirstSaveSheetOpen(false)
         setOnboardingStep(prev => prev === 'firstSave' ? 'done' : prev)
         localStorage.setItem('recall_onboarded', 'true')
+        maybePromptMcpTutorial()
       }
     }
   }
@@ -1843,6 +1896,7 @@ export default function App() {
       navigator.vibrate?.([50, 80, 50, 80, 100])
       setIsFreshReceipt(true)
       setTimeout(() => setIsFreshReceipt(false), 3000)
+      setTimeout(() => maybePromptMcpTutorial(), 900)
     } else {
       navigator.vibrate?.([50])
       setIsFreshReceipt(true)
@@ -2329,6 +2383,15 @@ export default function App() {
         </p>
       </div>
 
+      <div style={styles.settingsDivider} />
+
+      <button
+        onClick={openDeferredMcpTutorial}
+        style={{ ...styles.mcpLearnPanelButton, ...(mcpLearnHighlighted ? styles.mcpLearnPanelButtonHighlight : {}) }}
+      >
+        <span style={styles.mcpLearnPanelIcon}><PlugIcon /></span>
+        <span style={styles.mcpLearnPanelText}>Learn more here</span>
+      </button>
       <div style={styles.settingsDivider} />
 
       <p style={styles.settingsSectionHeading}>Connected apps</p>
@@ -3498,6 +3561,47 @@ export default function App() {
         </div>
       )}
 
+      {showMcpPrompt && (
+        <div style={styles.overlay}>
+          <div style={styles.mcpPromptCard}>
+            <p style={styles.settingsSectionHeading}>Memory unlocked</p>
+            <h2 style={styles.mcpPromptTitle}>You are 5 saves in. Connect to Claude/GPT to use this memory?</h2>
+            <p style={styles.mcpPromptBody}>
+              ReCall can become searchable context inside your LLM app through MCP.
+            </p>
+            <div style={styles.mcpPromptActions}>
+              <button onClick={openMcpTutorialVideo} style={styles.mcpPromptYes}>Yes, show me</button>
+              <button onClick={deferMcpTutorial} style={styles.mcpPromptNo}>Not now</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showMcpVideo && (
+        <div style={styles.overlay}>
+          <div style={styles.mcpVideoCard}>
+            <div style={styles.mcpVideoHeader}>
+              <div>
+                <p style={styles.settingsSectionHeading}>ReCall MCP</p>
+                <h2 style={styles.mcpVideoTitle}>Use your saved memory inside an LLM</h2>
+              </div>
+              <button onClick={deferMcpTutorial} style={styles.mcpVideoSkip}>Skip</button>
+            </div>
+            <video
+              src={MCP_TUTORIAL_VIDEO_URL}
+              style={styles.mcpVideo}
+              controls
+              autoPlay
+              playsInline
+            />
+            <div style={styles.mcpVideoActions}>
+              <button onClick={finishMcpTutorialVideo} style={styles.mcpPromptYes}>Connect ReCall</button>
+              <button onClick={deferMcpTutorial} style={styles.mcpPromptNo}>Skip for now</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Install onboarding overlay */}
       {onboardingStep === 'install' && (
         <div style={styles.overlay}>
@@ -3886,6 +3990,22 @@ const styles = {
   recallPanel: { width: "100%", boxSizing: "border-box", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "22px", display: "flex", flexDirection: "column", gap: "12px", color: "#f6f3ea", boxShadow: "0 30px 90px -56px rgba(0,0,0,0.95)" },
   recallTitle: { fontSize: "28px", fontWeight: "400", color: "#f6f3ea", margin: 0, lineHeight: 1.15, letterSpacing: "-0.02em", fontFamily: "Georgia, 'Times New Roman', serif", textAlign: "center" },
   recallBody: { fontSize: "14px", color: "#aca79b", lineHeight: 1.6, margin: 0, textAlign: "center" },
+  mcpLearnPanelButton: { width: "100%", display: "flex", alignItems: "center", gap: "10px", background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "16px", padding: "12px 14px", cursor: "pointer", textAlign: "left" },
+  mcpLearnPanelButtonHighlight: { color: "#d9ff5f", borderColor: "rgba(217,255,95,0.55)", boxShadow: "0 0 0 2px rgba(217,255,95,0.14), 0 22px 52px -36px rgba(217,255,95,0.9)" },
+  mcpLearnPanelIcon: { width: "34px", height: "34px", borderRadius: "999px", display: "inline-flex", alignItems: "center", justifyContent: "center", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", flexShrink: 0 },
+  mcpLearnPanelText: { fontSize: "14px", fontWeight: "700" },
+  mcpPromptCard: { width: "100%", maxWidth: "440px", boxSizing: "border-box", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "24px", display: "flex", flexDirection: "column", gap: "14px", color: "#f6f3ea", textAlign: "center", boxShadow: "0 30px 90px -46px rgba(0,0,0,0.95)" },
+  mcpPromptTitle: { fontSize: "30px", fontWeight: "400", color: "#f6f3ea", margin: 0, lineHeight: 1.12, letterSpacing: "-0.02em", fontFamily: "Georgia, 'Times New Roman', serif" },
+  mcpPromptBody: { fontSize: "14px", color: "#aca79b", lineHeight: 1.55, margin: 0 },
+  mcpPromptActions: { display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap", marginTop: "4px" },
+  mcpPromptYes: { background: "#d9ff5f", border: "none", color: "#1f2b08", borderRadius: "999px", padding: "10px 16px", fontSize: "14px", fontWeight: "700", cursor: "pointer" },
+  mcpPromptNo: { background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "999px", padding: "10px 16px", fontSize: "14px", cursor: "pointer" },
+  mcpVideoCard: { width: "clamp(320px, 70vw, 960px)", maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 48px)", boxSizing: "border-box", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "18px", display: "flex", flexDirection: "column", gap: "14px", color: "#f6f3ea", boxShadow: "0 30px 90px -40px rgba(0,0,0,0.95)" },
+  mcpVideoHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "14px" },
+  mcpVideoTitle: { fontSize: "24px", fontWeight: "400", color: "#f6f3ea", margin: "6px 0 0", lineHeight: 1.15, letterSpacing: "-0.02em", fontFamily: "Georgia, 'Times New Roman', serif" },
+  mcpVideoSkip: { background: "none", border: "none", color: "#7d786f", cursor: "pointer", fontSize: "13px", padding: "4px 0", flexShrink: 0 },
+  mcpVideo: { width: "100%", maxHeight: "70vh", borderRadius: "18px", background: "#171719", border: "1px solid rgba(255,255,255,0.08)", objectFit: "contain" },
+  mcpVideoActions: { display: "flex", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap" },
   deleteAccountButton: { background: "none", border: "1px solid #ef4444", color: "#ef4444", padding: "7px 16px", borderRadius: "8px", cursor: "pointer", fontSize: "13px", alignSelf: "flex-start" },
   deleteAccountConfirm: { display: "flex", flexDirection: "column", gap: "10px" },
   deleteAccountWarning: { fontSize: "13px", color: "#aca79b", margin: 0, lineHeight: 1.4 },
