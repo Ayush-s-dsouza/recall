@@ -471,6 +471,7 @@ export default function App() {
 
   const [pushEnabled, setPushEnabled] = useState(false)
   const finalizeSaveRef = useRef(null)
+  const userRef = useRef(null)
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
   const importFileInputRef = useRef(null)
@@ -829,6 +830,7 @@ export default function App() {
       posthog.capture('share_sheet_triggered')
     }
     supabase.auth.getSession().then(({ data: { session } }) => {
+      userRef.current = session?.user ?? null
       setUser(session?.user ?? null)
       setAuthLoading(false)
       if (session?.user) {
@@ -1007,6 +1009,7 @@ export default function App() {
       }
     })
     supabase.auth.onAuthStateChange((_event, session) => {
+      userRef.current = session?.user ?? null
       setUser(session?.user ?? null)
       if (session?.user) {
         posthog.identify(session.user.id)
@@ -1151,6 +1154,7 @@ export default function App() {
 
   const signOut = async () => {
     await supabase.auth.signOut()
+    userRef.current = null
     setUser(null)
     setOnboardingStep(null)
     localStorage.removeItem("recall_recent_searches")
@@ -1180,6 +1184,7 @@ export default function App() {
       posthog.capture('account_deleted')
       posthog.reset()
       await supabase.auth.signOut()
+      userRef.current = null
       setUser(null)
       setShowSettings(false)
       setConfirmDeleteAccount(false)
@@ -1635,7 +1640,12 @@ export default function App() {
 
   const handleSave = async (url, fromShareSheet = false) => {
     url = url.trim()
-    if (!user) {
+    // userRef (not the `user` state var) on purpose: the share-sheet mount effect calls
+    // handleSave from inside a Promise .then()/onAuthStateChange callback, in the same tick
+    // as setUser(...) — React hasn't re-rendered yet at that point, so `user` would still read
+    // this render's stale closed-over value. userRef.current is written synchronously
+    // alongside every setUser(...) call, so it's always current regardless of render timing.
+    if (!userRef.current) {
       setPreAuthUrl(url)
       saveBeforeSignup(url)
       return
