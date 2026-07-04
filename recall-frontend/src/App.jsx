@@ -1362,7 +1362,7 @@ export default function App() {
         let deniedMessage = "Notifications are blocked for ReCall in your browser. Enable them in your browser's site settings, then try again."
         if (permission === "denied" && isStandalone) {
           deniedMessage = isAndroid
-            ? "Notifications are blocked for ReCall. Long-press the ReCall icon on your home screen → App info → Notifications → turn on, then come back and try again."
+            ? "Notifications are still blocked for ReCall — this is separate from the Notifications toggle in your phone's app settings. Open Chrome → tap ⋮ → Settings → Site settings → Notifications → find recall-iota-six.vercel.app under \"Not allowed\" → set it to Allow. Then come back and try again."
             : "Notifications are blocked for ReCall. Open your phone's Settings app → scroll to ReCall → Notifications → Allow Notifications, then come back and try again."
         }
         setMessage(permission === "denied"
