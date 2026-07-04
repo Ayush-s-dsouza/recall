@@ -324,7 +324,8 @@ export default function App() {
     const path = window.location.pathname
     if (path === '/privacy' || path === '/terms') return 'legal'
     if (path === '/mcp/consent') return 'mcp-consent'
-    return sessionStorage.getItem("recall_view") || "search"
+    const stored = sessionStorage.getItem("recall_view")
+    return (stored === "search" || stored === "save" || stored === "recall") ? stored : "search"
   })
   // Captured once at mount (keyed off pathname, not just presence of params) so it
   // never gets confused with the X/Twitter OAuth callback, which also lands on "/"
@@ -411,9 +412,6 @@ export default function App() {
   const [newFolderName, setNewFolderName] = useState("")
   const [editingFolderId, setEditingFolderId] = useState(null)
   const [draftFolderName, setDraftFolderName] = useState("")
-  const [suggestedChips, setSuggestedChips] = useState(() => {
-    try { const c = sessionStorage.getItem("recall_suggestions"); return c ? JSON.parse(c) : null } catch { return null }
-  })
   const [onboardingStep, setOnboardingStep] = useState(null)
   const [first5Count, setFirst5Count] = useState(5)
   const [firstSaveSheetOpen, setFirstSaveSheetOpen] = useState(false)
@@ -448,7 +446,7 @@ export default function App() {
   // Related saves (shown on receipt)
   const [relatedSaves, setRelatedSaves] = useState([])
 
-  // Calendar (Library tab)
+  // Calendar (Search tab — idle/browse state)
   const [calendarSaves, setCalendarSaves] = useState({})
   const [calendarLoading, setCalendarLoading] = useState(false)
   const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -493,6 +491,7 @@ export default function App() {
   const tokenRef = useRef(null)
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
+  const searchSectionRef = useRef(null)
   const importFileInputRef = useRef(null)
   const importPollRef = useRef(null)
   const preSignupTourTimeoutRef = useRef(null)
@@ -553,8 +552,14 @@ export default function App() {
     if (linkedinBookmarkletRef.current) linkedinBookmarkletRef.current.setAttribute('href', LINKEDIN_BOOKMARKLET_CODE)
   }, [showSettings, importJob])
 
+  // Search tab's blank-state browsing modes: idle/calendar vs. focused/filtered-feed vs.
+  // query-active ranked results (hasSearched, handled separately below/in JSX).
+  const searchIsFiltering = searchInputFocused || askMode || !!selectedSource || !!selectedFolder
+  const showCalendar = !hasSearched && !searchIsFiltering
+  const showFilteredFeed = !hasSearched && searchIsFiltering
+
   useEffect(() => {
-    if (view === "library" && user && Object.keys(calendarSaves).length === 0 && !calendarLoading) {
+    if (view === "search" && user && Object.keys(calendarSaves).length === 0 && !calendarLoading) {
       fetchCalendarSaves()
     }
   }, [view, user])
@@ -566,10 +571,21 @@ export default function App() {
   }, [view, user, mcpConnections])
 
   useEffect(() => {
-    if (view !== "library" || selectedCalendarDay) return
+    if (view !== "search" || hasSearched || (showCalendar && selectedCalendarDay)) return
     const sentinel = libraryFeedSentinelRef.current
     if (!sentinel) return
-    const totalDays = Object.keys(calendarSaves).length
+    let feedSaves = calendarSaves
+    if (showFilteredFeed && (selectedSource || selectedFolder)) {
+      feedSaves = {}
+      for (const [day, daySaves] of Object.entries(calendarSaves)) {
+        const kept = daySaves.filter(s =>
+          (!selectedSource || getSourceLabel(s.url) === selectedSource) &&
+          (!selectedFolder || getSaveFolders(s.id).some(f => f.name === selectedFolder))
+        )
+        if (kept.length) feedSaves[day] = kept
+      }
+    }
+    const totalDays = Object.keys(feedSaves).length
     const observer = new IntersectionObserver(entries => {
       if (entries[0]?.isIntersecting) {
         setLibraryFeedCount(c => Math.min(c + 10, totalDays))
@@ -577,7 +593,7 @@ export default function App() {
     })
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [view, selectedCalendarDay, calendarSaves, libraryFeedCount])
+  }, [view, hasSearched, showCalendar, showFilteredFeed, selectedCalendarDay, calendarSaves, libraryFeedCount, selectedSource, selectedFolder, folders])
 
   useEffect(() => {
     if (!loading) { setLoadingStep(0); return }
@@ -707,24 +723,6 @@ export default function App() {
     setView("recall")
   }
 
-  const fetchSuggestions = async () => {
-    try {
-      const cached = sessionStorage.getItem("recall_suggestions")
-      if (cached) { setSuggestedChips(JSON.parse(cached)); return }
-      const token = await getToken()
-      const res = await fetch(`${BACKEND}/suggestions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token })
-      })
-      const data = await res.json()
-      setSuggestedChips(data.chips)
-      sessionStorage.setItem("recall_suggestions", JSON.stringify(data.chips))
-    } catch {
-      setSuggestedChips([])
-    }
-  }
-
   const fetchSaveCount = async () => {
     const { count } = await supabase
       .from("saves")
@@ -787,34 +785,6 @@ export default function App() {
     const filters = { sources }
     setLibraryFilters(filters)
     sessionStorage.setItem("recall_library_filters", JSON.stringify(filters))
-  }
-
-  const browseByFilter = async (folderName, source) => {
-    setLoading(true)
-    setHasSearched(true)
-    let query = supabase
-      .from("saves")
-      .select("id, url, title, tag, created_at, content_text")
-      .order("created_at", { ascending: false })
-    if (folderName) {
-      // Fetch only saves in this folder by their IDs (from folders state) — avoids nested join
-      const folder = folders.find(f => f.name === folderName)
-      const folderSaveIds = folder?.save_ids || []
-      if (folderSaveIds.length === 0) { setResults([]); setLoading(false); return }
-      query = query.in("id", folderSaveIds)
-    } else {
-      query = query.limit(100)
-    }
-    const { data } = await query
-    let rows = data || []
-    if (source) rows = rows.filter(r => getSourceLabel(r.url) === source)
-    setResults(rows.map(r => {
-      const content = (r.content_text || "").trim()
-      const excerpt = content.length > 220 ? content.slice(0, 220).replace(/\s\S*$/, "") + "…" : content
-      const { content_text, ...rest } = r
-      return { ...rest, excerpt }
-    }))
-    setLoading(false)
   }
 
   useEffect(() => {
@@ -900,7 +870,6 @@ export default function App() {
         fetchTodaySaves()
         fetchLibraryFilters()
         fetchFolders()
-        fetchSuggestions()
         fetchSaveCount()
         const preAuthSavedUrl = sessionStorage.getItem("recall_pre_auth_url")
         if (preAuthSavedUrl) {
@@ -1085,7 +1054,6 @@ export default function App() {
         fetchTodaySaves()
         fetchLibraryFilters()
         fetchFolders()
-        fetchSuggestions()
         fetchSaveCount()
         const preAuthSavedUrl = sessionStorage.getItem("recall_pre_auth_url")
         if (preAuthSavedUrl) {
@@ -1224,15 +1192,15 @@ export default function App() {
     localStorage.removeItem("recall_recent_searches")
     sessionStorage.removeItem("recall_last_query")
     sessionStorage.removeItem("recall_last_results")
-    sessionStorage.removeItem("recall_suggestions")
     sessionStorage.removeItem("recall_today_saves")
     sessionStorage.removeItem("recall_library_filters")
     sessionStorage.removeItem("recall_folders")
     setRecentSearches([])
-    setSuggestedChips(null)
     setHasSearched(false)
     setResults([])
     setQuery("")
+    setCalendarSaves({})
+    setSelectedCalendarDay(null)
     posthog.reset()
   }
 
@@ -1852,6 +1820,7 @@ export default function App() {
     const { data } = await supabase
       .from("saves")
       .select("id, url, title, tag, created_at, content_text")
+      .eq("status", "ready")
       .order("created_at", { ascending: false })
     if (data) {
       const grouped = {}
@@ -2368,6 +2337,39 @@ export default function App() {
     }
   }
   const visibleTodaySaves = !user && preSignupSave ? [preSignupSave] : todaySaves
+  const clearSearchFocusIfLeft = () => setTimeout(() => {
+    if (!searchSectionRef.current?.contains(document.activeElement)) setSearchInputFocused(false)
+  }, 150)
+  const filterDropdownsJSX = (libraryFilters.sources.length > 1 || folders.length > 0) && (
+    <div style={styles.filterRow}>
+      {libraryFilters.sources.length > 1 && (
+        <div style={styles.filterDropdownWrapper}>
+          <select
+            style={styles.filterDropdown}
+            value={selectedSource || ""}
+            onChange={e => { setSelectedSource(e.target.value || null); setDisplayCount(5); setLibraryFeedCount(10) }}
+            onBlur={clearSearchFocusIfLeft}
+          >
+            <option value="">All sources</option>
+            {libraryFilters.sources.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+      )}
+      {folders.length > 0 && (
+        <div style={styles.filterDropdownWrapper}>
+          <select
+            style={styles.filterDropdown}
+            value={selectedFolder || ""}
+            onChange={e => { setSelectedFolder(e.target.value || null); setDisplayCount(5); setLibraryFeedCount(10) }}
+            onBlur={clearSearchFocusIfLeft}
+          >
+            <option value="">All folders</option>
+            {folders.map(f => <option key={f.id} value={f.name}>{f.name}</option>)}
+          </select>
+        </div>
+      )}
+    </div>
+  )
   const recallConnectorContent = (
     <>
       <div style={styles.tokenSection}>
@@ -2839,14 +2841,13 @@ export default function App() {
       )}
 
       <div style={styles.tabs}>
-        <button onClick={() => { setView("search") }} style={view === "search" ? styles.tabActive : styles.tab}>Search</button>
         <button onClick={() => { setView("save") }} style={view === "save" ? styles.tabActive : styles.tab}>Save</button>
-        <button onClick={() => setView("library")} style={view === "library" ? styles.tabActive : styles.tab}>Library</button>
+        <button onClick={() => { setView("search") }} style={view === "search" ? styles.tabActive : styles.tab}>Search</button>
         <button onClick={() => { setView("recall"); if (mcpConnections === null) fetchMcpConnections() }} style={view === "recall" ? styles.tabActive : styles.tab}>ReCall</button>
       </div>
 
       {view === "search" && (
-        <div style={styles.section}>
+        <div style={styles.section} ref={searchSectionRef}>
 
           {/* Search bar */}
           <div data-tour="search-bar" style={{ ...styles.searchBarWrapper, ...tourHighlightStyle("search", { borderRadius: "14px" }) }}>
@@ -2855,10 +2856,16 @@ export default function App() {
               style={styles.searchBarInput}
               placeholder={askMode ? "Ask anything about your saves…" : "What are you looking for?"}
               value={query}
-              onChange={e => setQuery(e.target.value)}
+              onChange={e => {
+                const v = e.target.value
+                setQuery(v)
+                if (hasSearched && v.trim() === "") { setHasSearched(false); setResults([]) }
+              }}
               onKeyDown={e => { if (e.key === "Enter") askMode ? handleAsk() : handleSearch() }}
               onFocus={() => setSearchInputFocused(true)}
-              onBlur={() => setTimeout(() => setSearchInputFocused(false), 150)}
+              onBlur={() => setTimeout(() => {
+                if (!searchSectionRef.current?.contains(document.activeElement)) setSearchInputFocused(false)
+              }, 150)}
             />
             <button
               onClick={() => askMode ? handleAsk() : handleSearch()}
@@ -2958,17 +2965,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Empty state — new-user nudge only */}
-          {!hasSearched && !loading && suggestedChips !== null && suggestedChips.length === 0 && (
-            <div style={styles.emptyState}>
-              <p style={styles.emptyStateHint}>Nothing saved yet.</p>
-              <button
-                style={styles.emptyStateCta}
-                onClick={() => setView("save")}
-              >Save your first link →</button>
-            </div>
-          )}
-
           {/* Zero-results state */}
           {hasSearched && !loading && results.length === 0 && (
             <div style={styles.zeroResults}>
@@ -2989,45 +2985,162 @@ export default function App() {
             </div>
           )}
 
-          {/* Filter dropdowns — always visible when library has variety */}
-          {!loading && (libraryFilters.sources.length > 1 || folders.length > 0) && (
-            <div style={styles.filterRow}>
-              {libraryFilters.sources.length > 1 && (
-                <div style={styles.filterDropdownWrapper}>
-                  <select
-                    style={styles.filterDropdown}
-                    value={selectedSource || ""}
-                    onChange={e => {
-                      const newSource = e.target.value || null
-                      setSelectedSource(newSource)
-                      setDisplayCount(5)
-                      if (!query.trim()) browseByFilter(selectedFolder, newSource)
-                    }}
-                  >
-                    <option value="">All sources</option>
-                    {libraryFilters.sources.map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-              )}
-              {folders.length > 0 && (
-                <div style={styles.filterDropdownWrapper}>
-                  <select
-                    style={styles.filterDropdown}
-                    value={selectedFolder || ""}
-                    onChange={e => {
-                      const newFolder = e.target.value || null
-                      setSelectedFolder(newFolder)
-                      setDisplayCount(5)
-                      if (!query.trim()) browseByFilter(newFolder, selectedSource)
-                    }}
-                  >
-                    <option value="">All folders</option>
-                    {folders.map(f => <option key={f.id} value={f.name}>{f.name}</option>)}
-                  </select>
-                </div>
-              )}
-            </div>
-          )}
+          {/* Idle/browse (calendar) + focused/filter (dropdowns + feed) blank-state browsing —
+              folded in from the old separate Library tab */}
+          {!hasSearched && (() => {
+            const TAG_COLORS = {
+              Tech: "#c084fc", Product: "#60a5fa", Business: "#34d399",
+              Finance: "#fbbf24", Health: "#f87171", Personal: "#a78bfa", Other: "#6b7280"
+            }
+            const year = calendarMonth.getFullYear()
+            const month = calendarMonth.getMonth()
+            const firstDay = new Date(year, month, 1).getDay()
+            const daysInMonth = new Date(year, month + 1, 0).getDate()
+            const todayKey = new Date().toLocaleDateString("en-CA")
+            const isCurrentMonth = year === new Date().getFullYear() && month === new Date().getMonth()
+            const monthName = calendarMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" })
+            const DAY_HEADERS = ["S", "M", "T", "W", "T", "F", "S"]
+
+            const cells = []
+            for (let i = 0; i < firstDay; i++) cells.push(null)
+            for (let d = 1; d <= daysInMonth; d++) cells.push(d)
+
+            const selectedDaySaves = selectedCalendarDay ? (calendarSaves[selectedCalendarDay] || []) : []
+            const hasAnySaves = Object.keys(calendarSaves).length > 0
+
+            let feedSource = calendarSaves
+            if (showFilteredFeed && (selectedSource || selectedFolder)) {
+              feedSource = {}
+              for (const [day, daySaves] of Object.entries(calendarSaves)) {
+                const kept = daySaves.filter(s =>
+                  (!selectedSource || getSourceLabel(s.url) === selectedSource) &&
+                  (!selectedFolder || getSaveFolders(s.id).some(f => f.name === selectedFolder))
+                )
+                if (kept.length) feedSource[day] = kept
+              }
+            }
+            const allDayKeys = Object.keys(feedSource).sort((a, b) => b.localeCompare(a))
+            const visibleDayKeys = allDayKeys.slice(0, libraryFeedCount)
+
+            return (
+              <>
+                {showCalendar && (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                    <button
+                      style={styles.calNavBtn}
+                      onClick={() => { setCalendarMonth(new Date(year, month - 1, 1)); setSelectedCalendarDay(null) }}
+                    >←</button>
+                    <span style={{ fontWeight: 600, fontSize: 15, color: "#f6f3ea" }}>{monthName}</span>
+                    <button
+                      style={{ ...styles.calNavBtn, opacity: isCurrentMonth ? 0.25 : 1, pointerEvents: isCurrentMonth ? "none" : "auto" }}
+                      onClick={() => { setCalendarMonth(new Date(year, month + 1, 1)); setSelectedCalendarDay(null) }}
+                    >→</button>
+                  </div>
+                )}
+
+                {showFilteredFeed && filterDropdownsJSX}
+
+                {calendarLoading && <span className="shimmer" style={styles.searchShimmerBar} />}
+
+                {!calendarLoading && (
+                  <>
+                    {showCalendar && (
+                      <>
+                        {/* Day-of-week headers */}
+                        <div style={styles.calGrid}>
+                          {DAY_HEADERS.map((h, i) => (
+                            <div key={i} style={styles.calDayHeader}>{h}</div>
+                          ))}
+
+                          {/* Day cells */}
+                          {cells.map((day, i) => {
+                            if (!day) return <div key={`e-${i}`} />
+                            const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+                            const daySaves = calendarSaves[dateKey] || []
+                            const isToday = dateKey === todayKey
+                            const isSelected = dateKey === selectedCalendarDay
+                            const hasSaves = daySaves.length > 0
+
+                            return (
+                              <div
+                                key={day}
+                                onClick={() => hasSaves && setSelectedCalendarDay(isSelected ? null : dateKey)}
+                                style={{
+                                  ...styles.calCell,
+                                  ...(isToday ? styles.calCellToday : {}),
+                                  ...(isSelected ? styles.calCellSelected : {}),
+                                  ...(hasSaves ? { cursor: "pointer" } : {}),
+                                }}
+                              >
+                                <span style={{ ...styles.calDayNum, ...(isToday ? { color: "#f6f3ea", fontWeight: 700 } : {}) }}>{day}</span>
+                                {hasSaves && (
+                                  <div style={styles.calDots}>
+                                    {daySaves.slice(0, 3).map((s, idx) => (
+                                      <span key={idx} style={{ ...styles.calDot, background: TAG_COLORS[s.tag] || "#6b7280" }} />
+                                    ))}
+                                    {daySaves.length > 3 && <span style={styles.calDotMore}>+{daySaves.length - 3}</span>}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+
+                        {/* Expanded day panel */}
+                        {selectedCalendarDay && (
+                          <div style={styles.calDayPanel}>
+                            <div style={styles.calDayPanelHeader}>
+                              <span style={styles.calDayPanelTitle}>
+                                {new Date(selectedCalendarDay + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+                              </span>
+                              <span style={{ fontSize: 12, color: "#7d786f" }}>{selectedDaySaves.length} {selectedDaySaves.length === 1 ? "save" : "saves"}</span>
+                            </div>
+                            {selectedDaySaves.map(save => renderSavedArticleCard(save))}
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {/* Empty state */}
+                    {!hasAnySaves && (
+                      <div style={styles.emptyState}>
+                        <p style={styles.emptyStateHint}>Nothing saved yet.</p>
+                        <button style={styles.emptyStateCta} onClick={() => setView("save")}>Save your first link →</button>
+                      </div>
+                    )}
+
+                    {/* Chronological infinite-scroll feed (default/filtered view; hidden while a calendar day is selected) */}
+                    {hasAnySaves && !(showCalendar && selectedCalendarDay) && (
+                      allDayKeys.length > 0 ? (
+                        <div style={styles.libraryFeed}>
+                          <span style={styles.libraryFeedLabel}>All saves</span>
+                          {visibleDayKeys.map(dateKey => {
+                            const daySaves = feedSource[dateKey] || []
+                            return (
+                              <div key={dateKey} style={styles.libraryFeedDay}>
+                                <span style={styles.calDayPanelTitle}>
+                                  {new Date(dateKey + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+                                </span>
+                                {daySaves.map(save => renderSavedArticleCard(save))}
+                              </div>
+                            )
+                          })}
+                          {visibleDayKeys.length < allDayKeys.length && (
+                            <div ref={libraryFeedSentinelRef} style={{ height: 1 }} />
+                          )}
+                        </div>
+                      ) : (
+                        <p style={styles.zeroResultsSub}>Nothing matches this filter yet.</p>
+                      )
+                    )}
+                  </>
+                )}
+              </>
+            )
+          })()}
+
+          {/* Filter dropdowns for query-active ranked results */}
+          {hasSearched && !loading && filterDropdownsJSX}
 
           {/* Result cards + show more */}
           {results.length > 0 && !loading && (() => {
@@ -3418,135 +3531,6 @@ export default function App() {
           )}
         </div>
       )}
-
-      {view === "library" && (() => {
-        const TAG_COLORS = {
-          Tech: "#c084fc", Product: "#60a5fa", Business: "#34d399",
-          Finance: "#fbbf24", Health: "#f87171", Personal: "#a78bfa", Other: "#6b7280"
-        }
-        const year = calendarMonth.getFullYear()
-        const month = calendarMonth.getMonth()
-        const firstDay = new Date(year, month, 1).getDay()
-        const daysInMonth = new Date(year, month + 1, 0).getDate()
-        const todayKey = new Date().toLocaleDateString("en-CA")
-        const isCurrentMonth = year === new Date().getFullYear() && month === new Date().getMonth()
-        const monthName = calendarMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" })
-        const DAY_HEADERS = ["S", "M", "T", "W", "T", "F", "S"]
-
-        const cells = []
-        for (let i = 0; i < firstDay; i++) cells.push(null)
-        for (let d = 1; d <= daysInMonth; d++) cells.push(d)
-
-        const selectedDaySaves = selectedCalendarDay ? (calendarSaves[selectedCalendarDay] || []) : []
-        const hasAnySaves = Object.keys(calendarSaves).length > 0
-        const allDayKeys = Object.keys(calendarSaves).sort((a, b) => b.localeCompare(a))
-        const visibleDayKeys = allDayKeys.slice(0, libraryFeedCount)
-
-        return (
-          <div style={styles.section}>
-            {/* Month navigation */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-              <button
-                style={styles.calNavBtn}
-                onClick={() => { setCalendarMonth(new Date(year, month - 1, 1)); setSelectedCalendarDay(null) }}
-              >←</button>
-              <span style={{ fontWeight: 600, fontSize: 15, color: "#f6f3ea" }}>{monthName}</span>
-              <button
-                style={{ ...styles.calNavBtn, opacity: isCurrentMonth ? 0.25 : 1, pointerEvents: isCurrentMonth ? "none" : "auto" }}
-                onClick={() => { setCalendarMonth(new Date(year, month + 1, 1)); setSelectedCalendarDay(null) }}
-              >→</button>
-            </div>
-
-            {calendarLoading && <span className="shimmer" style={styles.searchShimmerBar} />}
-
-            {!calendarLoading && (
-              <>
-                {/* Day-of-week headers */}
-                <div style={styles.calGrid}>
-                  {DAY_HEADERS.map((h, i) => (
-                    <div key={i} style={styles.calDayHeader}>{h}</div>
-                  ))}
-
-                  {/* Day cells */}
-                  {cells.map((day, i) => {
-                    if (!day) return <div key={`e-${i}`} />
-                    const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`
-                    const daySaves = calendarSaves[dateKey] || []
-                    const isToday = dateKey === todayKey
-                    const isSelected = dateKey === selectedCalendarDay
-                    const hasSaves = daySaves.length > 0
-
-                    return (
-                      <div
-                        key={day}
-                        onClick={() => hasSaves && setSelectedCalendarDay(isSelected ? null : dateKey)}
-                        style={{
-                          ...styles.calCell,
-                          ...(isToday ? styles.calCellToday : {}),
-                          ...(isSelected ? styles.calCellSelected : {}),
-                          ...(hasSaves ? { cursor: "pointer" } : {}),
-                        }}
-                      >
-                        <span style={{ ...styles.calDayNum, ...(isToday ? { color: "#f6f3ea", fontWeight: 700 } : {}) }}>{day}</span>
-                        {hasSaves && (
-                          <div style={styles.calDots}>
-                            {daySaves.slice(0, 3).map((s, idx) => (
-                              <span key={idx} style={{ ...styles.calDot, background: TAG_COLORS[s.tag] || "#6b7280" }} />
-                            ))}
-                            {daySaves.length > 3 && <span style={styles.calDotMore}>+{daySaves.length - 3}</span>}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-
-                {/* Expanded day panel */}
-                {selectedCalendarDay && (
-                  <div style={styles.calDayPanel}>
-                    <div style={styles.calDayPanelHeader}>
-                      <span style={styles.calDayPanelTitle}>
-                        {new Date(selectedCalendarDay + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
-                      </span>
-                      <span style={{ fontSize: 12, color: "#7d786f" }}>{selectedDaySaves.length} {selectedDaySaves.length === 1 ? "save" : "saves"}</span>
-                    </div>
-                    {selectedDaySaves.map(save => renderSavedArticleCard(save))}
-                  </div>
-                )}
-
-                {/* Empty state */}
-                {!hasAnySaves && (
-                  <div style={styles.emptyState}>
-                    <p style={styles.emptyStateHint}>Nothing saved yet.</p>
-                    <button style={styles.emptyStateCta} onClick={() => setView("save")}>Save your first link →</button>
-                  </div>
-                )}
-
-                {/* Chronological infinite-scroll feed (default view; hidden while a calendar day is selected) */}
-                {hasAnySaves && !selectedCalendarDay && (
-                  <div style={styles.libraryFeed}>
-                    <span style={styles.libraryFeedLabel}>All saves</span>
-                    {visibleDayKeys.map(dateKey => {
-                      const daySaves = calendarSaves[dateKey] || []
-                      return (
-                        <div key={dateKey} style={styles.libraryFeedDay}>
-                          <span style={styles.calDayPanelTitle}>
-                            {new Date(dateKey + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
-                          </span>
-                          {daySaves.map(save => renderSavedArticleCard(save))}
-                        </div>
-                      )
-                    })}
-                    {visibleDayKeys.length < allDayKeys.length && (
-                      <div ref={libraryFeedSentinelRef} style={{ height: 1 }} />
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )
-      })()}
 
       {view === "recall" && (
         <div style={styles.section}>
@@ -4055,7 +4039,7 @@ const styles = {
   relatedSavesLabel: { fontSize: "11px", color: "#7d786f" },
   relatedSaveChip: { background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "10px", padding: "6px 10px", fontSize: "12px", cursor: "pointer", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
 
-  // Calendar (Library tab)
+  // Calendar (Search tab — idle/browse state)
   calNavBtn: { background: "none", border: "none", color: "#d9ff5f", fontSize: 20, cursor: "pointer", padding: "4px 12px", borderRadius: 6 },
   calGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3, marginBottom: 12 },
   calDayHeader: { textAlign: "center", fontSize: 11, color: "#7d786f", fontWeight: 600, padding: "4px 0 8px" },
