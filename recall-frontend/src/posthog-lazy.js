@@ -26,7 +26,8 @@ if (import.meta.env.VITE_POSTHOG_KEY) {
       api_host: 'https://us.i.posthog.com',
       person_profiles: 'identified_only',
     })
-    realPosthog.register({ environment: import.meta.env.VITE_APP_ENV ?? 'production' })
+    const isLocal = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    realPosthog.register({ environment: isLocal ? 'local' : (import.meta.env.VITE_APP_ENV ?? 'production') })
     real = realPosthog
     queue.forEach(([method, args]) => real[method](...args))
     queue.length = 0

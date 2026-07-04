@@ -538,6 +538,7 @@ export default function App() {
       setDeferredInstallPrompt(null)
       setJustInstalled(true)
       localStorage.setItem('recall_installed', 'true')
+      posthog.capture('pwa_installed')
     }
     window.addEventListener('beforeinstallprompt', handleBeforeInstall)
     window.addEventListener('appinstalled', handleAppInstalled)
@@ -875,7 +876,7 @@ export default function App() {
       setUser(session?.user ?? null)
       setAuthLoading(false)
       if (session?.user) {
-        posthog.identify(session.user.id)
+        posthog.identify(session.user.id, { email: session.user.email, signup_date: session.user.created_at })
         fetchTodaySaves()
         fetchLibraryFilters()
         fetchFolders()
@@ -1053,7 +1054,7 @@ export default function App() {
       tokenRef.current = session?.access_token ?? null
       setUser(session?.user ?? null)
       if (session?.user) {
-        posthog.identify(session.user.id)
+        posthog.identify(session.user.id, { email: session.user.email, signup_date: session.user.created_at })
         if (_event === 'SIGNED_IN') {
           const createdAt = new Date(session.user.created_at).getTime()
           if (Date.now() - createdAt < 30_000) {
@@ -1151,6 +1152,7 @@ export default function App() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || "Could not complete authorization")
       sessionStorage.removeItem('mcp_consent_params')
+      posthog.capture('mcp_connected', { client_id: mcpConsentParams.client_id })
       window.location.href = data.redirect_uri
     } catch (e) {
       setMcpConsentError(e.message || "Something went wrong — try connecting again")
@@ -1217,12 +1219,12 @@ export default function App() {
     setDeletingAccount(true)
     try {
       const token = await getToken()
-      await fetch(`${BACKEND}/account`, {
+      const res = await fetch(`${BACKEND}/account`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token })
       })
-      posthog.capture('account_deleted')
+      if (res.ok) posthog.capture('account_deleted')
       posthog.reset()
       await supabase.auth.signOut()
       userRef.current = null
@@ -1436,6 +1438,7 @@ export default function App() {
         body: JSON.stringify({ token, subscription: subscription.toJSON() })
       })
       setPushEnabled(true)
+      posthog.capture('push_notifications_enabled')
     } catch (e) {
       console.error("[push] subscribe failed", e)
       setMessage("Couldn't enable notifications — try again.")
@@ -1459,7 +1462,7 @@ export default function App() {
         if (job.status !== "running") {
           clearInterval(importPollRef.current)
           localStorage.removeItem("recall_import_job_id")
-          posthog.capture("x_bookmarks_import_finished", { status: job.status, succeeded: job.succeeded })
+          posthog.capture("import_finished", { source: job.source, status: job.status, succeeded: job.succeeded })
           if (job.succeeded > 0) fetchTodaySaves()
           if (job.status === "completed") {
             if (job.source === "url_scraped") {
@@ -1528,7 +1531,7 @@ export default function App() {
         return
       }
       localStorage.setItem("recall_import_job_id", data.job_id)
-      posthog.capture("x_bookmarks_import_started", { total: data.total, capped: data.capped })
+      posthog.capture("x_bookmarks_import_started", { source: 'file_upload', total: data.total, capped: data.capped })
       if (data.capped) setMessage(`Found ${data.total_found} bookmarks — importing the most recent ${data.total}.`)
       pollImportStatus(data.job_id)
     } catch {
@@ -1602,6 +1605,7 @@ export default function App() {
     const data = await res.json()
     if (!res.ok) return
     setNewFolderName("")
+    posthog.capture('folder_created')
     const newFolders = await fetchFolders()
     // Auto-add the new folder to the save currently in the picker
     if (folderPickerSaveId && data.id) {
@@ -1726,6 +1730,7 @@ export default function App() {
       if (data.duplicate) {
         setSaveReceipt({ ...data, url, duplicate: true })
       } else if (data.pending) {
+        posthog.capture('save_confirmed', { content_type: data.content_type || 'article', via_share_sheet: !!fromShareSheet })
         setUrlInput("")
         setRelatedSaves([])
         setTotalSaveCount(prev => (prev ?? 0) + 1)

@@ -56,6 +56,7 @@ ReCall is a PWA (Progressive Web App) for semantic search over saved internet co
 ```
 ReCall/
 ├── CLAUDE.md                   ← this file
+├── CONTRIBUTING.md              ← staging/production branch workflow + env var reference (Vercel `staging` branch vs `main`)
 ├── vercel.json                 ← SPA fallback rewrites (lives at root; Vercel root dir = recall-frontend)
 ├── .gitignore
 ├── .github/workflows/keepalive.yml  ← cron ping to Railway's `GET /` every 10min, keeps the backend warm (Known Issue #38)
@@ -63,6 +64,7 @@ ReCall/
 │   ├── src/
 │   │   ├── App.jsx             ← entire frontend (single component file)
 │   │   ├── main.jsx            ← React entry point
+│   │   ├── posthog-lazy.js     ← lazy-loading proxy around posthog-js (queues calls until the real SDK chunk loads, keeps it off the critical render path)
 │   │   ├── index.css           ← global CSS variables, base styles, shimmer keyframes
 │   │   └── App.css             ← Vite boilerplate, not actively used by the app
 │   ├── public/
@@ -182,7 +184,7 @@ The 6 MCP tools (`recall_search`, `recall_save`, `recall_suggestions`, `recall_u
 3. Button text cycles through `["Fetching...", "Reading...", "Analyzing...", "Almost there..."]` every 800 ms via a `useEffect` on `loading`
 4. POSTs `{ url, token }` to `BACKEND/save` (45s client-side `AbortController` timeout — a safety net, not the normal path, since the response itself comes back in well under a second)
 5. **On duplicate** (`data.duplicate === true`): sets receipt to `{ ...data, duplicate: true }` — shows amber "Already in ReCall" card with original save date. No chime, no re-save.
-6. **On pending** (`data.pending === true`, the normal case): clears input, sets `saveReceipt` to a pending state — shows "Saved ✓" immediately with the title/tag area shimmering, plus copy telling the user they can leave ("Feel free to close the app, we'll notify you when it's ready" if push is enabled, otherwise "go on with your day, it'll update here on its own"). Bumps `totalSaveCount` right away since the row exists in the DB. Chime/vibrate/milestone-tracking/posthog `url_saved` are deferred until enrichment actually finishes (`finalizeSave`, #1b).
+6. **On pending** (`data.pending === true`, the normal case): fires posthog `save_confirmed` immediately (the reliable activation/volume signal — independent of enrichment timing or whether the user sticks around), then clears input, sets `saveReceipt` to a pending state — shows "Saved ✓" immediately with the title/tag area shimmering, plus copy telling the user they can leave ("Feel free to close the app, we'll notify you when it's ready" if push is enabled, otherwise "go on with your day, it'll update here on its own"). Bumps `totalSaveCount` right away since the row exists in the DB. Chime/vibrate/milestone-tracking/posthog `url_saved` are deferred until enrichment actually finishes (`finalizeSave`, #1b) — `url_saved` is a secondary "stayed to see it finish" signal, not the activation metric (it undercounts real saves whenever the user navigates away before enrichment resolves, which the save flow explicitly invites the user to do).
 7. **On failure**: clears receipt, shows red error message
 
 **Backend (`main.py` → `POST /save` → `process_save_fast`)**
@@ -769,7 +771,7 @@ A lightning bolt / cursor-shaped path:
 - **Security — SSRF protection** — `validate_url()` blocks private/internal IPs before any fetch; guards both user-supplied URLs and `og:image` URLs
 - **Security — rate limiting** — slowapi, 10/min on `/save`, 30/min on `/search`, per IP
 - **Observability — Sentry** — error monitoring on both frontend (`@sentry/react`) and backend (`sentry-sdk[fastapi]`); DSN via env vars, silently skips if not set
-- **Observability — PostHog** — product analytics on frontend; tracks `url_saved`, `search_performed`, `tag_edited`, `title_edited`, `save_deleted`, `share_sheet_triggered`, `account_deleted`; identifies users by Supabase UID; resets on sign-out
+- **Observability — PostHog** — product analytics on frontend only, loaded lazily via `recall-frontend/src/posthog-lazy.js` (a hand-rolled proxy that queues calls until the real `posthog-js` SDK loads as its own chunk, keeping the ~63KB SDK off the critical render path); tracks `save_confirmed` (fires on save-attempt, the reliable activation/volume signal), `url_saved` (fires only if the user is still watching when background enrichment finishes — a secondary signal, see "Background save enrichment" #1b), `search_performed`, `ask_performed`, `title_edited`, `save_deleted`, `share_sheet_triggered`, `account_deleted` (only on a successful deletion), `user_signed_up`, `x_bookmarks_import_started`/`linkedin_import_started`/`import_finished` (tagged with `source`), `folder_created`, `push_notifications_enabled`, `pwa_installed`, `mcp_connected`; identifies users by Supabase UID plus `email`/`signup_date` person properties; resets on sign-out. Every event is tagged with an `environment` super property (`production` / `staging` / `local`, auto-detected via `window.location.hostname` for local dev) — see `CONTRIBUTING.md` for the staging/production branch workflow this isolation scheme supports.
 - **Account deletion** — `DELETE /account` endpoint wipes all saves + deletes auth user; frontend settings panel (⚙ in header) with confirmation step
 - **Privacy Policy + Terms of Service** — inline legal view at `/privacy` and `/terms`; footer links on all views; content is factual and minimal
 - **Install banner + bottom-of-page fallback button** — persistent, dismissible "Install ReCall" banner below the header on all views; once dismissed, replaced by a small button near the footer. Uses `beforeinstallprompt`/`appinstalled` where available, falls back to platform-specific "Add to Home Screen" instructions on iOS/others
