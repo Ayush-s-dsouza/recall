@@ -61,6 +61,11 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes tourFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 body {
   margin: 0;
 }

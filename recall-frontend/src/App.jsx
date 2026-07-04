@@ -148,10 +148,11 @@ const PRE_SIGNUP_TOUR_STEPS = [
   {
     id: "pre-signup-save",
     highlight: "sign-in",
+    targetSelector: '[data-tour="sign-in-button"]',
     eyebrow: "Saved",
     title: "Sign in to use this memory",
     description: "Your first save is ready. Sign in with Google to keep it, search across it, and let an LLM use it as context.",
-    videoUrl: "https://media.w3.org/2010/05/bunny/movie.mp4",
+    videoSrc: "/tour/recall-search.mp4",
     poster: "",
     primaryLabel: "Got it",
   },
@@ -2321,6 +2322,7 @@ export default function App() {
             </>
           ) : (
             <button
+              data-tour="sign-in-button"
               onClick={() => signIn(preSignupSave?.url || preAuthUrl)}
               style={{ ...styles.signOut, ...tourHighlightStyle("sign-in") }}
             >Sign in</button>
@@ -2333,7 +2335,6 @@ export default function App() {
         restartKey={!user && preSignupSave ? preSignupTourKey : null}
         steps={!user && preSignupSave ? PRE_SIGNUP_TOUR_STEPS : undefined}
       />
-      {activeTourHighlight && <div style={styles.tourBackdrop} aria-hidden="true" />}
 
       {message && <p style={xConnecting ? styles.neutral : (isError ? styles.error : styles.success)}>{message}</p>}
 
@@ -2400,7 +2401,7 @@ export default function App() {
           {openSettingsSection === 'connect' && (
             <div style={styles.settingsAccordionBody}>
               <div style={styles.tokenSection}>
-                <div style={{ ...styles.tokenRow, ...tourHighlightStyle("connect-llm", { borderRadius: "14px" }) }}>
+                <div data-tour="mcp-link" style={{ ...styles.tokenRow, ...tourHighlightStyle("connect-llm", { borderRadius: "14px" }) }}>
                   <input readOnly value={`${BACKEND}/mcp`} style={styles.tokenInput} onFocus={e => e.target.select()} />
                   <button
                     onClick={() => { navigator.clipboard.writeText(`${BACKEND}/mcp`); setTokenCopied(true); setTimeout(() => setTokenCopied(false), 2000) }}
@@ -2453,6 +2454,7 @@ export default function App() {
               {!importJob || importJob.status === "completed" || importJob.status === "stalled" ? (
                 <>
                   <button
+                    data-tour="import-x-button"
                     onClick={connectXForImport}
                     disabled={xConnecting}
                     style={{ ...styles.shortcutAddButton, border: "none", ...tourHighlightStyle("import-x") }}
@@ -2790,7 +2792,7 @@ export default function App() {
         <div style={styles.section}>
 
           {/* Search bar */}
-          <div style={{ ...styles.searchBarWrapper, ...tourHighlightStyle("search", { borderRadius: "14px" }) }}>
+          <div data-tour="search-bar" style={{ ...styles.searchBarWrapper, ...tourHighlightStyle("search", { borderRadius: "14px" }) }}>
             <input
               ref={searchInputRef}
               style={styles.searchBarInput}
@@ -3586,7 +3588,6 @@ const styles = {
   tagline: { color: "#aca79b", fontSize: "16px", margin: 0 },
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 0", width: "100%", maxWidth: "760px", boxSizing: "border-box" },
   headerIconButton: { width: "42px", height: "42px", padding: 0 },
-  tourBackdrop: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.62)", zIndex: 60, pointerEvents: "none" },
   tourHighlight: { position: "relative", zIndex: 70, boxShadow: "0 0 0 2px rgba(217,255,95,0.95), 0 0 0 9999px rgba(0,0,0,0.02), 0 18px 52px -18px rgba(217,255,95,0.85)", filter: "none" },
   tabs: { display: "flex", gap: "8px", marginBottom: "24px", justifyContent: "center", width: "100%", maxWidth: "760px" },
   tab: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "8px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px" },

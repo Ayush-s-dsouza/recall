@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react"
+import { Spotlight } from "./Spotlight"
 import { TourStep } from "./TourStep"
 import { useFeatureTour } from "./useFeatureTour"
 import { emitFeatureTourStep, FEATURE_TOUR_REPLAY_EVENT } from "./tour-events"
@@ -35,20 +36,23 @@ export function FeatureTour({ autoOpen = true, onStepChange, restartKey = null, 
   if (!tour.open || !tour.step) return null
 
   return (
-    <div className="feature-tour-shell" style={styles.shell} aria-live="polite">
-      <div style={styles.glow} aria-hidden="true" />
-      <TourStep
-        canGoBack={!tour.isFirst}
-        isLast={tour.isLast}
-        onBack={tour.back}
-        onNext={tour.next}
-        onSkip={() => tour.close(true)}
-        progress={tour.progress}
-        step={tour.step}
-        stepIndex={tour.index}
-        totalSteps={tour.steps.length}
-      />
-    </div>
+    <>
+      {tour.step.targetSelector && <Spotlight selector={tour.step.targetSelector} />}
+      <div className="feature-tour-shell" style={styles.shell} aria-live="polite">
+        <div style={styles.glow} aria-hidden="true" />
+        <TourStep
+          canGoBack={!tour.isFirst}
+          isLast={tour.isLast}
+          onBack={tour.back}
+          onNext={tour.next}
+          onSkip={() => tour.close(true)}
+          progress={tour.progress}
+          step={tour.step}
+          stepIndex={tour.index}
+          totalSteps={tour.steps.length}
+        />
+      </div>
+    </>
   )
 }
 
@@ -64,7 +68,7 @@ const styles = {
     position: "fixed",
     right: "16px",
     bottom: "16px",
-    zIndex: 80,
+    zIndex: 90,
     animation: "tourSlideUp 180ms ease-out",
   },
 }
