@@ -543,6 +543,12 @@ export default function App() {
   }, [view, user])
 
   useEffect(() => {
+    if (view === "recall" && user && mcpConnections === null) {
+      fetchMcpConnections()
+    }
+  }, [view, user, mcpConnections])
+
+  useEffect(() => {
     if (view !== "library" || selectedCalendarDay) return
     const sentinel = libraryFeedSentinelRef.current
     if (!sentinel) return
@@ -2294,9 +2300,9 @@ export default function App() {
     }
 
     if (highlight === "connect-llm") {
-      setView("save")
-      setShowSettings(true)
-      setOpenSettingsSection("connect")
+      setView("recall")
+      setShowSettings(false)
+      setOpenSettingsSection(null)
       if (mcpConnections === null) fetchMcpConnections()
       return
     }
@@ -2308,6 +2314,47 @@ export default function App() {
     }
   }
   const visibleTodaySaves = !user && preSignupSave ? [preSignupSave] : todaySaves
+  const recallConnectorContent = (
+    <>
+      <div style={styles.tokenSection}>
+        <div data-tour="mcp-link" style={{ ...styles.tokenRow, ...tourHighlightStyle("connect-llm", { borderRadius: "14px" }) }}>
+          <input readOnly value={`${BACKEND}/mcp`} style={styles.tokenInput} onFocus={e => e.target.select()} />
+          <button
+            onClick={() => { navigator.clipboard.writeText(`${BACKEND}/mcp`); setTokenCopied(true); setTimeout(() => setTokenCopied(false), 2000) }}
+            style={styles.tokenCopyButton}
+          >{tokenCopied ? "Copied!" : "Copy"}</button>
+        </div>
+        <p style={styles.tokenWarning}>
+          Paste this URL into ChatGPT, Claude, or any MCP-compatible client's custom connector dialog. You'll sign in with Google and approve access — no token to copy.
+        </p>
+      </div>
+
+      <div style={styles.settingsDivider} />
+
+      <p style={styles.settingsSectionHeading}>Connected apps</p>
+      {mcpConnections === null ? (
+        <p style={styles.tokenWarning}>Loading…</p>
+      ) : mcpConnections.length === 0 ? (
+        <p style={styles.tokenWarning}>No apps connected yet.</p>
+      ) : (
+        <div style={styles.tokenSection}>
+          {mcpConnections.map(c => (
+            <div key={c.client_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "13px", color: "#aca79b" }}>
+                {c.client_name || "Unnamed app"}
+                <span style={{ color: "#666" }}> · connected {new Date(c.connected_at).toLocaleDateString()}</span>
+              </span>
+              <button
+                onClick={() => disconnectMcpClient(c.client_id)}
+                disabled={mcpDisconnectingId === c.client_id}
+                style={styles.tokenHideButton}
+              >{mcpDisconnectingId === c.client_id ? "Disconnecting…" : "Disconnect"}</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  )
 
   return (
     <div style={styles.container}>
@@ -2385,60 +2432,6 @@ export default function App() {
               <div style={styles.settingsDivider} />
             </>
           )}
-
-          {/* Connect to LLM apps + Connected apps — collapsible */}
-          <button
-            onClick={() => {
-              const opening = openSettingsSection !== 'connect'
-              setOpenSettingsSection(opening ? 'connect' : null)
-              if (opening && mcpConnections === null) fetchMcpConnections()
-            }}
-            style={styles.settingsAccordionHeader}
-          >
-            <span>Connect to an LLM app</span>
-            <span style={styles.settingsAccordionChevron}>{openSettingsSection === 'connect' ? "▾" : "▸"}</span>
-          </button>
-          {openSettingsSection === 'connect' && (
-            <div style={styles.settingsAccordionBody}>
-              <div style={styles.tokenSection}>
-                <div data-tour="mcp-link" style={{ ...styles.tokenRow, ...tourHighlightStyle("connect-llm", { borderRadius: "14px" }) }}>
-                  <input readOnly value={`${BACKEND}/mcp`} style={styles.tokenInput} onFocus={e => e.target.select()} />
-                  <button
-                    onClick={() => { navigator.clipboard.writeText(`${BACKEND}/mcp`); setTokenCopied(true); setTimeout(() => setTokenCopied(false), 2000) }}
-                    style={styles.tokenCopyButton}
-                  >{tokenCopied ? "Copied!" : "Copy"}</button>
-                </div>
-                <p style={styles.tokenWarning}>
-                  Paste this URL into Claude, ChatGPT, or any MCP-compatible client's custom connector dialog. You'll sign in with Google and approve access — no token to copy.
-                </p>
-              </div>
-
-              <p style={styles.settingsSectionHeading}>Connected apps</p>
-              {mcpConnections === null ? (
-                <p style={styles.tokenWarning}>Loading…</p>
-              ) : mcpConnections.length === 0 ? (
-                <p style={styles.tokenWarning}>No apps connected yet.</p>
-              ) : (
-                <div style={styles.tokenSection}>
-                  {mcpConnections.map(c => (
-                    <div key={c.client_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
-                      <span style={{ fontSize: "13px", color: "#aca79b" }}>
-                        {c.client_name || "Unnamed app"}
-                        <span style={{ color: "#666" }}> · connected {new Date(c.connected_at).toLocaleDateString()}</span>
-                      </span>
-                      <button
-                        onClick={() => disconnectMcpClient(c.client_id)}
-                        disabled={mcpDisconnectingId === c.client_id}
-                        style={styles.tokenHideButton}
-                      >{mcpDisconnectingId === c.client_id ? "Disconnecting…" : "Disconnect"}</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          <div style={styles.settingsDivider} />
 
           {/* Import (X bookmarks + LinkedIn saved posts) — collapsible */}
           <button
@@ -2786,6 +2779,7 @@ export default function App() {
         <button onClick={() => { setView("search") }} style={view === "search" ? styles.tabActive : styles.tab}>Search</button>
         <button onClick={() => { setView("save") }} style={view === "save" ? styles.tabActive : styles.tab}>Save</button>
         <button onClick={() => setView("library")} style={view === "library" ? styles.tabActive : styles.tab}>Library</button>
+        <button onClick={() => { setView("recall"); if (mcpConnections === null) fetchMcpConnections() }} style={view === "recall" ? styles.tabActive : styles.tab}>ReCall</button>
       </div>
 
       {view === "search" && (
@@ -3491,6 +3485,19 @@ export default function App() {
         )
       })()}
 
+      {view === "recall" && (
+        <div style={styles.section}>
+          <div style={styles.recallPanel}>
+            <p style={styles.settingsSectionHeading}>LLM connector</p>
+            <h2 style={styles.recallTitle}>Connect ReCall to any LLM app</h2>
+            <p style={styles.recallBody}>
+              Let your AI assistant search, save, rename, tag, and delete from your ReCall library with your approval.
+            </p>
+            {recallConnectorContent}
+          </div>
+        </div>
+      )}
+
       {/* Install onboarding overlay */}
       {onboardingStep === 'install' && (
         <div style={styles.overlay}>
@@ -3589,7 +3596,7 @@ const styles = {
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 0", width: "100%", maxWidth: "760px", boxSizing: "border-box" },
   headerIconButton: { width: "42px", height: "42px", padding: 0 },
   tourHighlight: { position: "relative", zIndex: 70, boxShadow: "0 0 0 2px rgba(217,255,95,0.95), 0 0 0 9999px rgba(0,0,0,0.02), 0 18px 52px -18px rgba(217,255,95,0.85)", filter: "none" },
-  tabs: { display: "flex", gap: "8px", marginBottom: "24px", justifyContent: "center", width: "100%", maxWidth: "760px" },
+  tabs: { display: "flex", gap: "8px", marginBottom: "24px", justifyContent: "center", width: "100%", maxWidth: "760px", flexWrap: "wrap" },
   tab: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "8px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px" },
   tabActive: { background: "#d9ff5f", border: "1px solid #d9ff5f", color: "#1f2b08", padding: "8px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px", fontWeight: "700" },
   section: { display: "flex", flexDirection: "column", gap: "12px", width: "100%", maxWidth: "760px", margin: "0 auto", boxSizing: "border-box" },
@@ -3876,6 +3883,9 @@ const styles = {
   tokenCopyButton: { background: "#d9ff5f", border: "none", color: "#1f2b08", borderRadius: "10px", padding: "7px 14px", fontSize: "13px", fontWeight: "700", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
   tokenWarning: { fontSize: "12px", color: "#7d786f", lineHeight: 1.5, margin: 0 },
   tokenHideButton: { background: "none", border: "none", color: "#7d786f", fontSize: "12px", cursor: "pointer", padding: 0, alignSelf: "flex-start" },
+  recallPanel: { width: "100%", boxSizing: "border-box", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "22px", display: "flex", flexDirection: "column", gap: "12px", color: "#f6f3ea", boxShadow: "0 30px 90px -56px rgba(0,0,0,0.95)" },
+  recallTitle: { fontSize: "28px", fontWeight: "400", color: "#f6f3ea", margin: 0, lineHeight: 1.15, letterSpacing: "-0.02em", fontFamily: "Georgia, 'Times New Roman', serif", textAlign: "center" },
+  recallBody: { fontSize: "14px", color: "#aca79b", lineHeight: 1.6, margin: 0, textAlign: "center" },
   deleteAccountButton: { background: "none", border: "1px solid #ef4444", color: "#ef4444", padding: "7px 16px", borderRadius: "8px", cursor: "pointer", fontSize: "13px", alignSelf: "flex-start" },
   deleteAccountConfirm: { display: "flex", flexDirection: "column", gap: "10px" },
   deleteAccountWarning: { fontSize: "13px", color: "#aca79b", margin: 0, lineHeight: 1.4 },
