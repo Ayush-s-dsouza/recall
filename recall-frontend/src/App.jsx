@@ -2100,12 +2100,24 @@ export default function App() {
       )
     }
     const clientLabel = mcpConsentParams.client_name || "a third-party app"
+    let redirectHost = ""
+    try {
+      redirectHost = new URL(mcpConsentParams.redirect_uri).host
+    } catch {
+      redirectHost = mcpConsentParams.redirect_uri
+    }
     return (
       <div style={styles.container}>
         <div style={styles.hero}>
           <h1 style={styles.logo}>ReCall</h1>
           <p style={styles.heroTagline}>Connect to {clientLabel}</p>
           <p style={styles.heroBody}>{clientLabel} wants to search, save, and manage URLs in your ReCall library on your behalf.</p>
+          {/* Anyone can register an OAuth client self-named "Claude" or similar — this
+              is the only real signal a user has to catch an impersonating app before
+              approving, since the app name itself is never verified. */}
+          <p style={{ ...styles.heroBody, fontSize: "13px", color: "#aca79b" }}>
+            This app will redirect to: <strong>{redirectHost}</strong>
+          </p>
           {!user ? (
             <button onClick={signInForMcpConsent} style={styles.button}>Sign in with Google to continue</button>
           ) : (

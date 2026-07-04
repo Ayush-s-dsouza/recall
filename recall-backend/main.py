@@ -2,11 +2,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from cachetools import TTLCache
 import os
 import io
 import base64
@@ -106,6 +108,41 @@ async def timing_middleware(request: Request, call_next):
     dur_ms = (time.time() - t0) * 1000
     print(f"[timing] END   {request.method} {request.url.path} dur={dur_ms:.0f}ms", flush=True)
     return response
+
+
+# slowapi's @limiter.limit(...) decorator only wraps routes defined directly on this FastAPI
+# app — it can't reach mcp_server.py's OAuth sub-app (mounted at "/" further down via
+# app.mount), which otherwise serves /register, /token, /authorize, /revoke with zero rate
+# limiting. /register in particular is unauthenticated Dynamic Client Registration — unlimited
+# calls can grow mcp_oauth_clients without bound. Starlette's HTTP middleware wraps the entire
+# ASGI app including mounted sub-apps, so this coarse, IP-keyed fixed-window check (using
+# cachetools.TTLCache, already a dependency) catches these paths before they ever reach the
+# mounted app, regardless of where in this file the mount itself is registered.
+_MCP_OAUTH_RATE_LIMITS = {  # path -> (max requests, window seconds)
+    "/register": (10, 60),
+    "/token": (30, 60),
+    "/authorize": (30, 60),
+    "/revoke": (20, 60),
+}
+_mcp_oauth_rate_buckets = {
+    path: TTLCache(maxsize=10_000, ttl=window)
+    for path, (_, window) in _MCP_OAUTH_RATE_LIMITS.items()
+}
+
+
+@app.middleware("http")
+async def mcp_oauth_rate_limit_middleware(request: Request, call_next):
+    limits = _MCP_OAUTH_RATE_LIMITS.get(request.url.path)
+    if limits is not None:
+        max_requests, _ = limits
+        bucket = _mcp_oauth_rate_buckets[request.url.path]
+        ip = get_remote_address(request)
+        count = bucket.get(ip, 0) + 1
+        bucket[ip] = count
+        if count > max_requests:
+            return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+    return await call_next(request)
+
 
 ASK_MIN_RELEVANCE = 0.65  # cosine similarity floor for /ask context — re-derived empirically after the RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT task_type fix, see CLAUDE.md Known Issue #34
 MAX_IMPORT_ITEMS = 500  # cap per bulk import job to bound Gemini/Jina usage
@@ -230,7 +267,8 @@ async def preview_save_url(req: SavePreviewRequest, request: Request):
     return result
 
 @app.post("/push/subscribe")
-async def push_subscribe(req: PushSubscribeRequest):
+@limiter.limit("20/minute")
+async def push_subscribe(req: PushSubscribeRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -244,7 +282,8 @@ async def push_subscribe(req: PushSubscribeRequest):
     return {"success": True}
 
 @app.post("/push/unsubscribe")
-async def push_unsubscribe(req: PushUnsubscribeRequest):
+@limiter.limit("20/minute")
+async def push_unsubscribe(req: PushUnsubscribeRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -254,6 +293,7 @@ async def push_unsubscribe(req: PushUnsubscribeRequest):
     return {"success": True}
 
 @app.post("/webhooks/email-inbound")
+@limiter.limit("30/minute")
 async def email_inbound_webhook(request: Request):
     """Receives parsed newsletter emails from CloudMailin (JSON Normalized format) when a
     user forwards (or auto-forwards via a Gmail filter) a newsletter to ReCall's shared
@@ -281,7 +321,8 @@ async def search(req: SearchRequest, request: Request):
     return await do_search(req.query, user_id)
 
 @app.patch("/save/{save_id}/tag")
-async def update_tag(save_id: str, req: UpdateTagRequest):
+@limiter.limit("30/minute")
+async def update_tag(save_id: str, req: UpdateTagRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -292,7 +333,8 @@ async def update_tag(save_id: str, req: UpdateTagRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/save/{save_id}")
-async def delete_save(save_id: str, req: DeleteRequest):
+@limiter.limit("30/minute")
+async def delete_save(save_id: str, req: DeleteRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -300,7 +342,8 @@ async def delete_save(save_id: str, req: DeleteRequest):
     return await do_delete_save(save_id, user_id)
 
 @app.patch("/save/{save_id}/title")
-async def update_title(save_id: str, req: UpdateTitleRequest):
+@limiter.limit("30/minute")
+async def update_title(save_id: str, req: UpdateTitleRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -308,7 +351,8 @@ async def update_title(save_id: str, req: UpdateTitleRequest):
     return await do_update_title(save_id, req.title, user_id)
 
 @app.patch("/save/{save_id}/folders")
-async def set_save_folders(save_id: str, req: SaveFoldersRequest):
+@limiter.limit("30/minute")
+async def set_save_folders(save_id: str, req: SaveFoldersRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -319,7 +363,8 @@ async def set_save_folders(save_id: str, req: SaveFoldersRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/folders")
-async def get_folders(token: str):
+@limiter.limit("60/minute")
+async def get_folders(token: str, request: Request):
     try:
         user_id = await get_user_id(token)
     except:
@@ -327,7 +372,8 @@ async def get_folders(token: str):
     return await do_get_folders(user_id)
 
 @app.post("/folders")
-async def create_folder(req: FolderCreateRequest):
+@limiter.limit("20/minute")
+async def create_folder(req: FolderCreateRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -338,7 +384,8 @@ async def create_folder(req: FolderCreateRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.patch("/folders/{folder_id}")
-async def rename_folder(folder_id: str, req: FolderRenameRequest):
+@limiter.limit("20/minute")
+async def rename_folder(folder_id: str, req: FolderRenameRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -349,7 +396,8 @@ async def rename_folder(folder_id: str, req: FolderRenameRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/folders/{folder_id}")
-async def delete_folder(folder_id: str, req: DeleteRequest):
+@limiter.limit("20/minute")
+async def delete_folder(folder_id: str, req: DeleteRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -357,7 +405,8 @@ async def delete_folder(folder_id: str, req: DeleteRequest):
     return await do_delete_folder(folder_id, user_id)
 
 @app.post("/suggestions")
-async def get_suggestions(req: SuggestionsRequest):
+@limiter.limit("30/minute")
+async def get_suggestions(req: SuggestionsRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -365,7 +414,8 @@ async def get_suggestions(req: SuggestionsRequest):
     return await do_suggestions(user_id)
 
 @app.delete("/account")
-async def delete_account(req: DeleteAccountRequest):
+@limiter.limit("5/hour")
+async def delete_account(req: DeleteAccountRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -550,7 +600,8 @@ Return JSON only, no markdown fences:
 
 
 @app.post("/wiki")
-async def save_wiki_insight(req: SaveWikiRequest):
+@limiter.limit("20/minute")
+async def save_wiki_insight(req: SaveWikiRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -565,7 +616,8 @@ async def save_wiki_insight(req: SaveWikiRequest):
 
 
 @app.post("/wiki/list")
-async def list_wiki_insights(req: WikiTokenRequest):
+@limiter.limit("30/minute")
+async def list_wiki_insights(req: WikiTokenRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -578,7 +630,8 @@ async def list_wiki_insights(req: WikiTokenRequest):
 
 
 @app.delete("/wiki/{wiki_id}")
-async def delete_wiki_insight(wiki_id: str, req: WikiTokenRequest):
+@limiter.limit("20/minute")
+async def delete_wiki_insight(wiki_id: str, req: WikiTokenRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -592,6 +645,29 @@ async def delete_wiki_insight(wiki_id: str, req: WikiTokenRequest):
 # Bookmark import — helpers and endpoints
 # ---------------------------------------------------------------------------
 
+MAX_IMPORT_DECOMPRESSED_BYTES = 100 * 1024 * 1024  # cap total decompressed zip content — see _read_zip_member_bounded
+
+
+def _read_zip_member_bounded(zf: zipfile.ZipFile, name: str, remaining_budget: int) -> bytes:
+    """Read a zip member in bounded chunks instead of zf.read(name) — the latter trusts the
+    member's uncompressed-size metadata (attacker-controlled, not verified until fully
+    decompressed), so a small crafted zip (a "zip bomb") can otherwise expand to gigabytes in
+    memory and OOM this single-worker process for every user, not just the uploader. Raises
+    ValueError once remaining_budget is exceeded."""
+    chunks = []
+    read_total = 0
+    with zf.open(name) as member:
+        while True:
+            chunk = member.read(1024 * 1024)
+            if not chunk:
+                break
+            read_total += len(chunk)
+            if read_total > remaining_budget:
+                raise ValueError(f"decompressed size of {name!r} exceeds the {remaining_budget}-byte budget")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def extract_tweet_ids(raw: bytes, filename: str) -> list[str]:
     """Extract tweet IDs from any bookmark export (JSON, CSV, .js, or zip archive)
     by scanning for x.com/twitter.com status URLs. Format-agnostic — works with
@@ -600,11 +676,17 @@ def extract_tweet_ids(raw: bytes, filename: str) -> list[str]:
     if raw[:2] == b"PK":  # zip magic bytes
         try:
             with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                remaining = MAX_IMPORT_DECOMPRESSED_BYTES
                 for name in zf.namelist():
                     if name.lower().endswith((".js", ".json", ".csv", ".txt")):
-                        texts.append(zf.read(name).decode("utf-8", errors="ignore"))
+                        data = _read_zip_member_bounded(zf, name, remaining)
+                        remaining -= len(data)
+                        texts.append(data.decode("utf-8", errors="ignore"))
         except zipfile.BadZipFile:
             texts.append(raw.decode("utf-8", errors="ignore"))
+        except ValueError as e:
+            print(f"[import] {e}", flush=True)
+            raise HTTPException(status_code=400, detail="Bookmark export file is too large once decompressed")
     else:
         texts.append(raw.decode("utf-8", errors="ignore"))
 
@@ -706,7 +788,8 @@ async def import_x_bookmarks(request: Request, token: str = Form(...), file: Upl
 
 
 @app.post("/import/status/{job_id}")
-async def import_status(job_id: str, req: ImportStatusRequest):
+@limiter.limit("60/minute")
+async def import_status(job_id: str, req: ImportStatusRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -729,7 +812,8 @@ async def import_status(job_id: str, req: ImportStatusRequest):
 
 
 @app.post("/import/jobs/latest")
-async def latest_import_job(req: ImportStatusRequest):
+@limiter.limit("60/minute")
+async def latest_import_job(req: ImportStatusRequest, request: Request):
     try:
         user_id = await get_user_id(req.token)
     except:
@@ -918,7 +1002,8 @@ class McpAuthorizeCompleteRequest(BaseModel):
 
 if _mcp_app is not None:
     @app.post("/mcp/authorize/complete")
-    async def mcp_authorize_complete(req: McpAuthorizeCompleteRequest):
+    @limiter.limit("10/minute")
+    async def mcp_authorize_complete(req: McpAuthorizeCompleteRequest, request: Request):
         try:
             user_id = await get_user_id(req.supabase_access_token)
         except:
@@ -952,7 +1037,8 @@ if _mcp_app is not None:
         return {"redirect_uri": construct_redirect_uri(req.redirect_uri, code=code, state=req.state)}
 
     @app.get("/mcp/connections")
-    async def list_mcp_connections(token: str):
+    @limiter.limit("30/minute")
+    async def list_mcp_connections(token: str, request: Request):
         try:
             user_id = await get_user_id(token)
         except:
@@ -978,7 +1064,8 @@ if _mcp_app is not None:
         token: str
 
     @app.post("/mcp/connections/{client_id}/revoke")
-    async def revoke_mcp_connection(client_id: str, req: RevokeConnectionRequest):
+    @limiter.limit("20/minute")
+    async def revoke_mcp_connection(client_id: str, req: RevokeConnectionRequest, request: Request):
         try:
             user_id = await get_user_id(req.token)
         except:

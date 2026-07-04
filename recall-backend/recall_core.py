@@ -11,7 +11,7 @@ import socket
 import ipaddress
 import asyncio
 import html as html_entities
-from urllib.parse import urlparse, parse_qs, quote
+from urllib.parse import urlparse, parse_qs, quote, urljoin
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -99,6 +99,12 @@ def is_safe_url(url: str) -> bool:
             return False
         for info in socket.getaddrinfo(hostname, None):
             ip = ipaddress.ip_address(info[4][0])
+            # An IPv4-mapped IPv6 literal (::ffff:169.254.169.254) is a distinct address
+            # family from any entry in _PRIVATE_RANGES, so `ip in net` silently returns False
+            # for every range even though it denotes the same private/metadata address —
+            # unwrap it to the underlying IPv4Address before checking.
+            if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+                ip = ip.ipv4_mapped
             if any(ip in net for net in _PRIVATE_RANGES):
                 return False
         return True
@@ -109,6 +115,23 @@ async def validate_url(url: str):
     """Raise 400 if URL is not safe to fetch."""
     if not await asyncio.to_thread(is_safe_url, url):
         raise HTTPException(status_code=400, detail="Invalid URL")
+
+async def safe_get(client: httpx.AsyncClient, url: str, *, max_redirects: int = 5, **kwargs) -> httpx.Response:
+    """GET with every redirect hop re-validated by is_safe_url() before being followed.
+    httpx's follow_redirects=True trusts the whole redirect chain with no re-check, so a
+    public domain that 302s to an internal/metadata address would otherwise sail through
+    after only the initial hostname passed the SSRF check. Use this instead of
+    follow_redirects=True for any URL that isn't a hardcoded internal constant."""
+    current_url = url
+    for _ in range(max_redirects + 1):
+        if not await asyncio.to_thread(is_safe_url, current_url):
+            raise ValueError(f"blocked unsafe URL: {current_url}")
+        response = await client.get(current_url, follow_redirects=False, **kwargs)
+        if 300 <= response.status_code < 400 and "location" in response.headers:
+            current_url = urljoin(current_url, response.headers["location"])
+            continue
+        return response
+    raise ValueError("too many redirects")
 
 MEDIA_URLS = [
     ("youtube.com/watch",    "video", "YouTube videos"),
@@ -362,7 +385,7 @@ async def analyze_image(image_url: str) -> str:
             "Referer": image_url,
         }
         async with httpx.AsyncClient(timeout=15, headers=headers) as client:
-            res = await client.get(image_url, follow_redirects=True)
+            res = await safe_get(client, image_url)
             image_bytes = res.content
             mime_type = res.headers.get("content-type", "image/jpeg").split(";")[0].strip()
             # Reject if too small (likely an error page) or clearly not an image
@@ -415,7 +438,7 @@ async def fetch_instagram(url: str):
             "Accept-Language": "en-US,en;q=0.9",
         }
         async with httpx.AsyncClient(timeout=15, headers=headers) as client:
-            res = await client.get(embed_url, follow_redirects=True)
+            res = await safe_get(client, embed_url)
             html = res.text
 
         print(f"[instagram] embed status={res.status_code}", flush=True)
@@ -474,10 +497,10 @@ async def fetch_youtube(url: str):
     """Use YouTube's oEmbed API to get video title and channel name without auth."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            res = await client.get(
+            res = await safe_get(
+                client,
                 "https://www.youtube.com/oembed",
                 params={"url": url, "format": "json"},
-                follow_redirects=True
             )
             data = res.json()
             title = data.get("title", "")
@@ -574,7 +597,7 @@ async def fetch_reddit(url: str):
         async with httpx.AsyncClient(timeout=12, headers=browser_headers) as client:
             # Resolve modern share shortlinks (reddit.com/r/<sub>/s/<token>, redd.it/<id>) to
             # the canonical /comments/<id>/ URL — needed by both the OAuth and .json paths.
-            resolve_res = await client.get(url, follow_redirects=True)
+            resolve_res = await safe_get(client, url)
             resolved_url = str(resolve_res.url)
             m = re.search(r'/comments/(\w+)', resolved_url)
             if not m:
@@ -662,10 +685,10 @@ async def _fetch_tweet_card_title(tweet_url: str) -> str:
             val //= 36
         token = token or "0"
         async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-            res = await client.get(
+            res = await safe_get(
+                client,
                 "https://cdn.syndication.twimg.com/tweet-result",
                 params={"id": tweet_id, "token": token, "lang": "en"},
-                follow_redirects=True
             )
             data = res.json()
             article = data.get("article") or {}
@@ -731,7 +754,7 @@ async def fetch_with_jina(url: str) -> tuple[str, str]:
         if jina_key:
             jina_headers["Authorization"] = f"Bearer {jina_key}"
         async with httpx.AsyncClient(timeout=15, headers=jina_headers) as client:
-            res = await client.get(f"https://r.jina.ai/{url}", follow_redirects=True)
+            res = await safe_get(client, f"https://r.jina.ai/{url}")
             if res.status_code != 200 or len(res.text) < 150:
                 print(f"[jina] status={res.status_code} len={len(res.text)} body={res.text[:200]!r} url={url}", flush=True)
                 return "", ""
@@ -756,7 +779,7 @@ async def fetch_og_html(url: str) -> str:
     """Quick fetch of raw page HTML for OG tag + title extraction."""
     try:
         async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-            r = await client.get(url, follow_redirects=True)
+            r = await safe_get(client, url)
             return r.text[:10000]
     except Exception:
         return ""
@@ -771,9 +794,13 @@ async def resolve_linkedin_redirect(url: str) -> str:
         target = params.get("url", [""])[0]
         if not target:
             return url
-        async with httpx.AsyncClient(timeout=8, follow_redirects=True,
+        # `target` is fully attacker-controlled (a query param off a public, unauthenticated
+        # link) — validate it before firing any request, not after. A bare try/except around
+        # the whole function previously let this fetch happen unconditionally and only
+        # checked the *result*, which still means the SSRF request itself already fired.
+        async with httpx.AsyncClient(timeout=8,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-            r = await client.get(target)
+            r = await safe_get(client, target)
             resolved = str(r.url)
         # lnkd.in shortlinks return a 200 "this link isn't on LinkedIn"
         # interstitial instead of an HTTP redirect, so follow_redirects never
@@ -783,7 +810,8 @@ async def resolve_linkedin_redirect(url: str) -> str:
             m = re.search(r'external_url_click"[^>]*href="([^"]+)"', r.text)
             if m:
                 resolved = html_entities.unescape(m.group(1))
-        await validate_url(resolved)
+        if not await asyncio.to_thread(is_safe_url, resolved):
+            return url
         return resolved
     except Exception:
         return url
@@ -821,7 +849,7 @@ async def process_save_preview(url: str) -> dict:
             else:
                 try:
                     async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-                        r = await client.get(url, follow_redirects=True)
+                        r = await safe_get(client, url)
                         og = extract_og_tags(r.text[:5000])
                         raw_title = og.get("og:title") or url
                 except:
@@ -847,8 +875,8 @@ async def process_save_preview(url: str) -> dict:
                 final_url = expanded_url
                 final_html = ""
                 if "t.co/" in final_url:
-                    async with httpx.AsyncClient(timeout=8, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-                        r = await client.get(final_url)
+                    async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+                        r = await safe_get(client, final_url)
                         final_url = str(r.url)
                         final_html = r.text[:5000]
                 if "x.com/i/article/" in final_url or "twitter.com/i/article/" in final_url:
@@ -1033,7 +1061,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             else:
                 try:
                     async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-                        r = await client.get(url, follow_redirects=True)
+                        r = await safe_get(client, url)
                         og = extract_og_tags(r.text[:5000])
                         raw_title = og.get("og:title") or url
                 except:
@@ -1086,8 +1114,8 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
                 final_html = ""
                 if "t.co/" in final_url:
                     # API gave no resolved entity (rare) — fall back to following the raw t.co link
-                    async with httpx.AsyncClient(timeout=8, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-                        r = await client.get(final_url)
+                    async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+                        r = await safe_get(client, final_url)
                         final_url = str(r.url)
                         final_html = r.text[:5000]
                 if "x.com/i/article/" in final_url or "twitter.com/i/article/" in final_url:
