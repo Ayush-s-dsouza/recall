@@ -45,7 +45,7 @@ ReCall is a PWA (Progressive Web App) for semantic search over saved internet co
 | Newsletter content | CloudMailin inbound-email webhook (free tier) — forwarded/auto-forwarded emails parsed with `beautifulsoup4` |
 | Analytics | PostHog (`posthog-js` — frontend only) |
 | Error monitoring | Sentry (`@sentry/react` frontend, `sentry-sdk[fastapi]` backend) |
-| Rate limiting | slowapi (per-IP, on `/save` and `/search`) |
+| Rate limiting | slowapi (per-IP, on `/save`, `/search`, and ~20 other mutating/expensive routes as of Known Issue #39) + a hand-rolled `cachetools.TTLCache`-based IP-keyed middleware for the mounted MCP OAuth sub-app (`/register`, `/token`, `/authorize`, `/revoke`), which slowapi's route decorators can't reach since it's a separately-mounted ASGI app |
 | Frontend deploy | Vercel |
 | Backend deploy | Railway (Nixpacks builder) |
 
@@ -79,7 +79,7 @@ ReCall/
     ├── main.py                 ← FastAPI app: REST routes (thin wrappers) + mounts mcp_server.py
     ├── recall_core.py          ← shared business logic (do_* functions, process_save, supabase client) — used by both main.py and mcp_server.py
     ├── mcp_server.py           ← remote MCP server: OAuth 2.1 provider + 6 MCP tools (Claude/ChatGPT connector)
-    ├── sql/                    ← hand-run migrations (no migration tool); 001 = MCP OAuth tables, 002-004 = fixes, 012 = saves(user_id,url) unique constraint (Known Issue #38)
+    ├── sql/                    ← hand-run migrations (no migration tool); 001 = MCP OAuth tables, 002-004 = fixes, 012 = saves(user_id,url) unique constraint (Known Issue #38), 013 = lock down save_folders RLS, 014 = RLS hardening for push_subscriptions/MCP OAuth tables + saves owner-policy reaffirmation (Known Issue #39)
     ├── scripts/                ← one-off maintenance scripts, run manually (not part of the deployed app) — reembed_saves.py, scan_junk_saves.py, reprocess_flagged_saves.py (see Known Issue #34), backfill_topics.py (see Known Issue #36)
     ├── requirements.txt
     ├── Procfile                ← `web: uvicorn main:app --host 0.0.0.0 --port $PORT`
@@ -437,7 +437,7 @@ Newsletters arrive as email, not a URL — every other save path assumes a URL. 
 | status | text | `'pending'` until background enrichment finishes, then `'ready'` (default `'ready'` — only the fast-path `/save` flow ever inserts a row as `'pending'`) |
 | created_at | timestamptz | auto |
 
-RLS is enabled — policies restrict all access to `user_id = auth.uid()`. **`UNIQUE(user_id, url)`** (constraint `saves_user_id_url_key`, `sql/012_saves_unique_user_url.sql`) backs the duplicate-check collapse in Known Issue #38 — must be applied by hand in the Supabase SQL editor (after verifying no pre-existing duplicate rows) before deploying code that references it.
+RLS is enabled — policies restrict all access to `user_id = auth.uid()`. This policy predates the migrations folder entirely and was never captured in version control until `sql/014_rls_hardening.sql` (Known Issue #39) explicitly reaffirmed it — the single most load-bearing control in the app, since both `match_saves` and the frontend's direct anon-key reads (Today's Saves list) depend on it. **`UNIQUE(user_id, url)`** (constraint `saves_user_id_url_key`, `sql/012_saves_unique_user_url.sql`) backs the duplicate-check collapse in Known Issue #38 — must be applied by hand in the Supabase SQL editor (after verifying no pre-existing duplicate rows) before deploying code that references it.
 
 ### Table: `folders`
 
@@ -458,19 +458,19 @@ RLS enabled — `user_id = auth.uid()` for all operations.
 | folder_id | uuid | FK → `folders(id) ON DELETE CASCADE` |
 | created_at | timestamptz | auto |
 
-Primary key is `(save_id, folder_id)`. No RLS — backend-only (service role), like `push_subscriptions`. Cascade deletes mean: deleting a save removes its membership rows; deleting a folder removes its membership rows but leaves saves intact.
+Primary key is `(save_id, folder_id)`. Backend-only (service role) — the frontend never queries this table directly. RLS is now enabled with no permissive policy and the anon/authenticated `SELECT` grant is revoked (`sql/013_lock_down_save_folders.sql`, Known Issue #39) — before this fix, an anon/authenticated grant existed with RLS disabled, meaning anyone holding just the public anon key could read every user's save↔folder groupings via the raw PostgREST API. Cascade deletes mean: deleting a save removes its membership rows; deleting a folder removes its membership rows but leaves saves intact.
 
 ### Table: `push_subscriptions`
 
 | Column | Type | Notes |
 |---|---|---|
 | id | uuid | primary key |
-| user_id | uuid | no FK — only the backend (service role) touches this table, no RLS needed |
+| user_id | uuid | no FK — only the backend (service role) touches this table |
 | endpoint | text | unique; the browser's push service URL (e.g. `fcm.googleapis.com/fcm/send/...` for Chrome) |
 | p256dh, auth | text | the subscription's public key + auth secret, as returned by `PushManager.subscribe()` |
 | created_at | timestamptz | auto |
 
-One row per device/browser a user has enabled notifications on. Rows are deleted automatically by `send_save_ready_push()` when a push attempt comes back `404`/`410` (subscription expired/revoked).
+One row per device/browser a user has enabled notifications on. Rows are deleted automatically by `send_save_ready_push()` when a push attempt comes back `404`/`410` (subscription expired/revoked). RLS is now enabled with no permissive policy and any anon/authenticated grant revoked (`sql/014_rls_hardening.sql`, Known Issue #39) — defense-in-depth, since the backend's service-role key bypasses RLS regardless and was already the only thing touching this table.
 
 ### RPC: `match_saves`
 
@@ -487,7 +487,11 @@ Explicitly returns `id, url, title, content_text, tag, content_type, status, cre
 
 Backs `mcp_server.py`. See `recall-backend/sql/001_mcp_oauth.sql` (and follow-up
 `002`–`004` fixes) for the exact DDL — no migration tool is used in this repo;
-schema changes are run by hand in the Supabase SQL editor.
+schema changes are run by hand in the Supabase SQL editor. All three tables below
+(`mcp_oauth_clients`, `mcp_auth_codes`, `mcp_tokens`) now have RLS enabled with no
+permissive policy and any anon/authenticated grant revoked (`sql/014_rls_hardening.sql`,
+Known Issue #39) — defense-in-depth, since only the backend's service-role client
+(via `mcp_server.py`) was ever meant to touch them.
 
 #### Table: `mcp_oauth_clients`
 
@@ -557,7 +561,7 @@ Atomically rotates a refresh token in one Postgres function call: locks the old 
 ### Backend — Railway
 
 - **Builder**: Nixpacks (auto-detects Python from `requirements.txt`)
-- **Start command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+- **Start command**: `uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips=*` — the `--proxy-headers --forwarded-allow-ips=*` flags were added in Known Issue #39 so `get_remote_address()` (rate limiting) sees the real client IP behind Railway's proxy instead of collapsing every request into one bucket
 - Configured via `railway.json` and `Procfile` (both specify the same start command); `railway.json` also sets `"healthcheckPath": "/"` (Known Issue #38)
 - **Keep-warm**: `.github/workflows/keepalive.yml` (repo root) pings `GET /` every 10 minutes via GitHub Actions cron, so the backend shouldn't go cold between saves (Known Issue #38). Needs a commit at least every 60 days or GitHub auto-disables the scheduled workflow.
 - **Environment variables** in Railway dashboard:
@@ -732,6 +736,15 @@ A lightning bolt / cursor-shaped path:
     - **Out of scope, and why**: service-worker app-shell precaching (`public/sw.js` still has zero caching — only `push`/`notificationclick` handlers) targets JS-bootstrap time, not the server round-trip this round addressed, and is already separately tracked under "Not Yet Built"; switching the whole Supabase client to its async variant would help concurrency/throughput under load, not this single request's floor latency, and would touch ~28+ call sites for a benefit orthogonal to this goal; no retry logic was added to `/save` since the ask was to fail fast, not retry.
     - **Estimated result** (not yet measured against live production traffic): roughly 150ms-1s for a warm backend, down from 3 blocking network round-trips plus a possible multi-second cold start — comfortably inside the 5s goal. Verification/rollout still open: canary-compare `AUTH_VERIFY_MODE=network`'s logged mismatches before flipping to `local`; confirm via Sentry/Railway logs that non-duplicate saves now show 1 Supabase call instead of 2; watch Railway's cold-start frequency before/after the keep-warm workflow goes live.
 
+39. **Pre-launch security audit ahead of opening ReCall to an external beta cohort** — a full pass looking specifically for issues an anonymous/malicious external user could exploit, as opposed to prior rounds which were mostly correctness/relevance-focused. Found and fixed five distinct issues:
+    - **SSRF via IPv4-mapped IPv6 literals** — `is_safe_url()` (`recall_core.py`) checked every resolved IP against `_PRIVATE_RANGES`, but an address like `::ffff:169.254.169.254` (the cloud metadata IP, IPv4-mapped into IPv6 form) is a distinct `ipaddress` type from any entry in those ranges, so `ip in net` silently returned `False` for every range — the check never fired for this address family. Fixed by unwrapping `IPv6Address.ipv4_mapped` before the range check.
+    - **SSRF via unvalidated redirect chains** — every fetch of a user-influenced URL used `httpx`'s `follow_redirects=True`, which validates only the *initial* hostname and then blindly trusts every subsequent redirect hop — a public domain that 302s to an internal/metadata address would sail through untouched. New `safe_get()` helper (`recall_core.py`) re-validates each hop against `is_safe_url()` before following it (`follow_redirects=False` + manual loop, capped at 5 hops), and now replaces `follow_redirects=True` at all 12 call sites that fetch a user-influenced URL (`analyze_image`, `fetch_instagram`, `fetch_youtube`, `fetch_reddit`, `_fetch_tweet_card_title`, `fetch_with_jina`, `fetch_og_html`, `resolve_linkedin_redirect`, both t.co-resolution fallbacks in `process_save_preview`/`process_save`). `resolve_linkedin_redirect()` specifically was firing its request *before* validating the attacker-controlled `target` query param at all (a bare try/except only checked the *result*) — now validates first, and returns the original unresolved URL if the target is unsafe (same "bail to thin_content" path as an unresolvable redirect, see Known Issue #25).
+    - **Zip-bomb DoS in bookmark import** — `extract_tweet_ids()` (`main.py`) read zip members via `zf.read(name)`, which trusts the member's uncompressed-size metadata and only discovers the true size after fully decompressing into memory — a small crafted zip can expand to gigabytes and OOM the single-worker process for every user, not just the uploader. New `_read_zip_member_bounded()` reads in 1MB chunks against a `MAX_IMPORT_DECOMPRESSED_BYTES` (100MB) total budget, raising before the budget is exceeded rather than after.
+    - **~20 mutating/expensive routes had no rate limiting at all** (folders CRUD, push subscribe/unsubscribe, account deletion, wiki, import status, MCP connection management) — now covered by `@limiter.limit(...)` like `/save`/`/search` already were. Separately, the mounted MCP OAuth sub-app (`/register`, `/token`, `/authorize`, `/revoke` — see "Remote MCP server" above) is unreachable by slowapi's route decorators entirely, since it's a separately-mounted ASGI app, not a route on this FastAPI app — `/register` in particular is unauthenticated Dynamic Client Registration and was open with zero throttling. Fixed with a hand-rolled `mcp_oauth_rate_limit_middleware` (`main.py`, `@app.middleware("http")`, using `cachetools.TTLCache` for a coarse IP-keyed fixed-window count per path) — Starlette's HTTP middleware wraps the entire ASGI app including mounted sub-apps, so this catches those paths regardless of mount order. `Procfile`/`railway.json` now also pass `--proxy-headers` to uvicorn so rate-limit keys use the real client IP behind Railway's proxy instead of collapsing every request into one bucket.
+    - **RLS gaps across four tables** — `save_folders` had an anon/authenticated `SELECT` grant (from `008_grant_save_folders.sql`) with RLS disabled entirely, meaning anyone holding just the public anon key could read every user's save↔folder groupings via the raw PostgREST API with zero authentication (`sql/013_lock_down_save_folders.sql` revokes the grant and enables RLS). `push_subscriptions` and the three MCP OAuth tables (`mcp_oauth_clients`, `mcp_auth_codes`, `mcp_tokens`) had no documented grant in any migration, but weren't confirmed locked down either — `sql/014_rls_hardening.sql` is an idempotent hardening pass enabling RLS + revoking any stray anon/authenticated grant on all four, safe to re-run even if already correctly configured. That same migration also explicitly reaffirms `saves`' owner-only RLS policy (`user_id = auth.uid()`) in version control for the first time — it predates this repo's migrations folder entirely and had never been captured, despite being the single most load-bearing control in the app (both `match_saves` and the frontend's direct anon-key reads depend on it). Since the real production policy's actual name was unknown, the migration's `DROP POLICY IF EXISTS "saves: owner only"` may not clean up whatever the live policy is actually called — harmless (permissive policies OR together, so nothing becomes over-permissive), just means Supabase may end up with two identically-scoped policies rather than one.
+    - **MCP consent screen didn't show which app you were actually authorizing** — Dynamic Client Registration lets anyone self-register an OAuth client named `"Claude"` or similar with an attacker-controlled `redirect_uri`; the consent screen (`App.jsx`, `approveMcpConsent`'s render branch) only ever showed the self-reported `client_name`, never verified. Now also displays the actual `redirect_uri` host, the one signal a user has to catch an impersonating app before approving.
+    - **Verified directly** (not just reasoned about): crafted SSRF payloads (metadata-IP literal, IPv4-mapped IPv6, a malicious redirect chain) confirmed blocked with zero network calls; legitimate fetches (YouTube oEmbed, plain article fetch) confirmed still working; a crafted zip-bomb confirmed rejected cleanly; newly rate-limited routes (including `/register` on the mounted sub-app) confirmed returning `429` past their threshold.
+
 ---
 
 ## Current Status
@@ -768,8 +781,10 @@ A lightning bolt / cursor-shaped path:
 - **Search — zero-results CTA** — "Save a page about this →" switches to Save tab
 - **Search — shimmer loading bar** — neutral 4px bar, no skeleton cards
 - **Security — CORS lockdown** — backend only accepts requests from `CORS_ORIGINS` env var (prod: Vercel domain only)
-- **Security — SSRF protection** — `validate_url()` blocks private/internal IPs before any fetch; guards both user-supplied URLs and `og:image` URLs
-- **Security — rate limiting** — slowapi, 10/min on `/save`, 30/min on `/search`, per IP
+- **Security — SSRF protection** — `validate_url()`/`is_safe_url()` block private/internal IPs (including IPv4-mapped IPv6 literals, Known Issue #39) before any fetch; `safe_get()` re-validates every redirect hop rather than trusting `follow_redirects=True`, covering all 12 call sites that fetch a user-influenced URL
+- **Security — rate limiting** — slowapi, 10/min on `/save`, 30/min on `/search`, plus ~20 other mutating/expensive routes (Known Issue #39), per IP; a separate hand-rolled middleware covers the mounted MCP OAuth sub-app, which slowapi's decorators can't reach
+- **Security — RLS hardening** — `save_folders`, `push_subscriptions`, and the three MCP OAuth tables now have RLS enabled with anon/authenticated grants revoked; `saves`' owner-only policy explicitly reaffirmed in version control for the first time (Known Issue #39)
+- **Security — zip-bomb protection** — bookmark import reads zip members in bounded chunks against a 100MB total budget instead of trusting attacker-controlled uncompressed-size metadata (Known Issue #39)
 - **Observability — Sentry** — error monitoring on both frontend (`@sentry/react`) and backend (`sentry-sdk[fastapi]`); DSN via env vars, silently skips if not set
 - **Observability — PostHog** — product analytics on frontend only, loaded lazily via `recall-frontend/src/posthog-lazy.js` (a hand-rolled proxy that queues calls until the real `posthog-js` SDK loads as its own chunk, keeping the ~63KB SDK off the critical render path); tracks `save_confirmed` (fires on save-attempt, the reliable activation/volume signal), `url_saved` (fires only if the user is still watching when background enrichment finishes — a secondary signal, see "Background save enrichment" #1b), `search_performed`, `ask_performed`, `title_edited`, `save_deleted`, `share_sheet_triggered`, `account_deleted` (only on a successful deletion), `user_signed_up`, `x_bookmarks_import_started`/`linkedin_import_started`/`import_finished` (tagged with `source`), `folder_created`, `push_notifications_enabled`, `pwa_installed`, `mcp_connected`; identifies users by Supabase UID plus `email`/`signup_date` person properties; resets on sign-out. Every event is tagged with an `environment` super property (`production` / `staging` / `local`, auto-detected via `window.location.hostname` for local dev) — see `CONTRIBUTING.md` for the staging/production branch workflow this isolation scheme supports.
 - **Account deletion** — `DELETE /account` endpoint wipes all saves + deletes auth user; frontend settings panel (⚙ in header) with confirmation step
