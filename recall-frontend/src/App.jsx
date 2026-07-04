@@ -296,6 +296,15 @@ function PlugIcon({ size = 18 }) {
   )
 }
 
+function GearIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 16 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.2.37.45.7.8 1 .32.26.7.4 1.1.4H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51.6Z" />
+    </svg>
+  )
+}
+
 function ArrowRightIcon({ size = 16 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2429,7 +2438,12 @@ export default function App() {
           {user ? (
             <>
               <HelpMenuButton style={styles.headerIconButton} />
-              <button onClick={() => { setShowSettings(s => !s); setConfirmDeleteAccount(false); setTokenCopied(false) }} style={styles.signOut} title="Settings">⚙</button>
+              <button
+                onClick={() => { setShowSettings(s => !s); setConfirmDeleteAccount(false); setTokenCopied(false) }}
+                style={{ ...styles.headerRoundButton, ...styles.headerIconButton }}
+                title="Settings"
+                aria-label="Settings"
+              ><GearIcon /></button>
               <button onClick={signOut} style={styles.signOut}>Sign out</button>
             </>
           ) : (
@@ -2711,11 +2725,11 @@ export default function App() {
               {EMAIL_INBOUND_ADDRESS ? (
                 <>
                   <p style={styles.overlayNote}>Forward a newsletter to this address (from <strong>{user?.email}</strong>) to save it:</p>
-                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                    <code style={{ ...styles.settingsLink, color: "#f6f3ea", fontSize: 13 }}>{EMAIL_INBOUND_ADDRESS}</code>
+                  <div style={styles.tokenRow}>
+                    <input readOnly value={EMAIL_INBOUND_ADDRESS} style={styles.tokenInput} onFocus={e => e.target.select()} />
                     <button
                       onClick={() => { navigator.clipboard.writeText(EMAIL_INBOUND_ADDRESS); setNewsletterAddressCopied(true); setTimeout(() => setNewsletterAddressCopied(false), 2000) }}
-                      style={{ ...styles.settingsLink, fontSize: 12, color: "#7d786f" }}
+                      style={styles.tokenCopyButton}
                     >
                       {newsletterAddressCopied ? "Copied!" : "Copy"}
                     </button>
@@ -3549,7 +3563,10 @@ export default function App() {
         <div style={styles.overlay}>
           <div style={styles.mcpPromptCard}>
             <p style={styles.settingsSectionHeading}>Memory unlocked</p>
-            <h2 style={styles.mcpPromptTitle}>You are 5 saves in. Connect to Claude/GPT to use this memory?</h2>
+            <h2 style={styles.mcpPromptTitle}>
+              You are 5 saves in.<br />
+              Connect to Claude/GPT to use this memory?
+            </h2>
             <p style={styles.mcpPromptBody}>
               ReCall can become searchable context inside your LLM app through MCP.
             </p>
@@ -3565,11 +3582,10 @@ export default function App() {
         <div style={styles.overlay}>
           <div style={styles.mcpVideoCard}>
             <div style={styles.mcpVideoHeader}>
-              <div>
-                <p style={styles.settingsSectionHeading}>ReCall MCP</p>
+              <div style={styles.mcpVideoHeaderCopy}>
+                <p style={{ ...styles.settingsSectionHeading, textAlign: "center" }}>ReCall MCP</p>
                 <h2 style={styles.mcpVideoTitle}>Use your saved memory inside an LLM</h2>
               </div>
-              <button onClick={deferMcpTutorial} style={styles.mcpVideoSkip}>Skip</button>
             </div>
             <video
               src={MCP_TUTORIAL_VIDEO_URL}
@@ -3683,6 +3699,7 @@ const styles = {
   tagline: { color: "#aca79b", fontSize: "16px", margin: 0 },
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 0", width: "100%", maxWidth: "760px", boxSizing: "border-box" },
   headerIconButton: { width: "42px", height: "42px", padding: 0 },
+  headerRoundButton: { display: "inline-flex", alignItems: "center", justifyContent: "center", background: "#202024", border: "1px solid rgba(255,255,255,0.1)", color: "#aca79b", borderRadius: "999px", cursor: "pointer", lineHeight: 1 },
   tourHighlight: { position: "relative", zIndex: 70, boxShadow: "0 0 0 2px rgba(217,255,95,0.95), 0 0 0 9999px rgba(0,0,0,0.02), 0 18px 52px -18px rgba(217,255,95,0.85)", filter: "none" },
   tabs: { display: "flex", gap: "8px", marginBottom: "24px", justifyContent: "center", width: "100%", maxWidth: "760px", flexWrap: "wrap" },
   tab: { background: "#202024", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", padding: "8px 20px", borderRadius: "999px", cursor: "pointer", fontSize: "14px" },
@@ -3972,12 +3989,12 @@ const styles = {
   tokenWarning: { fontSize: "12px", color: "#7d786f", lineHeight: 1.5, margin: 0 },
   tokenHideButton: { background: "none", border: "none", color: "#7d786f", fontSize: "12px", cursor: "pointer", padding: 0, alignSelf: "flex-start" },
   recallPanel: { width: "100%", boxSizing: "border-box", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "22px", display: "flex", flexDirection: "column", gap: "12px", color: "#f6f3ea", boxShadow: "0 30px 90px -56px rgba(0,0,0,0.95)" },
-  recallTitle: { fontSize: "28px", fontWeight: "400", color: "#f6f3ea", margin: 0, lineHeight: 1.15, letterSpacing: "-0.02em", fontFamily: "Georgia, 'Times New Roman', serif", textAlign: "center" },
+  recallTitle: { fontSize: "24px", fontWeight: "400", color: "#f6f3ea", margin: 0, lineHeight: 1.15, letterSpacing: "-0.02em", fontFamily: "Georgia, 'Times New Roman', serif", textAlign: "center" },
   recallBody: { fontSize: "14px", color: "#aca79b", lineHeight: 1.6, margin: 0, textAlign: "center" },
-  mcpLearnPanelButton: { width: "100%", display: "flex", alignItems: "center", gap: "10px", background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "16px", padding: "12px 14px", cursor: "pointer", textAlign: "left" },
+  mcpLearnPanelButton: { alignSelf: "center", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px", background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "999px", padding: "8px 14px", cursor: "pointer", textAlign: "center" },
   mcpLearnPanelButtonHighlight: { color: "#d9ff5f", borderColor: "rgba(217,255,95,0.55)", boxShadow: "0 0 0 2px rgba(217,255,95,0.14), 0 22px 52px -36px rgba(217,255,95,0.9)" },
-  mcpLearnPanelIcon: { width: "34px", height: "34px", borderRadius: "999px", display: "inline-flex", alignItems: "center", justifyContent: "center", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", flexShrink: 0 },
-  mcpLearnPanelText: { fontSize: "14px", fontWeight: "700" },
+  mcpLearnPanelIcon: { width: "26px", height: "26px", borderRadius: "999px", display: "inline-flex", alignItems: "center", justifyContent: "center", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", flexShrink: 0 },
+  mcpLearnPanelText: { fontSize: "13px", fontWeight: "700" },
   mcpPromptCard: { width: "100%", maxWidth: "440px", boxSizing: "border-box", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "24px", display: "flex", flexDirection: "column", gap: "14px", color: "#f6f3ea", textAlign: "center", boxShadow: "0 30px 90px -46px rgba(0,0,0,0.95)" },
   mcpPromptTitle: { fontSize: "30px", fontWeight: "400", color: "#f6f3ea", margin: 0, lineHeight: 1.12, letterSpacing: "-0.02em", fontFamily: "Georgia, 'Times New Roman', serif" },
   mcpPromptBody: { fontSize: "14px", color: "#aca79b", lineHeight: 1.55, margin: 0 },
@@ -3985,9 +4002,9 @@ const styles = {
   mcpPromptYes: { background: "#d9ff5f", border: "none", color: "#1f2b08", borderRadius: "999px", padding: "10px 16px", fontSize: "14px", fontWeight: "700", cursor: "pointer" },
   mcpPromptNo: { background: "#25252a", border: "1px solid rgba(255,255,255,0.08)", color: "#aca79b", borderRadius: "999px", padding: "10px 16px", fontSize: "14px", cursor: "pointer" },
   mcpVideoCard: { width: "clamp(320px, 70vw, 960px)", maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 48px)", boxSizing: "border-box", background: "#202024", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "24px", padding: "18px", display: "flex", flexDirection: "column", gap: "14px", color: "#f6f3ea", boxShadow: "0 30px 90px -40px rgba(0,0,0,0.95)" },
-  mcpVideoHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "14px" },
-  mcpVideoTitle: { fontSize: "24px", fontWeight: "400", color: "#f6f3ea", margin: "6px 0 0", lineHeight: 1.15, letterSpacing: "-0.02em", fontFamily: "Georgia, 'Times New Roman', serif" },
-  mcpVideoSkip: { background: "none", border: "none", color: "#7d786f", cursor: "pointer", fontSize: "13px", padding: "4px 0", flexShrink: 0 },
+  mcpVideoHeader: { display: "flex", justifyContent: "center", alignItems: "center", gap: "14px", textAlign: "center" },
+  mcpVideoHeaderCopy: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" },
+  mcpVideoTitle: { fontSize: "24px", fontWeight: "400", color: "#f6f3ea", margin: 0, lineHeight: 1.15, letterSpacing: "-0.02em", fontFamily: "Georgia, 'Times New Roman', serif", textAlign: "center" },
   mcpVideo: { width: "100%", maxHeight: "70vh", borderRadius: "18px", background: "#171719", border: "1px solid rgba(255,255,255,0.08)", objectFit: "contain" },
   mcpVideoActions: { display: "flex", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap" },
   deleteAccountButton: { background: "none", border: "1px solid #ef4444", color: "#ef4444", padding: "7px 16px", borderRadius: "8px", cursor: "pointer", fontSize: "13px", alignSelf: "flex-start" },
