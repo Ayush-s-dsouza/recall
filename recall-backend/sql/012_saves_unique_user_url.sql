@@ -1,0 +1,11 @@
+-- Duplicate-check-then-insert in process_save_fast() has always been app-layer only
+-- (no DB constraint backing it), which is both race-prone under concurrent saves of
+-- the same URL and requires two sequential round-trips on every save. This constraint
+-- lets the app collapse both into a single INSERT ... ON CONFLICT DO NOTHING.
+--
+-- STEP 0 — read-only safety check. Run this first; if it returns any rows, resolve
+-- those pre-existing duplicates before running STEP 1, or the ALTER TABLE will fail.
+--   select user_id, url, count(*) from saves group by user_id, url having count(*) > 1;
+--
+-- STEP 1 — safe/no-op change in behavior if STEP 0 returned zero rows.
+alter table saves add constraint saves_user_id_url_key unique (user_id, url);

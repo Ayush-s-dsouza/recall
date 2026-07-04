@@ -472,6 +472,7 @@ export default function App() {
   const [pushEnabled, setPushEnabled] = useState(false)
   const finalizeSaveRef = useRef(null)
   const userRef = useRef(null)
+  const tokenRef = useRef(null)
   const urlInputRef = useRef(null)
   const searchInputRef = useRef(null)
   const importFileInputRef = useRef(null)
@@ -831,6 +832,7 @@ export default function App() {
     }
     supabase.auth.getSession().then(({ data: { session } }) => {
       userRef.current = session?.user ?? null
+      tokenRef.current = session?.access_token ?? null
       setUser(session?.user ?? null)
       setAuthLoading(false)
       if (session?.user) {
@@ -1010,6 +1012,7 @@ export default function App() {
     })
     supabase.auth.onAuthStateChange((_event, session) => {
       userRef.current = session?.user ?? null
+      tokenRef.current = session?.access_token ?? null
       setUser(session?.user ?? null)
       if (session?.user) {
         posthog.identify(session.user.id)
@@ -1155,6 +1158,7 @@ export default function App() {
   const signOut = async () => {
     await supabase.auth.signOut()
     userRef.current = null
+    tokenRef.current = null
     setUser(null)
     setOnboardingStep(null)
     localStorage.removeItem("recall_recent_searches")
@@ -1185,6 +1189,7 @@ export default function App() {
       posthog.reset()
       await supabase.auth.signOut()
       userRef.current = null
+      tokenRef.current = null
       setUser(null)
       setShowSettings(false)
       setConfirmDeleteAccount(false)
@@ -1347,9 +1352,11 @@ export default function App() {
   }
 
   const getToken = async () => {
+    if (tokenRef.current) return tokenRef.current
     if (!supabase) return null
     const { data: { session } } = await supabase.auth.getSession()
-    return session?.access_token
+    tokenRef.current = session?.access_token ?? null
+    return tokenRef.current
   }
 
   // Web Push only works on iOS 16.4+ when the PWA is installed to the home screen —
@@ -1664,7 +1671,7 @@ export default function App() {
     try {
       const token = await getToken()
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 45000)
+      const timeoutId = setTimeout(() => controller.abort(), 8000)
       let res
       try {
         res = await fetch(`${BACKEND}/save`, {
@@ -1676,6 +1683,7 @@ export default function App() {
       } finally {
         clearTimeout(timeoutId)
       }
+      if (res.status === 401) tokenRef.current = null
       if (!res.ok) throw new Error()
       const data = await res.json()
       if (data.duplicate) {

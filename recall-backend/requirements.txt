@@ -2,6 +2,7 @@ fastapi
 uvicorn
 python-dotenv
 supabase
+PyJWT>=2.8,<3
 google-genai>=1.0.0,<2.0.0
 httpx
 slowapi

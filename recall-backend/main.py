@@ -189,7 +189,7 @@ async def save_url(req: SaveRequest, request: Request):
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    validate_url(req.url)
+    await validate_url(req.url)
 
     result = await process_save_fast(req.url, user_id)
     if result.get("error"):
@@ -199,7 +199,7 @@ async def save_url(req: SaveRequest, request: Request):
 @app.post("/save/preview")
 @limiter.limit("5/minute")
 async def preview_save_url(req: SavePreviewRequest, request: Request):
-    validate_url(req.url)
+    await validate_url(req.url)
     result = await process_save_preview(req.url)
     if result.get("error"):
         raise HTTPException(status_code=500, detail=result["detail"])
@@ -598,7 +598,7 @@ async def run_import_job(job_id: str, user_id: str, urls: list[str]):
     succeeded = duplicates = failed = skipped = 0
     for i, url in enumerate(urls):
         try:
-            validate_url(url)
+            await validate_url(url)
             result = await process_save(url, user_id)
             if result.get("duplicate"):
                 duplicates += 1

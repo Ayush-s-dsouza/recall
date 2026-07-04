@@ -15,9 +15,12 @@ from urllib.parse import urlparse, parse_qs, quote
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
+import jwt
+from jwt import PyJWKClient
 from fastapi import HTTPException
 from dotenv import load_dotenv
 from supabase import create_client
+from postgrest import APIError
 from google import genai
 from google.genai import types
 from pywebpush import webpush, WebPushException
@@ -30,6 +33,18 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_
 # Module-level Gemini client — created once at startup, reused across all requests
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 _executor = ThreadPoolExecutor(max_workers=4)
+
+# Local JWT verification (see get_user_id below) — this project's Supabase instance
+# signs access tokens with an asymmetric ES256 key (confirmed via its JWKS endpoint,
+# not the legacy HS256 shared-secret scheme), so verification fetches the public key
+# from JWKS rather than needing a secret. PyJWKClient caches fetched keys in-process,
+# so this doesn't reintroduce a network call on every request — only on cache miss.
+_jwks_client = PyJWKClient(f"{os.getenv('SUPABASE_URL')}/auth/v1/.well-known/jwks.json")
+# Kill-switch for the rollout: "network" (default) keeps using the old, slower but
+# battle-tested get_user() API call and additionally canary-logs the local-verification
+# result alongside it for comparison; "local" switches to local-only verification once
+# canary logs confirm the two agree. See CLAUDE.md's save-latency plan for the rollout.
+AUTH_VERIFY_MODE = os.getenv("AUTH_VERIFY_MODE", "network")
 
 # Typed ThinkingConfig — disables thinking tokens for all generate_content calls.
 # Falls back to empty config on old SDK versions that predate ThinkingConfig.
@@ -82,9 +97,9 @@ def is_safe_url(url: str) -> bool:
     except Exception:
         return False
 
-def validate_url(url: str):
+async def validate_url(url: str):
     """Raise 400 if URL is not safe to fetch."""
-    if not is_safe_url(url):
+    if not await asyncio.to_thread(is_safe_url, url):
         raise HTTPException(status_code=400, detail="Invalid URL")
 
 MEDIA_URLS = [
@@ -98,9 +113,47 @@ MEDIA_URLS = [
 QUALITY_THRESHOLD = 100  # chars — below this, content is too thin to be useful
 TWEET_URL_RE = re.compile(r'(?:twitter\.com|x\.com)/\w{1,15}/status/(\d{1,20})')
 
-def get_user_id(token: str):
+def _get_user_id_local(token: str) -> str:
+    signing_key = _jwks_client.get_signing_key_from_jwt(token).key
+    claims = jwt.decode(token, signing_key, algorithms=["ES256"], audience="authenticated")
+    return claims["sub"]
+
+def _get_user_id_network(token: str) -> str:
     user = supabase.auth.get_user(token)
     return user.user.id
+
+def get_user_id(token: str) -> str:
+    """Resolve a Supabase access token to a user_id. Local verification (decode + check
+    signature/exp/aud against Supabase's own JWKS) replaces a blocking network round-trip
+    to Supabase's GoTrue /auth/v1/user endpoint that every authenticated request previously
+    paid for — see CLAUDE.md's save-latency plan. AUTH_VERIFY_MODE gates the rollout."""
+    if AUTH_VERIFY_MODE == "local":
+        try:
+            return _get_user_id_local(token)
+        except jwt.PyJWTError:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+    user_id = _get_user_id_network(token)
+    try:
+        local_user_id = _get_user_id_local(token)
+        if local_user_id != user_id:
+            print(f"[auth_canary] MISMATCH network={user_id} local={local_user_id}", flush=True)
+    except Exception as e:
+        print(f"[auth_canary] local verification failed: {e}", flush=True)
+    return user_id
+
+def _duplicate_response(user_id: str, url: str) -> dict:
+    """Fetch an existing (user_id, url) row's details for a duplicate response — shared by
+    every save path that can hit this, including a race against the saves_user_id_url_key
+    unique constraint (sql/012_saves_unique_user_url.sql) when a concurrent save of the same
+    URL wins between an earlier duplicate check and this row's own insert."""
+    existing = supabase.table("saves") \
+        .select("id, title, tag, created_at") \
+        .eq("user_id", user_id).eq("url", url) \
+        .limit(1).execute()
+    row = existing.data[0]
+    return {"duplicate": True, "id": row["id"], "title": row["title"],
+            "tag": row["tag"], "created_at": row["created_at"]}
 
 def get_source_label(url: str) -> str:
     if not url:
@@ -712,7 +765,7 @@ async def resolve_linkedin_redirect(url: str) -> str:
             m = re.search(r'external_url_click"[^>]*href="([^"]+)"', r.text)
             if m:
                 resolved = html_entities.unescape(m.group(1))
-        validate_url(resolved)
+        await validate_url(resolved)
         return resolved
     except Exception:
         return url
@@ -938,7 +991,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
         # would save LinkedIn's own interstitial page as if it were the article.
         _finalize_placeholder(placeholder_id, user_id, url)
         return {"thin_content": True, "url": url}
-    validate_url(url)
+    await validate_url(url)
 
     if not placeholder_id:
         existing = supabase.table("saves") \
@@ -979,7 +1032,16 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
                     supabase.table("saves").update(payload).eq("id", placeholder_id).execute()
                     inserted_id = placeholder_id
                 else:
-                    result = supabase.table("saves").insert(payload).execute()
+                    try:
+                        result = supabase.table("saves").insert(payload).execute()
+                    except APIError as e:
+                        # A concurrent save of this URL won the race against the duplicate
+                        # check above (recall_core.py, this function's `if not placeholder_id`
+                        # block) — the saves_user_id_url_key constraint (sql/012) turns that
+                        # into a clean 23505 instead of a silent duplicate row.
+                        if e.code != "23505":
+                            raise
+                        return _duplicate_response(user_id, url)
                     inserted_id = result.data[0]["id"]
             except Exception as e:
                 print(f"[media save] DB insert failed: {e}", flush=True)
@@ -1209,7 +1271,14 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             supabase.table("saves").update(payload).eq("id", placeholder_id).execute()
             inserted_id = placeholder_id
         else:
-            result = supabase.table("saves").insert(payload).execute()
+            try:
+                result = supabase.table("saves").insert(payload).execute()
+            except APIError as e:
+                # Same race as the media-save branch above — a concurrent save of this URL
+                # landed after this function's own duplicate check but before this insert.
+                if e.code != "23505":
+                    raise
+                return _duplicate_response(user_id, url)
             inserted_id = result.data[0]["id"]
     except Exception as e:
         print(f"[save] DB insert failed: {e}", flush=True)
@@ -1244,15 +1313,6 @@ async def process_save_fast(url: str, user_id: str) -> dict:
     process_save() directly and keep today's fully-synchronous behavior."""
     url = await resolve_linkedin_redirect(url)
 
-    existing = supabase.table("saves") \
-        .select("id, title, tag, created_at") \
-        .eq("user_id", user_id).eq("url", url) \
-        .limit(1).execute()
-    if existing.data:
-        row = existing.data[0]
-        return {"duplicate": True, "id": row["id"], "title": row["title"],
-                "tag": row["tag"], "created_at": row["created_at"]}
-
     content_type, label = "article", None
     for pattern, ctype, lbl in MEDIA_URLS:
         if pattern in url:
@@ -1261,16 +1321,24 @@ async def process_save_fast(url: str, user_id: str) -> dict:
 
     placeholder_title = get_source_label(url)
     try:
-        result = supabase.table("saves").insert({
+        # INSERT ... ON CONFLICT (user_id, url) DO NOTHING in one round-trip, replacing
+        # the old always-SELECT-then-INSERT (two round-trips on every save). An empty
+        # result.data means the row already existed (conflict) — only then do we pay a
+        # second round-trip, to fetch that existing row's details for the duplicate
+        # response. See sql/012_saves_unique_user_url.sql for the backing constraint.
+        result = supabase.table("saves").upsert({
             "user_id": user_id, "url": url, "title": placeholder_title,
             "content_text": "", "embedding": None, "tag": None,
             "content_type": content_type, "status": "pending"
-        }).execute()
-        placeholder_id = result.data[0]["id"]
+        }, on_conflict="user_id,url", ignore_duplicates=True).execute()
     except Exception as e:
         print(f"[save_fast] DB insert failed: {e}", flush=True)
         return {"error": True, "url": url, "detail": "DB insert failed"}
 
+    if not result.data:
+        return _duplicate_response(user_id, url)
+
+    placeholder_id = result.data[0]["id"]
     asyncio.create_task(_enrich_in_background(url, user_id, placeholder_id))
     return {"success": True, "pending": True, "id": placeholder_id,
             "title": placeholder_title, "url": url, "content_type": content_type, "label": label}
@@ -1443,6 +1511,13 @@ async def process_newsletter_email(payload: dict) -> dict:
     try:
         result = supabase.table("saves").insert(payload_row).execute()
         inserted_id = result.data[0]["id"]
+    except APIError as e:
+        # Same race as process_save's insert sites — a concurrent save of this URL landed
+        # after the duplicate check above but before this insert.
+        if e.code != "23505":
+            print(f"[newsletter] DB insert failed: {e}", flush=True)
+            return {"error": True, "detail": "DB insert failed"}
+        return _duplicate_response(user_id, url)
     except Exception as e:
         print(f"[newsletter] DB insert failed: {e}", flush=True)
         return {"error": True, "detail": "DB insert failed"}
