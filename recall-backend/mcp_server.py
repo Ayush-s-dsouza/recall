@@ -319,14 +319,14 @@ async def recall_save(url: str) -> dict:
 @mcp.tool()
 async def recall_suggestions() -> dict:
     """Get tag/source-based search suggestions for the user's library."""
-    return do_suggestions(_current_user_id())
+    return await do_suggestions(_current_user_id())
 
 
 @mcp.tool()
 async def recall_update_tag(save_id: str, tag: str) -> dict:
     """Update the category tag on a saved URL. Valid tags: Tech, Product, Business, Finance, Health, Personal, Other."""
     try:
-        return do_update_tag(save_id, tag, _current_user_id())
+        return await do_update_tag(save_id, tag, _current_user_id())
     except ValueError as e:
         raise ValueError(str(e))
 
@@ -334,13 +334,13 @@ async def recall_update_tag(save_id: str, tag: str) -> dict:
 @mcp.tool()
 async def recall_update_title(save_id: str, title: str) -> dict:
     """Update the title on a saved URL."""
-    return do_update_title(save_id, title, _current_user_id())
+    return await do_update_title(save_id, title, _current_user_id())
 
 
 @mcp.tool()
 async def recall_delete(save_id: str) -> dict:
     """Delete a saved URL from the user's library."""
-    return do_delete_save(save_id, _current_user_id())
+    return await do_delete_save(save_id, _current_user_id())
 
 
 def mcp_asgi_app():

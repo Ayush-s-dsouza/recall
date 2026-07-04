@@ -34,6 +34,14 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 _executor = ThreadPoolExecutor(max_workers=4)
 
+async def _exec(query_builder):
+    """Runs a synchronous postgrest query-builder's .execute() in a thread, so it doesn't
+    block the single asyncio event loop this app runs on (a bare `uvicorn main:app`, one
+    worker process). Every blocking Supabase call previously ran inline on the event loop,
+    serializing concurrent requests behind each other's network I/O — see CLAUDE.md's
+    event-loop-blocking investigation."""
+    return await asyncio.to_thread(query_builder.execute)
+
 # Local JWT verification (see get_user_id below) — this project's Supabase instance
 # signs access tokens with an asymmetric ES256 key (confirmed via its JWKS endpoint,
 # not the legacy HS256 shared-secret scheme), so verification fetches the public key
@@ -122,35 +130,38 @@ def _get_user_id_network(token: str) -> str:
     user = supabase.auth.get_user(token)
     return user.user.id
 
-def get_user_id(token: str) -> str:
+async def get_user_id(token: str) -> str:
     """Resolve a Supabase access token to a user_id. Local verification (decode + check
     signature/exp/aud against Supabase's own JWKS) replaces a blocking network round-trip
     to Supabase's GoTrue /auth/v1/user endpoint that every authenticated request previously
-    paid for — see CLAUDE.md's save-latency plan. AUTH_VERIFY_MODE gates the rollout."""
+    paid for — see CLAUDE.md's save-latency plan. AUTH_VERIFY_MODE gates the rollout.
+    Both paths run via asyncio.to_thread — _get_user_id_network always blocks on network I/O,
+    and _get_user_id_local can too on a JWKS cache miss/key rotation (PyJWKClient's internal
+    fetch is a plain blocking call), so neither is safe to call inline on the event loop."""
     if AUTH_VERIFY_MODE == "local":
         try:
-            return _get_user_id_local(token)
+            return await asyncio.to_thread(_get_user_id_local, token)
         except jwt.PyJWTError:
             raise HTTPException(status_code=401, detail="Invalid token")
 
-    user_id = _get_user_id_network(token)
+    user_id = await asyncio.to_thread(_get_user_id_network, token)
     try:
-        local_user_id = _get_user_id_local(token)
+        local_user_id = await asyncio.to_thread(_get_user_id_local, token)
         if local_user_id != user_id:
             print(f"[auth_canary] MISMATCH network={user_id} local={local_user_id}", flush=True)
     except Exception as e:
         print(f"[auth_canary] local verification failed: {e}", flush=True)
     return user_id
 
-def _duplicate_response(user_id: str, url: str) -> dict:
+async def _duplicate_response(user_id: str, url: str) -> dict:
     """Fetch an existing (user_id, url) row's details for a duplicate response — shared by
     every save path that can hit this, including a race against the saves_user_id_url_key
     unique constraint (sql/012_saves_unique_user_url.sql) when a concurrent save of the same
     URL wins between an earlier duplicate check and this row's own insert."""
-    existing = supabase.table("saves") \
-        .select("id, title, tag, created_at") \
-        .eq("user_id", user_id).eq("url", url) \
-        .limit(1).execute()
+    existing = await _exec(supabase.table("saves")
+        .select("id, title, tag, created_at")
+        .eq("user_id", user_id).eq("url", url)
+        .limit(1))
     row = existing.data[0]
     return {"duplicate": True, "id": row["id"], "title": row["title"],
             "tag": row["tag"], "created_at": row["created_at"]}
@@ -175,20 +186,22 @@ def get_source_label(url: str) -> str:
     except:
         return "Page"
 
-def send_save_ready_push(user_id: str, title: str, source_label: str):
+async def send_save_ready_push(user_id: str, title: str, source_label: str):
     """Best-effort Web Push notification that a backgrounded save finished enriching.
     Never raises — a push failure must never affect the save itself."""
     vapid_private_key = os.getenv("VAPID_PRIVATE_KEY")
     if not vapid_private_key:
         return
     try:
-        subs = supabase.table("push_subscriptions") \
-            .select("id, endpoint, p256dh, auth").eq("user_id", user_id).execute().data
+        result = await _exec(supabase.table("push_subscriptions")
+            .select("id, endpoint, p256dh, auth").eq("user_id", user_id))
+        subs = result.data
     except Exception:
         return
     for sub in subs:
         try:
-            webpush(
+            await asyncio.to_thread(
+                webpush,
                 subscription_info={
                     "endpoint": sub["endpoint"],
                     "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]}
@@ -206,7 +219,7 @@ def send_save_ready_push(user_id: str, title: str, source_label: str):
             print(f"[push] WebPushException status={e.response.status_code if e.response is not None else None} body={body!r}", flush=True)
             if e.response is not None and e.response.status_code in (404, 410):
                 try:
-                    supabase.table("push_subscriptions").delete().eq("id", sub["id"]).execute()
+                    await _exec(supabase.table("push_subscriptions").delete().eq("id", sub["id"]))
                 except Exception:
                     pass
         except Exception as e:
@@ -668,7 +681,7 @@ X_JUNK_SIGNATURES = [
     # login-wall copy (logged-out fetches of gated tweets)
     "see what's happening", "continue with google", "continue with apple",
     "continue with phone", "by continuing, you agree to our terms of service",
-    "don't miss what's happening", "log in to x",
+    "don't miss what's happening", "log in to x", "sign-up to x", "sign up to x",
     # deleted/nonexistent-tweet 404 copy (X's own error page, not the tweet)
     "this page doesn't exist", "nothing to see here",
 ]
@@ -684,6 +697,11 @@ async def fetch_tweet(url: str):
     )
     og_title = extract_og_tags(og_html).get("og:title", "")
     if " on X" in og_title or og_title.endswith("on Twitter"):
+        og_title = ""
+    elif og_title and any(sig in og_title.lower() for sig in X_JUNK_SIGNATURES):
+        # A plain unauthenticated fetch of an x.com/twitter.com URL can non-deterministically
+        # be served X's own login/signup wall instead of the tweet — same failure mode as
+        # jina_is_junk below, just against the OG title instead of the fetched body text.
         og_title = ""
     # Logged-out fetches of some tweets (e.g. /i/status/ links, or ones X otherwise
     # gates) get served X's own signup/login wall instead of the tweet, and deleted/
@@ -770,8 +788,8 @@ async def resolve_linkedin_redirect(url: str) -> str:
     except Exception:
         return url
 
-def _finalize_placeholder(placeholder_id: str | None, user_id: str | None = None,
-                           url: str | None = None, title: str | None = None):
+async def _finalize_placeholder(placeholder_id: str | None, user_id: str | None = None,
+                                 url: str | None = None, title: str | None = None):
     """Flip a pending placeholder row to 'ready', optionally overwriting its title — used when
     enrichment bails out early (thin content / authwall) so the row never stays stuck pending.
     Also sends the save-ready push here, mirroring the success path's call — otherwise a save
@@ -783,11 +801,11 @@ def _finalize_placeholder(placeholder_id: str | None, user_id: str | None = None
     if title:
         payload["title"] = title
     try:
-        supabase.table("saves").update(payload).eq("id", placeholder_id).execute()
+        await _exec(supabase.table("saves").update(payload).eq("id", placeholder_id))
     except Exception:
         return
     if user_id and url:
-        send_save_ready_push(user_id, title or get_source_label(url), get_source_label(url))
+        await send_save_ready_push(user_id, title or get_source_label(url), get_source_label(url))
 
 async def process_save_preview(url: str) -> dict:
     """Read-only version of the save enrichment pipeline for logged-out previews.
@@ -989,15 +1007,15 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
         # resolve_linkedin_redirect couldn't actually resolve this wrapper (the fetch of
         # its target failed) and handed back the unresolved wrapper itself — proceeding
         # would save LinkedIn's own interstitial page as if it were the article.
-        _finalize_placeholder(placeholder_id, user_id, url)
+        await _finalize_placeholder(placeholder_id, user_id, url)
         return {"thin_content": True, "url": url}
     await validate_url(url)
 
     if not placeholder_id:
-        existing = supabase.table("saves") \
-            .select("id, title, tag, created_at") \
-            .eq("user_id", user_id).eq("url", url) \
-            .limit(1).execute()
+        existing = await _exec(supabase.table("saves")
+            .select("id, title, tag, created_at")
+            .eq("user_id", user_id).eq("url", url)
+            .limit(1))
         if existing.data:
             row = existing.data[0]
             return {"duplicate": True, "id": row["id"], "title": row["title"],
@@ -1029,11 +1047,11 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             }
             try:
                 if placeholder_id:
-                    supabase.table("saves").update(payload).eq("id", placeholder_id).execute()
+                    await _exec(supabase.table("saves").update(payload).eq("id", placeholder_id))
                     inserted_id = placeholder_id
                 else:
                     try:
-                        result = supabase.table("saves").insert(payload).execute()
+                        result = await _exec(supabase.table("saves").insert(payload))
                     except APIError as e:
                         # A concurrent save of this URL won the race against the duplicate
                         # check above (recall_core.py, this function's `if not placeholder_id`
@@ -1041,13 +1059,13 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
                         # into a clean 23505 instead of a silent duplicate row.
                         if e.code != "23505":
                             raise
-                        return _duplicate_response(user_id, url)
+                        return await _duplicate_response(user_id, url)
                     inserted_id = result.data[0]["id"]
             except Exception as e:
                 print(f"[media save] DB insert failed: {e}", flush=True)
                 return {"error": True, "url": url, "detail": "DB insert failed"}
             if placeholder_id:
-                send_save_ready_push(user_id, raw_title, get_source_label(url))
+                await send_save_ready_push(user_id, raw_title, get_source_label(url))
             return {"success": True, "media": True, "content_type": ctype,
                     "label": label, "title": raw_title, "tag": tag, "id": inserted_id}
 
@@ -1079,13 +1097,26 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
                         fetch_og_html(final_url)
                     )
                     article_og_title = extract_og_tags(article_og_html).get("og:title", "")
+                    if article_og_title and any(sig in article_og_title.lower() for sig in X_JUNK_SIGNATURES):
+                        # Same login-wall risk as fetch_tweet()'s own og_title check — this
+                        # article_og_title had no junk filtering at all, so a login-walled
+                        # fetch of the expanded X Article URL could silently win the
+                        # `article_title or jina_title or ...` chain below over an already-good
+                        # title (e.g. "Login/Sign-up to X Corp." overriding a real tweet title).
+                        article_og_title = ""
                     # x.com's article pages often render as a "JavaScript is disabled" noscript
                     # interstitial when Jina can't execute the page's JS — that's still >150 chars
                     # so fetch_with_jina's own length check doesn't catch it, and it was silently
                     # overwriting the original tweet's already-good clean_text with boilerplate.
                     js_disabled_signatures = ["javascript is not available", "javascript is disabled"]
                     article_is_js_disabled = any(sig in article_jina_text.lower() for sig in js_disabled_signatures)
-                    if article_jina_text and not article_is_js_disabled:
+                    # Same login-wall risk as fetch_tweet()'s own jina_is_junk check — a
+                    # login-walled fetch of the expanded X Article URL discards both the
+                    # text and title together, since they come from the same page fetch.
+                    article_jina_is_junk = article_jina_text and any(sig in article_jina_text.lower() for sig in X_JUNK_SIGNATURES)
+                    if article_jina_is_junk:
+                        article_jina_title = ""
+                    if article_jina_text and not article_is_js_disabled and not article_jina_is_junk:
                         clean_text = article_jina_text
                     article_title = article_og_title or article_jina_title
                     print(f"[tweet] X Article — og_title={repr(article_og_title)} jina_title={repr(article_jina_title)} js_disabled={article_is_js_disabled} content_len={len(clean_text)}", flush=True)
@@ -1102,7 +1133,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
         if title == url:
             # Nothing usable came back at all (deleted/protected/unfetchable tweet) — skip
             # rather than insert a row whose only "title" is the URL itself.
-            _finalize_placeholder(placeholder_id, user_id, url)
+            await _finalize_placeholder(placeholder_id, user_id, url)
             return {"thin_content": True, "url": url}
         if tweet_author:
             extra_context = f"Author: {tweet_author}"
@@ -1150,7 +1181,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
         lowered = (clean_text + " " + og_title).lower()
         if any(sig in lowered for sig in AUTHWALL_SIGNATURES):
             print(f"[linkedin] authwall signature detected, skipping url={url}", flush=True)
-            _finalize_placeholder(placeholder_id, user_id, url)
+            await _finalize_placeholder(placeholder_id, user_id, url)
             return {"thin_content": True, "url": url}
         # LinkedIn posts are often short (a one-liner, a quote) — use a lower bar than the
         # generic article threshold, since the authwall check above already filters garbage.
@@ -1164,7 +1195,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             if len(fallback_text) >= LINKEDIN_QUALITY_THRESHOLD:
                 clean_text = fallback_text
         if len(clean_text.strip()) < LINKEDIN_QUALITY_THRESHOLD:
-            _finalize_placeholder(placeholder_id, user_id, url)
+            await _finalize_placeholder(placeholder_id, user_id, url)
             return {"thin_content": True, "url": url}
     elif is_reddit:
         title, body_text, subreddit, post_hint, image_url, comments_text = await fetch_reddit(url)
@@ -1175,7 +1206,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             # than leave a bare, ambiguous "Reddit" title sitting in the list, tell the user
             # directly so they know to set their own (the receipt card's pencil-icon edit
             # already supports this for any save).
-            _finalize_placeholder(
+            await _finalize_placeholder(
                 placeholder_id, user_id, url,
                 title="Tap to add your own title [Reddit auto-titling isn't available yet]",
             )
@@ -1252,7 +1283,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             clean_text = (clean_text + "\n\n" + extra_context)[:5000]
 
         if len((clean_text + extra_context).strip()) < QUALITY_THRESHOLD:
-            _finalize_placeholder(placeholder_id, user_id, url)
+            await _finalize_placeholder(placeholder_id, user_id, url)
             return {"thin_content": True, "url": url}
 
     title, tag = await extract_save_metadata_async(title, clean_text, extra_context)
@@ -1268,17 +1299,17 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
     }
     try:
         if placeholder_id:
-            supabase.table("saves").update(payload).eq("id", placeholder_id).execute()
+            await _exec(supabase.table("saves").update(payload).eq("id", placeholder_id))
             inserted_id = placeholder_id
         else:
             try:
-                result = supabase.table("saves").insert(payload).execute()
+                result = await _exec(supabase.table("saves").insert(payload))
             except APIError as e:
                 # Same race as the media-save branch above — a concurrent save of this URL
                 # landed after this function's own duplicate check but before this insert.
                 if e.code != "23505":
                     raise
-                return _duplicate_response(user_id, url)
+                return await _duplicate_response(user_id, url)
             inserted_id = result.data[0]["id"]
     except Exception as e:
         print(f"[save] DB insert failed: {e}", flush=True)
@@ -1287,21 +1318,21 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
     # Find semantically related saves and store cross-references (best-effort)
     related_ids = []
     try:
-        related_result = supabase.rpc("find_related_saves", {
+        related_result = await _exec(supabase.rpc("find_related_saves", {
             "save_embedding": embedding,
             "exclude_id": inserted_id,
             "match_user_id": user_id,
             "match_count": 3
-        }).execute()
+        }))
         related_ids = [r["id"] for r in (related_result.data or [])]
         if related_ids:
-            supabase.table("saves").update({"related_ids": related_ids}) \
-                .eq("id", inserted_id).execute()
+            await _exec(supabase.table("saves").update({"related_ids": related_ids})
+                .eq("id", inserted_id))
     except Exception:
         pass  # Silently skip if RPC/column not yet set up in Supabase
 
     if placeholder_id:
-        send_save_ready_push(user_id, title, get_source_label(url))
+        await send_save_ready_push(user_id, title, get_source_label(url))
     return {"success": True, "title": title, "tag": tag, "id": inserted_id, "related_ids": related_ids}
 
 async def process_save_fast(url: str, user_id: str) -> dict:
@@ -1326,17 +1357,17 @@ async def process_save_fast(url: str, user_id: str) -> dict:
         # result.data means the row already existed (conflict) — only then do we pay a
         # second round-trip, to fetch that existing row's details for the duplicate
         # response. See sql/012_saves_unique_user_url.sql for the backing constraint.
-        result = supabase.table("saves").upsert({
+        result = await _exec(supabase.table("saves").upsert({
             "user_id": user_id, "url": url, "title": placeholder_title,
             "content_text": "", "embedding": None, "tag": None,
             "content_type": content_type, "status": "pending"
-        }, on_conflict="user_id,url", ignore_duplicates=True).execute()
+        }, on_conflict="user_id,url", ignore_duplicates=True))
     except Exception as e:
         print(f"[save_fast] DB insert failed: {e}", flush=True)
         return {"error": True, "url": url, "detail": "DB insert failed"}
 
     if not result.data:
-        return _duplicate_response(user_id, url)
+        return await _duplicate_response(user_id, url)
 
     placeholder_id = result.data[0]["id"]
     asyncio.create_task(_enrich_in_background(url, user_id, placeholder_id))
@@ -1348,11 +1379,11 @@ async def _enrich_in_background(url: str, user_id: str, placeholder_id: str):
         await process_save(url, user_id, placeholder_id=placeholder_id)
     except Exception as e:
         print(f"[enrich] background save failed for {placeholder_id}: {e}", flush=True)
-        _finalize_placeholder(placeholder_id, user_id, url)
+        await _finalize_placeholder(placeholder_id, user_id, url)
 
 NEWSLETTER_QUALITY_THRESHOLD = 40  # chars — newsletters are often short, same bar as LinkedIn posts
 
-def _find_user_id_by_email(email: str) -> str | None:
+async def _find_user_id_by_email(email: str) -> str | None:
     """Look up a Supabase auth user by email via the admin API — there's no email->user_id
     table in this schema otherwise. Paginates through all users; fine at this app's scale,
     but would need a dedicated index/table if the user base grew large."""
@@ -1362,7 +1393,7 @@ def _find_user_id_by_email(email: str) -> str | None:
     try:
         page = 1
         while True:
-            resp = supabase.auth.admin.list_users(page=page, per_page=200)
+            resp = await asyncio.to_thread(supabase.auth.admin.list_users, page=page, per_page=200)
             users = resp if isinstance(resp, list) else getattr(resp, "users", [])
             if not users:
                 return None
@@ -1455,7 +1486,7 @@ async def process_newsletter_email(payload: dict) -> dict:
     """
     headers = payload.get("headers") or {}
     sender_email = _resolve_forwarding_sender(headers)
-    user_id = _find_user_id_by_email(sender_email)
+    user_id = await _find_user_id_by_email(sender_email)
     if not user_id:
         print(f"[newsletter] no ReCall user matched sender={sender_email!r}", flush=True)
         return {"no_match": True}
@@ -1488,10 +1519,10 @@ async def process_newsletter_email(payload: dict) -> dict:
     if len(clean_text.strip()) < NEWSLETTER_QUALITY_THRESHOLD:
         return {"thin_content": True}
 
-    existing = supabase.table("saves") \
-        .select("id, title, tag, created_at") \
-        .eq("user_id", user_id).eq("url", url) \
-        .limit(1).execute()
+    existing = await _exec(supabase.table("saves")
+        .select("id, title, tag, created_at")
+        .eq("user_id", user_id).eq("url", url)
+        .limit(1))
     if existing.data:
         row = existing.data[0]
         return {"duplicate": True, "id": row["id"], "title": row["title"],
@@ -1509,7 +1540,7 @@ async def process_newsletter_email(payload: dict) -> dict:
         "content_type": "article", "status": "ready"
     }
     try:
-        result = supabase.table("saves").insert(payload_row).execute()
+        result = await _exec(supabase.table("saves").insert(payload_row))
         inserted_id = result.data[0]["id"]
     except APIError as e:
         # Same race as process_save's insert sites — a concurrent save of this URL landed
@@ -1517,12 +1548,12 @@ async def process_newsletter_email(payload: dict) -> dict:
         if e.code != "23505":
             print(f"[newsletter] DB insert failed: {e}", flush=True)
             return {"error": True, "detail": "DB insert failed"}
-        return _duplicate_response(user_id, url)
+        return await _duplicate_response(user_id, url)
     except Exception as e:
         print(f"[newsletter] DB insert failed: {e}", flush=True)
         return {"error": True, "detail": "DB insert failed"}
 
-    send_save_ready_push(user_id, title, "Newsletter")
+    await send_save_ready_push(user_id, title, "Newsletter")
     return {"success": True, "title": title, "tag": tag, "id": inserted_id}
 
 SEARCH_MIN_SEMANTIC_SIMILARITY = 0.60  # cosine similarity floor for /search's semantic branch — re-derived empirically after the RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT task_type fix, see CLAUDE.md Known Issue #34
@@ -1542,25 +1573,24 @@ async def do_search(query: str, user_id: str) -> dict:
     + topic), keeping the whole request to one embedding API call + fast Postgres queries.
     """
     query_embedding = await get_embedding(query, task_type="RETRIEVAL_QUERY")
-    semantic_result = supabase.rpc("match_saves", {
+    semantic_result = await _exec(supabase.rpc("match_saves", {
         "query_embedding": query_embedding,
         "match_user_id": user_id,
         "match_count": 20,
         "match_threshold": SEARCH_MIN_SEMANTIC_SIMILARITY,
         "topic_query_embedding": query_embedding
-    }).execute()
+    }))
 
     # Full-text search over content + title — exclude media saves
     try:
-        fts_result = supabase.table("saves") \
-            .select("id, url, title, tag, created_at, content_text") \
-            .eq("user_id", user_id) \
-            .eq("content_type", "article") \
-            .eq("status", "ready") \
-            .filter("content_text", "fts", query) \
-            .order("created_at", desc=True) \
-            .limit(20) \
-            .execute()
+        fts_result = await _exec(supabase.table("saves")
+            .select("id, url, title, tag, created_at, content_text")
+            .eq("user_id", user_id)
+            .eq("content_type", "article")
+            .eq("status", "ready")
+            .filter("content_text", "fts", query)
+            .order("created_at", desc=True)
+            .limit(20))
         fts_rows = fts_result.data
     except Exception:
         fts_rows = []
@@ -1627,10 +1657,9 @@ async def do_search(query: str, user_id: str) -> dict:
     # Attach folder memberships — one batch query for all result IDs
     if results:
         save_ids = [r["id"] for r in results]
-        folder_rows = supabase.table("save_folders") \
-            .select("save_id, folders(id, name)") \
-            .in_("save_id", save_ids) \
-            .execute()
+        folder_rows = await _exec(supabase.table("save_folders")
+            .select("save_id, folders(id, name)")
+            .in_("save_id", save_ids))
         folders_by_save: dict[str, list] = {}
         for fr in (folder_rows.data or []):
             folders_by_save.setdefault(fr["save_id"], []).append(fr["folders"])
@@ -1639,14 +1668,13 @@ async def do_search(query: str, user_id: str) -> dict:
 
     return {"results": results}
 
-def do_suggestions(user_id: str) -> dict:
+async def do_suggestions(user_id: str) -> dict:
     """Folder/source-based search-chip suggestions. Shared by /suggestions and the
     recall_suggestions MCP tool."""
-    result = supabase.table("saves") \
-        .select("url") \
-        .eq("user_id", user_id) \
-        .eq("status", "ready") \
-        .execute()
+    result = await _exec(supabase.table("saves")
+        .select("url")
+        .eq("user_id", user_id)
+        .eq("status", "ready"))
 
     if not result.data:
         return {"chips": [], "has_saves": False}
@@ -1660,10 +1688,9 @@ def do_suggestions(user_id: str) -> dict:
     sorted_sources = sorted(source_counts.items(), key=lambda x: x[1], reverse=True)
 
     # Count folder usage for this user
-    folder_result = supabase.table("folders") \
-        .select("name, save_folders(save_id)") \
-        .eq("user_id", user_id) \
-        .execute()
+    folder_result = await _exec(supabase.table("folders")
+        .select("name, save_folders(save_id)")
+        .eq("user_id", user_id))
     folder_counts = [(f["name"], len(f.get("save_folders") or [])) for f in (folder_result.data or [])]
     folder_counts.sort(key=lambda x: x[1], reverse=True)
 
@@ -1684,30 +1711,30 @@ def do_suggestions(user_id: str) -> dict:
 
 VALID_TAGS = ["Tech", "Product", "Business", "Finance", "Health", "Personal", "Other"]
 
-def do_update_tag(save_id: str, tag: str, user_id: str) -> dict:
+async def do_update_tag(save_id: str, tag: str, user_id: str) -> dict:
     """Shared by PATCH /save/{id}/tag and the recall_update_tag MCP tool."""
     if tag not in VALID_TAGS:
         raise ValueError("Invalid tag")
-    supabase.table("saves").update({"tag": tag}) \
-        .eq("id", save_id).eq("user_id", user_id).execute()
+    await _exec(supabase.table("saves").update({"tag": tag})
+        .eq("id", save_id).eq("user_id", user_id))
     return {"success": True}
 
-def do_update_title(save_id: str, title: str, user_id: str) -> dict:
+async def do_update_title(save_id: str, title: str, user_id: str) -> dict:
     """Shared by PATCH /save/{id}/title and the recall_update_title MCP tool."""
-    supabase.table("saves").update({"title": title}) \
-        .eq("id", save_id).eq("user_id", user_id).execute()
+    await _exec(supabase.table("saves").update({"title": title})
+        .eq("id", save_id).eq("user_id", user_id))
     return {"success": True}
 
-def do_delete_save(save_id: str, user_id: str) -> dict:
+async def do_delete_save(save_id: str, user_id: str) -> dict:
     """Shared by DELETE /save/{id} and the recall_delete MCP tool."""
-    supabase.table("saves").delete() \
-        .eq("id", save_id).eq("user_id", user_id).execute()
+    await _exec(supabase.table("saves").delete()
+        .eq("id", save_id).eq("user_id", user_id))
     # Best-effort: remove this save_id from related_ids arrays + wiki_pages source_ids
     try:
-        supabase.rpc("cleanup_deleted_save", {
+        await _exec(supabase.rpc("cleanup_deleted_save", {
             "deleted_save_id": save_id,
             "owner_user_id": user_id
-        }).execute()
+        }))
     except Exception:
         pass
     return {"success": True}
@@ -1715,12 +1742,11 @@ def do_delete_save(save_id: str, user_id: str) -> dict:
 
 # --- Folder management ---
 
-def do_get_folders(user_id: str) -> dict:
-    result = supabase.table("folders") \
-        .select("id, name, created_at, save_folders(save_id)") \
-        .eq("user_id", user_id) \
-        .order("created_at") \
-        .execute()
+async def do_get_folders(user_id: str) -> dict:
+    result = await _exec(supabase.table("folders")
+        .select("id, name, created_at, save_folders(save_id)")
+        .eq("user_id", user_id)
+        .order("created_at"))
     folders = []
     for f in (result.data or []):
         sf = f.get("save_folders") or []
@@ -1734,17 +1760,17 @@ def do_get_folders(user_id: str) -> dict:
     return {"folders": folders}
 
 
-def do_create_folder(name: str, user_id: str) -> dict:
+async def do_create_folder(name: str, user_id: str) -> dict:
     name = name.strip()
     if not name:
         raise ValueError("Folder name cannot be empty")
     if len(name) > 50:
         raise ValueError("Folder name must be 50 characters or fewer")
     try:
-        result = supabase.table("folders").insert({
+        result = await _exec(supabase.table("folders").insert({
             "user_id": user_id,
             "name": name,
-        }).execute()
+        }))
     except Exception as e:
         if "unique" in str(e).lower() or "duplicate" in str(e).lower():
             raise ValueError(f'A folder named "{name}" already exists')
@@ -1752,15 +1778,15 @@ def do_create_folder(name: str, user_id: str) -> dict:
     return {"success": True, "id": result.data[0]["id"], "name": name}
 
 
-def do_rename_folder(folder_id: str, name: str, user_id: str) -> dict:
+async def do_rename_folder(folder_id: str, name: str, user_id: str) -> dict:
     name = name.strip()
     if not name:
         raise ValueError("Folder name cannot be empty")
     if len(name) > 50:
         raise ValueError("Folder name must be 50 characters or fewer")
     try:
-        supabase.table("folders").update({"name": name}) \
-            .eq("id", folder_id).eq("user_id", user_id).execute()
+        await _exec(supabase.table("folders").update({"name": name})
+            .eq("id", folder_id).eq("user_id", user_id))
     except Exception as e:
         if "unique" in str(e).lower() or "duplicate" in str(e).lower():
             raise ValueError(f'A folder named "{name}" already exists')
@@ -1768,30 +1794,30 @@ def do_rename_folder(folder_id: str, name: str, user_id: str) -> dict:
     return {"success": True}
 
 
-def do_delete_folder(folder_id: str, user_id: str) -> dict:
+async def do_delete_folder(folder_id: str, user_id: str) -> dict:
     # CASCADE on save_folders FK means memberships are removed automatically
-    supabase.table("folders").delete() \
-        .eq("id", folder_id).eq("user_id", user_id).execute()
+    await _exec(supabase.table("folders").delete()
+        .eq("id", folder_id).eq("user_id", user_id))
     return {"success": True}
 
 
-def do_set_save_folders(save_id: str, folder_ids: list, user_id: str) -> dict:
+async def do_set_save_folders(save_id: str, folder_ids: list, user_id: str) -> dict:
     # Validate the save belongs to this user
-    check = supabase.table("saves").select("id") \
-        .eq("id", save_id).eq("user_id", user_id).execute()
+    check = await _exec(supabase.table("saves").select("id")
+        .eq("id", save_id).eq("user_id", user_id))
     if not check.data:
         raise ValueError("Save not found")
     # Validate all requested folders belong to this user
     if folder_ids:
-        folder_check = supabase.table("folders").select("id") \
-            .in_("id", folder_ids).eq("user_id", user_id).execute()
+        folder_check = await _exec(supabase.table("folders").select("id")
+            .in_("id", folder_ids).eq("user_id", user_id))
         found_ids = {f["id"] for f in (folder_check.data or [])}
         if len(found_ids) != len(folder_ids):
             raise ValueError("One or more folders not found")
     # Atomically replace all memberships for this save
-    supabase.table("save_folders").delete().eq("save_id", save_id).execute()
+    await _exec(supabase.table("save_folders").delete().eq("save_id", save_id))
     if folder_ids:
-        supabase.table("save_folders").insert([
+        await _exec(supabase.table("save_folders").insert([
             {"save_id": save_id, "folder_id": fid} for fid in folder_ids
-        ]).execute()
+        ]))
     return {"success": True}

@@ -16,12 +16,14 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta
 import httpx
 import asyncio
+import time
 import sentry_sdk
 
 from recall_core import (
     supabase,
     gemini_client,
     _executor,
+    _exec,
     _NO_THINKING,
     get_user_id,
     validate_url,
@@ -89,6 +91,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def timing_middleware(request: Request, call_next):
+    """Absolute wall-clock start/end logging (not just elapsed-since-request) so
+    concurrently-arriving requests' log lines can be directly compared against each other —
+    a request whose START line is logged seconds late, while another request's span covers
+    that same window, proves its handler was queued behind the other's blocking I/O rather
+    than doing slow work of its own. See CLAUDE.md's event-loop-blocking investigation."""
+    t0 = time.time()
+    print(f"[timing] START {request.method} {request.url.path} t={t0:.3f}", flush=True)
+    response = await call_next(request)
+    dur_ms = (time.time() - t0) * 1000
+    print(f"[timing] END   {request.method} {request.url.path} dur={dur_ms:.0f}ms", flush=True)
+    return response
 
 ASK_MIN_RELEVANCE = 0.65  # cosine similarity floor for /ask context — re-derived empirically after the RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT task_type fix, see CLAUDE.md Known Issue #34
 MAX_IMPORT_ITEMS = 500  # cap per bulk import job to bound Gemini/Jina usage
@@ -184,14 +201,21 @@ class SaveFoldersRequest(BaseModel):
 @app.post("/save")
 @limiter.limit("10/minute")
 async def save_url(req: SaveRequest, request: Request):
+    t_auth_start = time.perf_counter()
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
+    t_auth_done = time.perf_counter()
 
     await validate_url(req.url)
 
+    t_fast_start = time.perf_counter()
     result = await process_save_fast(req.url, user_id)
+    t_fast_done = time.perf_counter()
+    print(f"[save_fast_timing] auth={(t_auth_done-t_auth_start)*1000:.0f}ms "
+          f"validate_url={(t_fast_start-t_auth_done)*1000:.0f}ms "
+          f"process_save_fast={(t_fast_done-t_fast_start)*1000:.0f}ms", flush=True)
     if result.get("error"):
         raise HTTPException(status_code=500, detail=result["detail"])
     return result
@@ -208,25 +232,25 @@ async def preview_save_url(req: SavePreviewRequest, request: Request):
 @app.post("/push/subscribe")
 async def push_subscribe(req: PushSubscribeRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
-    supabase.table("push_subscriptions").upsert({
+    await _exec(supabase.table("push_subscriptions").upsert({
         "user_id": user_id,
         "endpoint": req.subscription.endpoint,
         "p256dh": req.subscription.keys.get("p256dh", ""),
         "auth": req.subscription.keys.get("auth", "")
-    }, on_conflict="endpoint").execute()
+    }, on_conflict="endpoint"))
     return {"success": True}
 
 @app.post("/push/unsubscribe")
 async def push_unsubscribe(req: PushUnsubscribeRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
-    supabase.table("push_subscriptions").delete() \
-        .eq("user_id", user_id).eq("endpoint", req.endpoint).execute()
+    await _exec(supabase.table("push_subscriptions").delete()
+        .eq("user_id", user_id).eq("endpoint", req.endpoint))
     return {"success": True}
 
 @app.post("/webhooks/email-inbound")
@@ -251,7 +275,7 @@ async def email_inbound_webhook(request: Request):
 @limiter.limit("30/minute")
 async def search(req: SearchRequest, request: Request):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
     return await do_search(req.query, user_id)
@@ -259,112 +283,112 @@ async def search(req: SearchRequest, request: Request):
 @app.patch("/save/{save_id}/tag")
 async def update_tag(save_id: str, req: UpdateTagRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
     try:
-        return do_update_tag(save_id, req.tag, user_id)
+        return await do_update_tag(save_id, req.tag, user_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/save/{save_id}")
 async def delete_save(save_id: str, req: DeleteRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
-    return do_delete_save(save_id, user_id)
+    return await do_delete_save(save_id, user_id)
 
 @app.patch("/save/{save_id}/title")
 async def update_title(save_id: str, req: UpdateTitleRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
-    return do_update_title(save_id, req.title, user_id)
+    return await do_update_title(save_id, req.title, user_id)
 
 @app.patch("/save/{save_id}/folders")
 async def set_save_folders(save_id: str, req: SaveFoldersRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
     try:
-        return do_set_save_folders(save_id, req.folder_ids, user_id)
+        return await do_set_save_folders(save_id, req.folder_ids, user_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/folders")
 async def get_folders(token: str):
     try:
-        user_id = get_user_id(token)
+        user_id = await get_user_id(token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
-    return do_get_folders(user_id)
+    return await do_get_folders(user_id)
 
 @app.post("/folders")
 async def create_folder(req: FolderCreateRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
     try:
-        return do_create_folder(req.name, user_id)
+        return await do_create_folder(req.name, user_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.patch("/folders/{folder_id}")
 async def rename_folder(folder_id: str, req: FolderRenameRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
     try:
-        return do_rename_folder(folder_id, req.name, user_id)
+        return await do_rename_folder(folder_id, req.name, user_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/folders/{folder_id}")
 async def delete_folder(folder_id: str, req: DeleteRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
-    return do_delete_folder(folder_id, user_id)
+    return await do_delete_folder(folder_id, user_id)
 
 @app.post("/suggestions")
 async def get_suggestions(req: SuggestionsRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return do_suggestions(user_id)
+    return await do_suggestions(user_id)
 
 @app.delete("/account")
 async def delete_account(req: DeleteAccountRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
-    supabase.table("saves").delete().eq("user_id", user_id).execute()
-    supabase.auth.admin.delete_user(user_id)
+    await _exec(supabase.table("saves").delete().eq("user_id", user_id))
+    await asyncio.to_thread(supabase.auth.admin.delete_user, user_id)
     return {"success": True}
 
 @app.post("/ask")
 @limiter.limit("20/minute")
 async def ask_recall(req: AskRequest, request: Request):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
     query_embedding = await get_embedding(req.query, task_type="RETRIEVAL_QUERY")
-    semantic_result = supabase.rpc("match_saves", {
+    semantic_result = await _exec(supabase.rpc("match_saves", {
         "query_embedding": query_embedding,
         "match_user_id": user_id,
         "match_count": 8,
         "match_threshold": ASK_MIN_RELEVANCE
-    }).execute()
+    }))
 
     # match_saves now enforces ASK_MIN_RELEVANCE itself (see
     # recall-backend/sql/010_match_saves_threshold.sql), so every row it returns already
@@ -432,16 +456,15 @@ Question: {req.query}"""
 @limiter.limit("10/hour")
 async def get_library(req: LibraryRequest, request: Request):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    result = supabase.table("saves") \
-        .select("id, title, tag, content_text, created_at") \
-        .eq("user_id", user_id) \
-        .eq("content_type", "article") \
-        .order("created_at", desc=True) \
-        .execute()
+    result = await _exec(supabase.table("saves")
+        .select("id, title, tag, content_text, created_at")
+        .eq("user_id", user_id)
+        .eq("content_type", "article")
+        .order("created_at", desc=True))
 
     if not result.data:
         return {"library": []}
@@ -470,10 +493,14 @@ Titles:
 {titles_sample}
 
 Write only the summary, nothing else."""
-                response = gemini_client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt,
-                    config=_NO_THINKING
+                loop = asyncio.get_running_loop()
+                response = await loop.run_in_executor(
+                    _executor,
+                    lambda: gemini_client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=prompt,
+                        config=_NO_THINKING
+                    )
                 )
                 summary = response.text.strip()
             except Exception:
@@ -491,10 +518,14 @@ Articles:
 
 Return JSON only, no markdown fences:
 {{"sub_topics": [{{"label": "AI & Language Models", "indices": [0, 3, 7]}}, ...]}}"""
-                sub_response = gemini_client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=sub_prompt,
-                    config=_NO_THINKING
+                loop = asyncio.get_running_loop()
+                sub_response = await loop.run_in_executor(
+                    _executor,
+                    lambda: gemini_client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=sub_prompt,
+                        config=_NO_THINKING
+                    )
                 )
                 raw = sub_response.text.strip().strip("```json").strip("```").strip()
                 parsed = json_module.loads(raw)
@@ -521,40 +552,39 @@ Return JSON only, no markdown fences:
 @app.post("/wiki")
 async def save_wiki_insight(req: SaveWikiRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
-    result = supabase.table("wiki_pages").insert({
+    result = await _exec(supabase.table("wiki_pages").insert({
         "user_id": user_id,
         "query": req.query,
         "synthesis": req.synthesis,
         "source_ids": req.source_ids
-    }).execute()
+    }))
     return {"success": True, "id": result.data[0]["id"]}
 
 
 @app.post("/wiki/list")
 async def list_wiki_insights(req: WikiTokenRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
-    result = supabase.table("wiki_pages") \
-        .select("id, query, synthesis, source_ids, created_at") \
-        .eq("user_id", user_id) \
-        .order("created_at", desc=True) \
-        .execute()
+    result = await _exec(supabase.table("wiki_pages")
+        .select("id, query, synthesis, source_ids, created_at")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True))
     return {"insights": result.data or []}
 
 
 @app.delete("/wiki/{wiki_id}")
 async def delete_wiki_insight(wiki_id: str, req: WikiTokenRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
-    supabase.table("wiki_pages").delete() \
-        .eq("id", wiki_id).eq("user_id", user_id).execute()
+    await _exec(supabase.table("wiki_pages").delete()
+        .eq("id", wiki_id).eq("user_id", user_id))
     return {"success": True}
 
 
@@ -613,11 +643,11 @@ async def run_import_job(job_id: str, user_id: str, urls: list[str]):
             failed += 1
 
         try:
-            supabase.table("import_jobs").update({
+            await _exec(supabase.table("import_jobs").update({
                 "processed": i + 1, "succeeded": succeeded, "duplicates": duplicates,
                 "failed": failed, "skipped": skipped,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", job_id).execute()
+            }).eq("id", job_id))
         except Exception as e:
             print(f"[import {job_id}] status update failed: {e}", flush=True)
 
@@ -625,10 +655,10 @@ async def run_import_job(job_id: str, user_id: str, urls: list[str]):
             await asyncio.sleep(IMPORT_DELAY_SECONDS)
 
     try:
-        supabase.table("import_jobs").update({
+        await _exec(supabase.table("import_jobs").update({
             "status": "completed",
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", job_id).execute()
+        }).eq("id", job_id))
     except Exception as e:
         print(f"[import {job_id}] final status update failed: {e}", flush=True)
 
@@ -637,7 +667,7 @@ async def run_import_job(job_id: str, user_id: str, urls: list[str]):
 @limiter.limit("2/hour")
 async def import_x_bookmarks(request: Request, token: str = Form(...), file: UploadFile = File(...)):
     try:
-        user_id = get_user_id(token)
+        user_id = await get_user_id(token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -652,17 +682,17 @@ async def import_x_bookmarks(request: Request, token: str = Form(...), file: Upl
             detail="No X/Twitter bookmark links found in this file. Make sure you exported with a tool that includes links to the posts."
         )
 
-    existing_job = supabase.table("import_jobs") \
-        .select("id").eq("user_id", user_id).eq("status", "running").limit(1).execute()
+    existing_job = await _exec(supabase.table("import_jobs")
+        .select("id").eq("user_id", user_id).eq("status", "running").limit(1))
     if existing_job.data:
         raise HTTPException(status_code=409, detail="An import is already in progress")
 
     tweet_ids = all_ids[:MAX_IMPORT_ITEMS]
-    job = supabase.table("import_jobs").insert({
+    job = await _exec(supabase.table("import_jobs").insert({
         "user_id": user_id, "source": "x_bookmarks", "status": "running",
         "total": len(tweet_ids), "processed": 0, "succeeded": 0,
         "duplicates": 0, "skipped": 0, "failed": 0,
-    }).execute()
+    }))
     job_id = job.data[0]["id"]
 
     asyncio.create_task(run_import_job(job_id, user_id, [tweet_id_to_url(t) for t in tweet_ids]))
@@ -678,12 +708,12 @@ async def import_x_bookmarks(request: Request, token: str = Form(...), file: Upl
 @app.post("/import/status/{job_id}")
 async def import_status(job_id: str, req: ImportStatusRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    result = supabase.table("import_jobs").select("*") \
-        .eq("id", job_id).eq("user_id", user_id).limit(1).execute()
+    result = await _exec(supabase.table("import_jobs").select("*")
+        .eq("id", job_id).eq("user_id", user_id).limit(1))
     if not result.data:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -701,12 +731,12 @@ async def import_status(job_id: str, req: ImportStatusRequest):
 @app.post("/import/jobs/latest")
 async def latest_import_job(req: ImportStatusRequest):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    result = supabase.table("import_jobs").select("*") \
-        .eq("user_id", user_id).order("created_at", desc=True).limit(1).execute()
+    result = await _exec(supabase.table("import_jobs").select("*")
+        .eq("user_id", user_id).order("created_at", desc=True).limit(1))
     return {"job": result.data[0] if result.data else None}
 
 
@@ -714,7 +744,7 @@ async def latest_import_job(req: ImportStatusRequest):
 @limiter.limit("5/hour")
 async def import_x_connect(req: XConnectRequest, request: Request):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -776,17 +806,17 @@ async def import_x_connect(req: XConnectRequest, request: Request):
     if total_found == 0:
         raise HTTPException(status_code=404, detail="No bookmarks found on this X account")
 
-    existing = supabase.table("import_jobs") \
-        .select("id").eq("user_id", user_id).eq("status", "running").limit(1).execute()
+    existing = await _exec(supabase.table("import_jobs")
+        .select("id").eq("user_id", user_id).eq("status", "running").limit(1))
     if existing.data:
         raise HTTPException(status_code=409, detail="An import is already in progress")
 
     capped_ids = tweet_ids[:MAX_IMPORT_ITEMS]
-    job = supabase.table("import_jobs").insert({
+    job = await _exec(supabase.table("import_jobs").insert({
         "user_id": user_id, "source": "x_oauth", "status": "running",
         "total": len(capped_ids), "processed": 0, "succeeded": 0,
         "duplicates": 0, "skipped": 0, "failed": 0,
-    }).execute()
+    }))
     job_id = job.data[0]["id"]
 
     asyncio.create_task(run_import_job(job_id, user_id, [tweet_id_to_url(t) for t in capped_ids]))
@@ -803,7 +833,7 @@ async def import_x_connect(req: XConnectRequest, request: Request):
 @limiter.limit("5/hour")
 async def import_x_scraped(req: ScrapedImportRequest, request: Request):
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -811,17 +841,17 @@ async def import_x_scraped(req: ScrapedImportRequest, request: Request):
     if not clean_ids:
         raise HTTPException(status_code=400, detail="No valid bookmark IDs found")
 
-    existing = supabase.table("import_jobs") \
-        .select("id").eq("user_id", user_id).eq("status", "running").limit(1).execute()
+    existing = await _exec(supabase.table("import_jobs")
+        .select("id").eq("user_id", user_id).eq("status", "running").limit(1))
     if existing.data:
         raise HTTPException(status_code=409, detail="An import is already in progress")
 
     capped_ids = clean_ids[:MAX_IMPORT_ITEMS]
-    job = supabase.table("import_jobs").insert({
+    job = await _exec(supabase.table("import_jobs").insert({
         "user_id": user_id, "source": "x_scraped", "status": "running",
         "total": len(capped_ids), "processed": 0, "succeeded": 0,
         "duplicates": 0, "skipped": 0, "failed": 0,
-    }).execute()
+    }))
     job_id = job.data[0]["id"]
 
     asyncio.create_task(run_import_job(job_id, user_id, [tweet_id_to_url(t) for t in capped_ids]))
@@ -841,7 +871,7 @@ async def import_urls_scraped(req: ScrapedUrlsImportRequest, request: Request):
     (currently used for LinkedIn saved posts; bookmarklet-based, same pattern as
     /import/x-scraped). Each URL gets validated for SSRF inside run_import_job."""
     try:
-        user_id = get_user_id(req.token)
+        user_id = await get_user_id(req.token)
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -849,17 +879,17 @@ async def import_urls_scraped(req: ScrapedUrlsImportRequest, request: Request):
     if not clean_urls:
         raise HTTPException(status_code=400, detail="No valid URLs found")
 
-    existing = supabase.table("import_jobs") \
-        .select("id").eq("user_id", user_id).eq("status", "running").limit(1).execute()
+    existing = await _exec(supabase.table("import_jobs")
+        .select("id").eq("user_id", user_id).eq("status", "running").limit(1))
     if existing.data:
         raise HTTPException(status_code=409, detail="An import is already in progress")
 
     capped_urls = clean_urls[:MAX_IMPORT_ITEMS]
-    job = supabase.table("import_jobs").insert({
+    job = await _exec(supabase.table("import_jobs").insert({
         "user_id": user_id, "source": "url_scraped", "status": "running",
         "total": len(capped_urls), "processed": 0, "succeeded": 0,
         "duplicates": 0, "skipped": 0, "failed": 0,
-    }).execute()
+    }))
     job_id = job.data[0]["id"]
 
     asyncio.create_task(run_import_job(job_id, user_id, capped_urls))
@@ -890,12 +920,12 @@ if _mcp_app is not None:
     @app.post("/mcp/authorize/complete")
     async def mcp_authorize_complete(req: McpAuthorizeCompleteRequest):
         try:
-            user_id = get_user_id(req.supabase_access_token)
+            user_id = await get_user_id(req.supabase_access_token)
         except:
             raise HTTPException(status_code=401, detail="Invalid Supabase session")
 
-        client_row = supabase.table("mcp_oauth_clients") \
-            .select("redirect_uris").eq("client_id", req.client_id).limit(1).execute()
+        client_row = await _exec(supabase.table("mcp_oauth_clients")
+            .select("redirect_uris").eq("client_id", req.client_id).limit(1))
         if not client_row.data:
             raise HTTPException(status_code=400, detail="Unknown client")
         # Never trust the frontend's echoed redirect_uri — require an exact match
@@ -905,7 +935,7 @@ if _mcp_app is not None:
 
         code = secrets.token_urlsafe(32)
         expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
-        supabase.table("mcp_auth_codes").insert({
+        await _exec(supabase.table("mcp_auth_codes").insert({
             "code": code,
             "client_id": req.client_id,
             "user_id": user_id,
@@ -916,7 +946,7 @@ if _mcp_app is not None:
             "scope": req.scope,
             "resource": req.resource,
             "expires_at": expires_at,
-        }).execute()
+        }))
 
         from mcp.server.auth.provider import construct_redirect_uri
         return {"redirect_uri": construct_redirect_uri(req.redirect_uri, code=code, state=req.state)}
@@ -924,13 +954,13 @@ if _mcp_app is not None:
     @app.get("/mcp/connections")
     async def list_mcp_connections(token: str):
         try:
-            user_id = get_user_id(token)
+            user_id = await get_user_id(token)
         except:
             raise HTTPException(status_code=401, detail="Invalid token")
-        rows = supabase.table("mcp_tokens") \
-            .select("client_id, created_at, mcp_oauth_clients(client_name)") \
-            .eq("user_id", user_id).eq("revoked", False) \
-            .order("created_at", desc=True).execute()
+        rows = await _exec(supabase.table("mcp_tokens")
+            .select("client_id, created_at, mcp_oauth_clients(client_name)")
+            .eq("user_id", user_id).eq("revoked", False)
+            .order("created_at", desc=True))
         seen = set()
         connections = []
         for r in rows.data or []:
@@ -950,11 +980,11 @@ if _mcp_app is not None:
     @app.post("/mcp/connections/{client_id}/revoke")
     async def revoke_mcp_connection(client_id: str, req: RevokeConnectionRequest):
         try:
-            user_id = get_user_id(req.token)
+            user_id = await get_user_id(req.token)
         except:
             raise HTTPException(status_code=401, detail="Invalid token")
-        supabase.table("mcp_tokens").update({"revoked": True}) \
-            .eq("client_id", client_id).eq("user_id", user_id).execute()
+        await _exec(supabase.table("mcp_tokens").update({"revoked": True})
+            .eq("client_id", client_id).eq("user_id", user_id))
         return {"success": True}
 
 @app.get("/")
