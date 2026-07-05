@@ -198,6 +198,8 @@ def get_source_label(url: str) -> str:
         return "LinkedIn"
     if "reddit.com" in url:
         return "Reddit"
+    if "notion.so" in url or "notion.site" in url or "app.notion.com" in url:
+        return "Notion"
     if "youtube.com" in url or "youtu.be" in url:
         return "YouTube"
     if "substack.com" in url:
@@ -784,6 +786,49 @@ async def fetch_og_html(url: str) -> str:
     except Exception:
         return ""
 
+# Boilerplate that can appear even on a genuinely public, successfully-fetched Notion page
+# (its "who can comment" widget) -- stripped as noise, never treated as a rejection signal.
+NOTION_NOISE_PHRASES = [
+    "Anyone with a Notion account can comment on this page.",
+    "Sign up or login to comment",
+]
+
+# Phrases unique to Notion's login-wall shell (a page the anonymous fetcher isn't authorized
+# to view) -- confirmed directly against a live authwalled page, whose entire fetched content
+# is this boilerplate plus generic auth-provider button labels, long enough to clear
+# QUALITY_THRESHOLD and marketing-flavored enough ("What is Notion?") that Gemini will
+# otherwise synthesize a confident-but-wrong title from it. Kept deliberately separate from
+# NOTION_NOISE_PHRASES above, whose phrases can appear on an otherwise-real public page.
+NOTION_AUTHWALL_SIGNATURES = [
+    "you're almost there",
+    "sign in to see this page",
+]
+
+async def fetch_notion(url: str) -> tuple[str, bool]:
+    """Fetch a public Notion page's real content via Jina Reader. A plain non-Jina fetch of a
+    Notion URL (what fetch_og_html() would do) hits a redirect loop and fails outright --
+    confirmed directly against live URLs -- so fetch_og_html is deliberately never called here.
+    jina_title from fetch_with_jina() is always empty for Notion (ReCall requests
+    X-Return-Format: text from Jina, which omits the header lines that title is parsed from)
+    and is intentionally discarded -- the real title is derived from clean_text via the
+    shared extract_save_metadata_async() tail, same as Instagram's raw_title pattern.
+    Returns (clean_text, is_authwalled): clean_text is "" on outright fetch failure or when
+    the login-wall signature fires; is_authwalled distinguishes the two for the caller's
+    fallback message."""
+    jina_text, _ = await fetch_with_jina(url)
+    if not jina_text:
+        print(f"[notion] jina fetch failed/empty url={url}", flush=True)
+        return "", False
+    normalized = jina_text.lower().replace("’", "'").replace("‘", "'")
+    if any(sig in normalized for sig in NOTION_AUTHWALL_SIGNATURES):
+        print(f"[notion] authwall signature detected, discarding url={url}", flush=True)
+        return "", True
+    clean_text = jina_text
+    for noise in NOTION_NOISE_PHRASES:
+        clean_text = clean_text.replace(noise, "")
+    clean_text = re.sub(r'\s{2,}', ' ', clean_text).strip()
+    return clean_text, False
+
 async def resolve_linkedin_redirect(url: str) -> str:
     """Resolve LinkedIn's safety/go wrapper (and the lnkd.in interstitial behind it)
     to the actual destination URL. Returns the original url on any failure."""
@@ -865,6 +910,7 @@ async def process_save_preview(url: str) -> dict:
     is_instagram = "instagram.com" in url
     is_linkedin = "linkedin.com" in url
     is_reddit = "reddit.com" in url or "redd.it" in url
+    is_notion = "notion.so" in url or "notion.site" in url or "app.notion.com" in url
     extra_context = ""
 
     if is_tweet:
@@ -955,6 +1001,11 @@ async def process_save_preview(url: str) -> dict:
         if comments_text:
             extra_context = (extra_context + f"\n\n{comments_text}").strip()
             clean_text = (clean_text + "\n\n" + comments_text).strip()
+    elif is_notion:
+        clean_text, _ = await fetch_notion(url)
+        if len(clean_text.strip()) < QUALITY_THRESHOLD:
+            return {"thin_content": True, "url": url}
+        title = "Notion"
     else:
         (jina_text, jina_title), raw_html = await asyncio.gather(
             fetch_with_jina(url),
@@ -1101,6 +1152,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
     is_instagram = "instagram.com" in url
     is_linkedin = "linkedin.com" in url
     is_reddit = "reddit.com" in url or "redd.it" in url
+    is_notion = "notion.so" in url or "notion.site" in url or "app.notion.com" in url
 
     extra_context = ""
 
@@ -1253,6 +1305,18 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
         if comments_text:
             extra_context = (extra_context + f"\n\n{comments_text}").strip()
             clean_text = (clean_text + "\n\n" + comments_text).strip()
+    elif is_notion:
+        clean_text, was_authwalled = await fetch_notion(url)
+        print(f"[notion] authwalled={was_authwalled} clean_text_len={len(clean_text)} url={url}", flush=True)
+        if len(clean_text.strip()) < QUALITY_THRESHOLD:
+            fallback_title = (
+                "Tap to add your own title [this Notion page requires login to view]"
+                if was_authwalled else
+                "Tap to add your own title [Notion auto-titling isn't available yet]"
+            )
+            await _finalize_placeholder(placeholder_id, user_id, url, title=fallback_title)
+            return {"thin_content": True, "url": url}
+        title = "Notion"
     else:
         # Run Jina Reader and raw OG fetch concurrently for speed
         (jina_text, jina_title), raw_html = await asyncio.gather(

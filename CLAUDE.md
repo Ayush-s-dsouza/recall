@@ -338,7 +338,7 @@ On the Save tab (and on initial load if not a share-sheet trigger), `checkClipbo
 
 ### 11. Source Label + App Scheme Detection
 
-`getSourceLabel(url)` maps URLs to human-readable names: X (Twitter), LinkedIn, Reddit, YouTube, Substack, or hostname-capitalised fallback.
+`getSourceLabel(url)` maps URLs to human-readable names: X (Twitter), LinkedIn, Reddit, Notion, YouTube, Substack, or hostname-capitalised fallback.
 
 `getAppScheme(url)` maps the same sources to native app deep link schemes used by the "Return to" button:
 - X/Twitter → `twitter://timeline`
@@ -347,6 +347,7 @@ On the Save tab (and on initial load if not a share-sheet trigger), `checkClipbo
 - LinkedIn → `linkedin://feed`
 - YouTube → `youtube://`
 - Substack → `substack://`
+- Notion → Android package `notion.id` (via the same Intent URL mechanism as the other 6 sources, not a `scheme://` — see Known Issue #13)
 - Unknown → `null` (falls back to `window.history.back()`)
 
 ### 12. PWA Install Prompt (banner + bottom-of-page button)
@@ -414,6 +415,15 @@ Newsletters arrive as email, not a URL — every other save path assumes a URL. 
    - Looked up against Supabase auth users via the admin API (`_find_user_id_by_email`) — there's no email→user_id table otherwise. No match → dropped and logged, not saved to the wrong account.
 4. **Canonical URL**: the save's `url` is a Gmail deep link built from the email's `Message-ID` header — `https://mail.google.com/mail/u/0/#search/rfc822msgid:<message-id>` — which opens the exact original email in the inbox. Deliberately **not** a "view in browser" link scraped from the newsletter body: those are unreliable (can be a confusing intermediate page, or ambiguous when an email has several links) — the inbox copy is the one link that's always the real thing. Falls back to a synthetic `newsletter://<timestamp>` only if a message has no `Message-ID` at all (shouldn't happen in practice). `_html_to_text()` uses `beautifulsoup4` (not the stdlib `HTMLParser` used elsewhere — newsletter templates are too messy for it) to get clean text for search/tagging.
 5. Webhook always returns 200 regardless of match/thin-content/duplicate outcome, so CloudMailin doesn't retry-loop a request that simply had nothing to save.
+
+### 17. Notion page fetching
+
+`fetch_notion(url)` (`recall_core.py`) reads genuinely public Notion pages (`notion.so`, `notion.site`, `app.notion.com` share links) via the existing `fetch_with_jina()` — it deliberately never calls `fetch_og_html()`/raw HTTP for Notion URLs: confirmed directly, a plain non-Jina fetch of an `app.notion.com/p/...` URL hits a redirect loop and fails outright on live test pages, so it would only ever waste a request.
+
+1. **`jina_title` is always empty for Notion, not a wrong title** — `fetch_with_jina()` requests `X-Return-Format: text` from Jina, which omits the header lines (`Title:`, `URL Source:`) its own title-parsing logic looks for, so `jina_title` comes back `""` for every Notion fetch (confirmed directly; this is a general property of `fetch_with_jina()`, not Notion-specific). `fetch_notion()` discards it and passes a neutral `raw_title = "Notion"` into the shared `extract_save_metadata_async` tail instead — same pattern as Instagram's `author or "Instagram"` — letting Gemini derive the real title from body content.
+2. **The actual bug**: when a page requires the viewer to be logged into a specific Notion account, Jina's fetched content is Notion's login-wall shell ("You're almost there! Sign in to see this page in \<Owner>'s Notion" + generic auth-provider button labels) — confirmed directly against the original bug report's URL. This text is long enough (400+ chars) to clear `QUALITY_THRESHOLD` and marketing-flavored enough ("What is Notion?" boilerplate) that Gemini confidently synthesized a plausible-but-entirely-wrong title from it ("Notion: AI workspace for teams · Notion") — the original bug. `NOTION_AUTHWALL_SIGNATURES` detects this shell and bails to `thin_content` before Gemini ever sees it, mirroring LinkedIn's `AUTHWALL_SIGNATURES` pattern (Known Issue #25), with a fallback title that honestly tells the user the page requires login rather than saving a confident-looking wrong one. This is a deliberate detect-and-degrade choice — bypassing the login wall itself is impossible without the viewer's own Notion credentials (see "Deferred Decisions").
+3. **Genuinely public pages** do carry real content through Jina — confirmed directly, the real heading and body text came through in the fetched text alongside incidental UI boilerplate (a "who can comment" widget). A separate, narrower `NOTION_NOISE_PHRASES` list strips that boilerplate — kept distinct from `NOTION_AUTHWALL_SIGNATURES` so it can never cause a false-positive reject on an otherwise-real, fully public page.
+4. One curly-quote gotcha confirmed directly: Notion's own copy uses a typographic apostrophe (`’`, U+2019) in "You're almost there," not a straight ASCII one — `fetch_notion()` normalizes both to `'` before signature matching so this doesn't silently fail to match.
 
 ---
 
@@ -745,13 +755,15 @@ A lightning bolt / cursor-shaped path:
     - **MCP consent screen didn't show which app you were actually authorizing** — Dynamic Client Registration lets anyone self-register an OAuth client named `"Claude"` or similar with an attacker-controlled `redirect_uri`; the consent screen (`App.jsx`, `approveMcpConsent`'s render branch) only ever showed the self-reported `client_name`, never verified. Now also displays the actual `redirect_uri` host, the one signal a user has to catch an impersonating app before approving.
     - **Verified directly** (not just reasoned about): crafted SSRF payloads (metadata-IP literal, IPv4-mapped IPv6, a malicious redirect chain) confirmed blocked with zero network calls; legitimate fetches (YouTube oEmbed, plain article fetch) confirmed still working; a crafted zip-bomb confirmed rejected cleanly; newly rate-limited routes (including `/register` on the mounted sub-app) confirmed returning `429` past their threshold.
 
+40. **Notion page fetching relies entirely on Jina Reader; a raw/OG fetch of a Notion URL is dead weight, not a fallback** — confirmed directly against live `app.notion.com` URLs: a plain HTTP GET immediately hits a redirect loop and fails outright (`safe_get`'s `max_redirects` exceeded), so `fetch_og_html()`/raw `<title>`/OG-tag scraping is never called for Notion (see `fetch_notion()`, "Notion page fetching" #17). Separately, `jina_title` is *always empty* for Notion (not a wrong-but-present title) because `fetch_with_jina()` requests Jina's plain-text format, which omits the header line its title-parsing logic looks for — this is a general property of `fetch_with_jina()`, confirmed directly, not something specific to Notion. The actual failure mode is content-level: a login-walled page's fetched text is Notion's own login-wall shell, long and marketing-flavored enough to clear `QUALITY_THRESHOLD` and fool Gemini into synthesizing a confident-but-wrong title from it (the original bug report: a save titled "Notion: AI workspace for teams · Notion"). `NOTION_AUTHWALL_SIGNATURES` (`recall_core.py`) detects this shell and bails to `thin_content`; it's deliberately a *narrower* list than `NOTION_NOISE_PHRASES` (also `recall_core.py`), which strips a "sign up to comment" widget that can legitimately appear on an otherwise-real, fully public page — conflating the two lists would reject good saves. The apostrophe in Notion's "You're almost there" copy is a typographic `’` (U+2019), not a straight `'` — confirmed directly by inspecting the raw fetched bytes; `fetch_notion()` normalizes both before matching. If Notion saves start silently returning `thin_content` for pages you believe are genuinely public, check this signature list first (Notion may have changed its login-wall copy) before assuming the pipeline regressed.
+
 ---
 
 ## Current Status
 
 ### Working
 - Google OAuth sign-in / sign-out
-- Saving URLs: web pages, X/Twitter tweets, Instagram posts, LinkedIn articles
+- Saving URLs: web pages, X/Twitter tweets, Instagram posts, LinkedIn articles, Notion pages
 - AI-generated title with author attribution (`"Title · Author"`)
 - Inline title editing from the save receipt card
 - **User-defined folders** — opt-in curation; saves can belong to 0 or many folders. "+ Folder" button on receipt card, Today's list cards, and search result cards opens a bottom-sheet picker. Folder management (rename/delete) in Settings → Folders accordion. Tag auto-generation still runs silently (stored in DB, not shown in UI).
@@ -794,6 +806,7 @@ A lightning bolt / cursor-shaped path:
 - **X API integration** — bookmark import via OAuth 2.0 PKCE (primary, restored June 2026 once X moved to pay-per-use pricing), with bookmarklet + file-upload as fallbacks; single-tweet save now reads `GET /2/tweets/:id` via an app-only Bearer token instead of the legacy oEmbed scrape, with Jina/OG/syndication-API enrichment unchanged
 - **Reddit support** — `fetch_reddit()` reads posts + top comments via Reddit's official OAuth API (`oauth.reddit.com`, app-only `client_credentials`), replacing a broken generic-scrape path that was saving the site's bot-detection block page as the title
 - **Newsletter saving via email forwarding** — Settings → "Save newsletters by email" shows a shared CloudMailin inbound address; forwarding a newsletter there saves it, and a Gmail filter auto-forwards every future issue from a sender automatically. Sender resolved to a ReCall account via `X-Forwarded-For`-then-`From` header matching; HTML parsed with `beautifulsoup4`
+- **Notion support** — `fetch_notion()` reads genuinely public Notion pages via Jina Reader; a login-wall signature check (`NOTION_AUTHWALL_SIGNATURES`) honestly detects pages requiring Notion login and degrades to a friendly placeholder rather than saving a confidently-wrong AI-generated title
 
 ### Not Yet Built
 - Offline support / service worker caching
@@ -826,3 +839,9 @@ Things we've discussed and consciously set aside for later — bring these up wh
 - **Keep Gemini for:** `gemini-embedding-001` — no comparable free alternative for 768-dim embeddings
 - **Integration:** Groq has an OpenAI-compatible API; swap is a 10-line change in main.py
 - **SDK:** `pip install groq`; endpoint is `https://api.groq.com/openai/v1`
+
+### Notion OAuth / personal workspace connection
+
+**When to raise this:** If a user wants ReCall to save their own private/workspace-restricted Notion pages — the ones `NOTION_AUTHWALL_SIGNATURES` correctly and honestly declines to save today, by design.
+
+**Context (discussed July 2026):** First-class Notion support (see "Notion page fetching" #17) only handles genuinely public Notion pages; anything requiring the viewer to be logged into a specific Notion account is detected via the login-wall signature check and gracefully degraded to a `thin_content` placeholder rather than bypassed (impossible without the user's own credentials anyway). Reading private/workspace-restricted pages would require the user to connect their own Notion workspace via OAuth (Notion's public integrations API supports this), so ReCall could fetch content with the user's own authorization instead of an anonymous fetch — and even then, only pages explicitly shared with that integration, not arbitrary pages elsewhere in their workspace. Deferred out of this round's scope — revisit if users ask to save their own private docs.

@@ -171,6 +171,7 @@ function getAppScheme(url) {
       url.includes("linkedin.com") ? "com.linkedin.android" :
       url.includes("youtube.com") || url.includes("youtu.be") ? "com.google.android.youtube" :
       url.includes("substack.com") ? "com.substack.app" :
+      url.includes("notion.so") || url.includes("notion.site") || url.includes("app.notion.com") ? "notion.id" :
       null
     if (!pkg) return null
     return `intent://${host}${pathname}${search}#Intent;scheme=https;package=${pkg};end`
@@ -237,6 +238,7 @@ function getSourceLabel(url) {
   if (url.includes("twitter.com") || url.includes("x.com")) return "X (Twitter)"
   if (url.includes("linkedin.com")) return "LinkedIn"
   if (url.includes("reddit.com")) return "Reddit"
+  if (url.includes("notion.so") || url.includes("notion.site") || url.includes("app.notion.com")) return "Notion"
   if (url.includes("youtube.com") || url.includes("youtu.be")) return "YouTube"
   if (url.includes("substack.com")) return "Substack"
   try {
