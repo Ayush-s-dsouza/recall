@@ -276,6 +276,15 @@ function SearchIcon({ size = 16 }) {
   )
 }
 
+function ClearIcon({ size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  )
+}
+
 function LinkIcon({ size = 20 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2899,11 +2908,20 @@ export default function App() {
               }, 150)}
             />
             <button
-              onClick={() => askMode ? handleAsk() : handleSearch()}
+              onClick={() => {
+                if (!askMode && query.trim() !== "") {
+                  setQuery("")
+                  setHasSearched(false)
+                  setResults([])
+                  searchInputRef.current?.focus()
+                } else {
+                  askMode ? handleAsk() : handleSearch()
+                }
+              }}
               style={styles.searchBarButton}
               disabled={loading || askLoading}
-              aria-label={askMode ? "Ask" : "Search"}
-            >{askMode ? "✦" : <SearchIcon />}</button>
+              aria-label={askMode ? "Ask" : (query.trim() !== "" ? "Clear" : "Search")}
+            >{askMode ? "✦" : (query.trim() !== "" ? <ClearIcon /> : <SearchIcon />)}</button>
           </div>
           {/* Ask / Search mode toggle */}
           <div style={styles.modeToggle}>
