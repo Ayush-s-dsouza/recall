@@ -505,6 +505,28 @@ def _extract_youtube_info(url: str) -> dict:
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
 
+async def _extract_youtube_info_with_retry(url: str, attempts: int = 2) -> dict | None:
+    """One retry around _extract_youtube_info — this single call is the whole video-save
+    pipeline's point of failure, and a transient hiccup (network blip, cold-start after a
+    fresh deploy) shouldn't silently degrade a real, fetchable video into a blank
+    placeholder. Confirmed directly: a real save failed on its first attempt then succeeded
+    on every subsequent call with no code change, consistent with a one-off transient
+    failure rather than a real bug. See CLAUDE.md's video-support round."""
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            return await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(_executor, _extract_youtube_info, url),
+                timeout=20.0
+            )
+        except Exception as e:
+            last_error = e
+            if attempt < attempts - 1:
+                print(f"[youtube] yt-dlp extract_info attempt {attempt + 1} failed, retrying: {e}", flush=True)
+                await asyncio.sleep(1.5)
+    print(f"[youtube] yt-dlp extract_info failed after {attempts} attempts: {last_error}", flush=True)
+    return None
+
 def _parse_youtube_caption_track(caption_json: dict) -> str:
     """Flatten a YouTube timedtext json3 caption payload into plain text."""
     events = caption_json.get("events", []) or []
@@ -555,13 +577,8 @@ async def fetch_youtube(url: str):
     when no caption track exists at all. Never raises — any failure degrades to empty
     strings so process_save can decide whether to bail to thin_content.
     Returns (title, author, transcript, thumbnail_url, description)."""
-    try:
-        info = await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(_executor, _extract_youtube_info, url),
-            timeout=20.0
-        )
-    except Exception as e:
-        print(f"[youtube] yt-dlp extract_info failed: {e}", flush=True)
+    info = await _extract_youtube_info_with_retry(url)
+    if info is None:
         return "", "", "", "", ""
 
     title = info.get("title") or ""
