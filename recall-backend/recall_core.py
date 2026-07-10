@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import jwt
+import yt_dlp
 from jwt import PyJWKClient
 from fastapi import HTTPException
 from dotenv import load_dotenv
@@ -142,6 +143,8 @@ MEDIA_URLS = [
     ("instagram.com/p/",     "image", "Instagram posts"),
 ]
 QUALITY_THRESHOLD = 100  # chars — below this, content is too thin to be useful
+MAX_VIDEO_TRANSCRIPT_CHARS = 10000  # transcripts run much longer than article text; empirically
+                                     # generous like every other search-tuning constant in this file
 TWEET_URL_RE = re.compile(r'(?:twitter\.com|x\.com)/\w{1,15}/status/(\d{1,20})')
 
 def _get_user_id_local(token: str) -> str:
@@ -495,21 +498,97 @@ async def fetch_instagram(url: str):
         print(f"[instagram] embed fetch failed: {e}", flush=True)
         return "", "", ""
 
-async def fetch_youtube(url: str):
-    """Use YouTube's oEmbed API to get video title and channel name without auth."""
+def _extract_youtube_info(url: str) -> dict:
+    """Blocking yt-dlp metadata call — run in a thread. skip_download=True means this never
+    invokes ffmpeg or writes any file; it only hits YouTube's metadata endpoints."""
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        return ydl.extract_info(url, download=False)
+
+def _parse_youtube_caption_track(caption_json: dict) -> str:
+    """Flatten a YouTube timedtext json3 caption payload into plain text."""
+    events = caption_json.get("events", []) or []
+    chunks = []
+    for event in events:
+        for seg in event.get("segs", []) or []:
+            text = seg.get("utf8", "")
+            if text:
+                chunks.append(text)
+    return " ".join("".join(chunks).replace("\n", " ").split())
+
+async def _transcribe_youtube_via_gemini(url: str) -> str:
+    """Fallback for a video with no caption track in any language — Gemini's native
+    YouTube-URL ingestion watches/listens to the video directly with no download required.
+    Verified directly against a real public video (see CLAUDE.md's video-support round).
+    Used sparingly: only when captions are missing, since it's slower/costlier than parsing
+    a caption file."""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            res = await safe_get(
-                client,
-                "https://www.youtube.com/oembed",
-                params={"url": url, "format": "json"},
-            )
-            data = res.json()
-            title = data.get("title", "")
-            author = data.get("author_name", "")
-            return title, author
-    except:
-        return "", ""
+        loop = asyncio.get_running_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                _executor,
+                lambda: gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[
+                        types.Content(role="user", parts=[
+                            types.Part(file_data=types.FileData(file_uri=url)),
+                            types.Part.from_text(
+                                "Transcribe what is said in this video and describe what is "
+                                "shown, including any on-screen text. Be concise but capture "
+                                "the substance of the content."
+                            )
+                        ])
+                    ],
+                    config=_NO_THINKING
+                )
+            ),
+            timeout=45.0
+        )
+        return response.text.strip()
+    except Exception as e:
+        print(f"[youtube] Gemini video-URL fallback failed: {e}", flush=True)
+        return ""
+
+async def fetch_youtube(url: str):
+    """Real YouTube content extraction (see CLAUDE.md's video-support round): yt-dlp for
+    metadata + captions, falling back to Gemini's native YouTube-URL video understanding
+    when no caption track exists at all. Never raises — any failure degrades to empty
+    strings so process_save can decide whether to bail to thin_content.
+    Returns (title, author, transcript, thumbnail_url, description)."""
+    try:
+        info = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(_executor, _extract_youtube_info, url),
+            timeout=20.0
+        )
+    except Exception as e:
+        print(f"[youtube] yt-dlp extract_info failed: {e}", flush=True)
+        return "", "", "", "", ""
+
+    title = info.get("title") or ""
+    author = info.get("uploader") or info.get("channel") or ""
+    thumbnail_url = info.get("thumbnail") or ""
+    description = (info.get("description") or "")[:1000]
+
+    transcript = ""
+    subs = info.get("subtitles") or {}
+    auto_subs = info.get("automatic_captions") or {}
+    # Prefer a manual (creator-provided) transcript over an auto-generated one; prefer
+    # English but fall back to whatever language is available rather than getting nothing.
+    track_list = (subs.get("en") or auto_subs.get("en")
+                  or next(iter(subs.values()), None) or next(iter(auto_subs.values()), None) or [])
+    track = next((t for t in track_list if t.get("ext") == "json3"), None)
+    if track:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                res = await safe_get(client, track["url"])
+                transcript = _parse_youtube_caption_track(res.json())[:MAX_VIDEO_TRANSCRIPT_CHARS]
+        except Exception as e:
+            print(f"[youtube] caption fetch/parse failed: {e}", flush=True)
+
+    if not transcript:
+        transcript = await _transcribe_youtube_via_gemini(url)
+
+    return title, author, transcript, thumbnail_url, description
 
 _reddit_token_cache = {"token": None, "expires_at": 0}
 
@@ -1100,54 +1179,58 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             return {"duplicate": True, "id": row["id"], "title": row["title"],
                     "tag": row["tag"], "created_at": row["created_at"]}
 
-    # --- Media URL detection: lightweight save, skip full Gemini pipeline ---
+    # --- Media URL classification (content_type only) ---
+    media_ctype, media_label = None, None
     for pattern, ctype, label in MEDIA_URLS:
         if pattern in url:
-            if "youtube.com" in url or "youtu.be" in url:
-                yt_title, yt_author = await fetch_youtube(url)
-                if yt_title:
-                    raw_title = f"{yt_title} · {yt_author}" if yt_author else yt_title
-                else:
-                    raw_title = url
+            media_ctype, media_label = ctype, label
+            break
+
+    # TikTok stays on the old thin oEmbed-less short-circuit: both a plain scrape and
+    # yt-dlp were confirmed via direct testing to fail outright from cloud/datacenter IPs
+    # without user-supplied login cookies — the same class of infra Railway hosts on — so
+    # this round's real content-extraction pipeline (YouTube/Instagram below) isn't applied
+    # here. Revisit only once TikTok fetches are confirmed working live on Railway.
+    if "tiktok.com" in url:
+        try:
+            async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
+                r = await safe_get(client, url)
+                og = extract_og_tags(r.text[:5000])
+                raw_title = og.get("og:title") or url
+        except:
+            raw_title = url
+        embedding = await get_embedding(raw_title)
+        _, tag = await extract_save_metadata_async(raw_title, "", "")
+        payload = {
+            "user_id": user_id, "url": url, "title": raw_title,
+            "content_text": "", "embedding": embedding, "tag": tag,
+            "content_type": media_ctype, "status": "ready"
+        }
+        try:
+            if placeholder_id:
+                await _exec(supabase.table("saves").update(payload).eq("id", placeholder_id))
+                inserted_id = placeholder_id
             else:
                 try:
-                    async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0 (compatible; ReCall/1.0)"}) as client:
-                        r = await safe_get(client, url)
-                        og = extract_og_tags(r.text[:5000])
-                        raw_title = og.get("og:title") or url
-                except:
-                    raw_title = url
-            embedding = await get_embedding(raw_title)
-            _, tag = await extract_save_metadata_async(raw_title, "", "")
-            payload = {
-                "user_id": user_id, "url": url, "title": raw_title,
-                "content_text": "", "embedding": embedding, "tag": tag,
-                "content_type": ctype, "status": "ready"
-            }
-            try:
-                if placeholder_id:
-                    await _exec(supabase.table("saves").update(payload).eq("id", placeholder_id))
-                    inserted_id = placeholder_id
-                else:
-                    try:
-                        result = await _exec(supabase.table("saves").insert(payload))
-                    except APIError as e:
-                        # A concurrent save of this URL won the race against the duplicate
-                        # check above (recall_core.py, this function's `if not placeholder_id`
-                        # block) — the saves_user_id_url_key constraint (sql/012) turns that
-                        # into a clean 23505 instead of a silent duplicate row.
-                        if e.code != "23505":
-                            raise
-                        return await _duplicate_response(user_id, url)
-                    inserted_id = result.data[0]["id"]
-            except Exception as e:
-                print(f"[media save] DB insert failed: {e}", flush=True)
-                return {"error": True, "url": url, "detail": "DB insert failed"}
-            if placeholder_id:
-                await send_save_ready_push(user_id, raw_title, get_source_label(url))
-            return {"success": True, "media": True, "content_type": ctype,
-                    "label": label, "title": raw_title, "tag": tag, "id": inserted_id}
+                    result = await _exec(supabase.table("saves").insert(payload))
+                except APIError as e:
+                    # A concurrent save of this URL won the race against the duplicate
+                    # check above (recall_core.py, this function's `if not placeholder_id`
+                    # block) — the saves_user_id_url_key constraint (sql/012) turns that
+                    # into a clean 23505 instead of a silent duplicate row.
+                    if e.code != "23505":
+                        raise
+                    return await _duplicate_response(user_id, url)
+                inserted_id = result.data[0]["id"]
+        except Exception as e:
+            print(f"[media save] DB insert failed: {e}", flush=True)
+            return {"error": True, "url": url, "detail": "DB insert failed"}
+        if placeholder_id:
+            await send_save_ready_push(user_id, raw_title, get_source_label(url))
+        return {"success": True, "media": True, "content_type": media_ctype,
+                "label": media_label, "title": raw_title, "tag": tag, "id": inserted_id}
 
+    is_youtube = "youtube.com" in url or "youtu.be" in url
     is_tweet = "x.com" in url or "twitter.com" in url
     is_instagram = "instagram.com" in url
     is_linkedin = "linkedin.com" in url
@@ -1155,8 +1238,22 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
     is_notion = "notion.so" in url or "notion.site" in url or "app.notion.com" in url
 
     extra_context = ""
+    content_type = "article"
+    thumbnail_url = None
 
-    if is_tweet:
+    if is_youtube:
+        yt_title, yt_author, transcript, yt_thumbnail, description = await fetch_youtube(url)
+        if not yt_title and not transcript:
+            # yt-dlp couldn't get anything at all — video is private/deleted/region-blocked
+            # with no recoverable content, same treatment as an unfetchable tweet.
+            await _finalize_placeholder(placeholder_id, user_id, url)
+            return {"thin_content": True, "url": url}
+        title = f"{yt_title} · {yt_author}" if yt_title and yt_author else (yt_title or url)
+        clean_text = transcript
+        extra_context = description
+        content_type = media_ctype or "video"
+        thumbnail_url = yt_thumbnail or None
+    elif is_tweet:
         clean_text, tweet_author, jina_title, expanded_url = await fetch_tweet(url)
         print(f"[tweet] author={repr(tweet_author)} jina_title={repr(jina_title)} expanded_url={repr(expanded_url)} clean_text_len={len(clean_text)} clean_text_preview={repr(clean_text[:150])}", flush=True)
         article_title = ""
@@ -1219,15 +1316,17 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             extra_context = f"Author: {tweet_author}"
         print(f"[tweet] final title passed to extract_save_metadata: {repr(title)}", flush=True)
     elif is_instagram:
-        caption, author, thumbnail_url = await fetch_instagram(url)
+        # Real caption text (see CLAUDE.md's video-support round) — previously this branch
+        # was unreachable for /reel/ and /p/ URLs, which got intercepted by the media loop
+        # above and saved with content_text="". Full video/audio transcription isn't
+        # attempted: confirmed directly that yt-dlp's Instagram video-download path requires
+        # user-supplied login cookies, and the embed page's thumbnail is CDN-hotlink-blocked
+        # (403 even with a Referer header) — so there's no thumbnail to run vision analysis
+        # on either. Caption text is the real, achievable content for now.
+        caption, author, _ig_thumb = await fetch_instagram(url)
         clean_text = caption
         title = author or "Instagram"
-        # If caption is sparse, analyze the thumbnail image
-        if thumbnail_url and len(clean_text) < 400:
-            image_description = await analyze_image(thumbnail_url)
-            if image_description:
-                extra_context = f"Image: {image_description}"
-                clean_text = (clean_text + "\n\n" + extra_context).strip()
+        content_type = media_ctype or "article"
     elif is_linkedin:
         # Jina Reader was tried here for "See more" expansion, but LinkedIn's anonymous-access
         # authwall blocks it almost every time in practice (either an explicit authwall page or
@@ -1387,7 +1486,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
         "user_id": user_id, "url": url, "title": title,
         "content_text": clean_text, "embedding": embedding, "tag": tag,
         "topics": topics, "topic_embedding": topic_embedding,
-        "content_type": "article", "status": "ready"
+        "content_type": content_type, "status": "ready", "thumbnail_url": thumbnail_url
     }
     try:
         if placeholder_id:
@@ -1673,12 +1772,13 @@ async def do_search(query: str, user_id: str) -> dict:
         "topic_query_embedding": query_embedding
     }))
 
-    # Full-text search over content + title — exclude media saves
+    # Full-text search over content + title — video/image saves now carry real content
+    # (YouTube transcripts, Instagram captions, see CLAUDE.md's video-support round) so
+    # they're no longer excluded here.
     try:
         fts_result = await _exec(supabase.table("saves")
-            .select("id, url, title, tag, created_at, content_text")
+            .select("id, url, title, tag, content_type, thumbnail_url, created_at, content_text")
             .eq("user_id", user_id)
-            .eq("content_type", "article")
             .eq("status", "ready")
             .filter("content_text", "fts", query)
             .order("created_at", desc=True)
@@ -1702,15 +1802,16 @@ async def do_search(query: str, user_id: str) -> dict:
     scores = {}
     metadata = {}
 
-    # Post-filter semantic results to exclude media saves and still-pending placeholders.
-    # Defense in depth only — 010_match_saves_threshold.sql now also enforces
-    # content_type = 'article' AND status = 'ready' directly in the RPC's WHERE clause.
-    # Also enforces the topic_similarity floor (SEARCH_TOPIC_MIN_SIMILARITY) here in Python
-    # rather than in match_saves' SQL — this constant is still being empirically tuned
-    # (Known Issue #36) and a Python-side filter is faster to retune than another migration.
+    # Post-filter semantic results to exclude still-pending placeholders. Defense in depth
+    # only — sql/015_video_search.sql now also enforces status = 'ready' directly in the
+    # RPC's WHERE clause. Video/image saves are no longer excluded here (see CLAUDE.md's
+    # video-support round) — content_type is now purely a display classifier, not a
+    # searchability gate. Also enforces the topic_similarity floor
+    # (SEARCH_TOPIC_MIN_SIMILARITY) here in Python rather than in match_saves' SQL — this
+    # constant is still being empirically tuned (Known Issue #36) and a Python-side filter
+    # is faster to retune than another migration.
     semantic_rows = [r for r in semantic_result.data
-                      if r.get("content_type", "article") == "article"
-                      and r.get("status", "ready") == "ready"
+                      if r.get("status", "ready") == "ready"
                       and (r.get("topic_similarity", 0.0) == 0.0
                            or r.get("topic_similarity", 0.0) >= SEARCH_TOPIC_MIN_SIMILARITY)]
 

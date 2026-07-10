@@ -443,10 +443,11 @@ async def ask_recall(req: AskRequest, request: Request):
     # match_saves now enforces ASK_MIN_RELEVANCE itself (see
     # recall-backend/sql/010_match_saves_threshold.sql), so every row it returns already
     # clears the relevance bar — this is redundant defense in depth, not the primary filter.
+    # Video/image saves are no longer excluded here (see CLAUDE.md's video-support round) —
+    # a YouTube transcript or Instagram caption is real, citable content like any article.
     article_saves = [
         r for r in (semantic_result.data or [])
-        if r.get("content_type", "article") == "article"
-        and r.get("content_text")
+        if r.get("content_text")
         and r.get("similarity", 1.0) >= ASK_MIN_RELEVANCE
     ]
 
@@ -510,10 +511,13 @@ async def get_library(req: LibraryRequest, request: Request):
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+    # Video/image saves now carry real content (YouTube transcripts, Instagram captions —
+    # see CLAUDE.md's video-support round) so they join tag-cluster summaries too, rather
+    # than being excluded from Library entirely.
     result = await _exec(supabase.table("saves")
         .select("id, title, tag, content_text, created_at")
         .eq("user_id", user_id)
-        .eq("content_type", "article")
+        .eq("status", "ready")
         .order("created_at", desc=True))
 
     if not result.data:

@@ -222,6 +222,30 @@ function getSiteName(url) {
   }
 }
 
+function renderSourceTile(save) {
+  // Video/image saves now carry real content (YouTube transcripts, Instagram captions —
+  // see CLAUDE.md's video-support round) and can surface anywhere an article could, so the
+  // meta-row tile distinguishes them: a real thumbnail + play badge for YouTube (the only
+  // source with a fetchable, non-hotlink-blocked thumbnail), a generic play glyph for other
+  // video (Instagram Reels — no thumbnail available, see Known Issue), a generic image glyph
+  // for Instagram posts, and the plain gradient tile for everything else (unchanged).
+  if (save?.content_type === "video" && save?.thumbnail_url) {
+    return (
+      <span style={styles.savedArticleThumbWrap}>
+        <img src={save.thumbnail_url} alt="" style={styles.savedArticleThumbImg} />
+        <span style={styles.savedArticlePlayBadge}>▶</span>
+      </span>
+    )
+  }
+  if (save?.content_type === "video") {
+    return <span style={styles.savedArticleSourceTile}><span style={styles.savedArticleTileGlyph}>▶</span></span>
+  }
+  if (save?.content_type === "image") {
+    return <span style={styles.savedArticleSourceTile}><span style={styles.savedArticleTileGlyph}>◱</span></span>
+  }
+  return <span style={styles.savedArticleSourceTile} />
+}
+
 function getSaveCaption(save) {
   const content = (save?.excerpt || save?.content_text || "").replace(/\s+/g, " ").trim()
   if (content) {
@@ -766,7 +790,7 @@ export default function App() {
     today.setHours(0, 0, 0, 0)
     const { data } = await supabase
       .from("saves")
-      .select("id, url, title, tag, content_type, status, created_at, content_text")
+      .select("id, url, title, tag, content_type, thumbnail_url, status, created_at, content_text")
       .gte("created_at", today.toISOString())
       .order("created_at", { ascending: false })
       .limit(20)
@@ -1844,7 +1868,7 @@ export default function App() {
     setCalendarLoading(true)
     const { data } = await supabase
       .from("saves")
-      .select("id, url, title, tag, created_at, content_text")
+      .select("id, url, title, tag, content_type, thumbnail_url, created_at, content_text")
       .eq("status", "ready")
       .order("created_at", { ascending: false })
     if (data) {
@@ -1914,7 +1938,7 @@ export default function App() {
         <div key={save.id} style={styles.savedArticleCard}>
           <div style={styles.savedArticleTop}>
             <div style={styles.savedArticleMeta}>
-              <span style={styles.savedArticleSourceTile} />
+              {renderSourceTile(save)}
               <span>{getSiteName(save.url)}</span>
               <span>saved {formatRelativeTime(save.created_at)}</span>
             </div>
@@ -1957,7 +1981,7 @@ export default function App() {
           <>
             <div style={styles.savedArticleTop}>
               <div style={styles.savedArticleMeta}>
-                <span style={styles.savedArticleSourceTile} />
+                {renderSourceTile(save)}
                 <span>{getSiteName(save.url)}</span>
                 <span>saving now</span>
               </div>
@@ -1979,7 +2003,7 @@ export default function App() {
           <>
             <div style={styles.savedArticleTop}>
               <div style={styles.savedArticleMeta}>
-                <span style={styles.savedArticleSourceTile} />
+                {renderSourceTile(save)}
                 <span>{getSiteName(save.url)}</span>
                 <span>saved {formatRelativeTime(save.created_at)}</span>
               </div>
@@ -3217,7 +3241,7 @@ export default function App() {
                         <>
                           <div style={styles.savedArticleTop}>
                             <div style={styles.savedArticleMeta}>
-                              <span style={styles.savedArticleSourceTile} />
+                              {renderSourceTile(r)}
                               <span>{getSiteName(r.url)}</span>
                               {r.created_at && <span>{formatDate(r.created_at)}</span>}
                             </div>
@@ -3786,7 +3810,11 @@ const styles = {
   savedArticleCard: { display: "flex", flexDirection: "column", gap: "20px", background: "#202024", border: "1px solid rgba(255,255,255,0.10)", borderRadius: "24px", padding: "22px", textDecoration: "none", color: "#f6f3ea", overflow: "hidden", boxShadow: "0 30px 90px -56px rgba(0,0,0,0.95)", boxSizing: "border-box" },
   savedArticleTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "14px" },
   savedArticleMeta: { display: "inline-flex", alignItems: "center", gap: "10px", minWidth: 0, color: "#7d786f", fontSize: "13px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", letterSpacing: "0.04em" },
-  savedArticleSourceTile: { width: "20px", height: "20px", borderRadius: "6px", background: "linear-gradient(135deg, #a06eff 0%, rgba(217,255,95,0.72) 100%)", flexShrink: 0, boxShadow: "0 0 20px -10px rgba(217,255,95,0.9)" },
+  savedArticleSourceTile: { width: "20px", height: "20px", borderRadius: "6px", background: "linear-gradient(135deg, #a06eff 0%, rgba(217,255,95,0.72) 100%)", flexShrink: 0, boxShadow: "0 0 20px -10px rgba(217,255,95,0.9)", display: "flex", alignItems: "center", justifyContent: "center" },
+  savedArticleTileGlyph: { fontSize: "9px", color: "rgba(0,0,0,0.55)", lineHeight: 1 },
+  savedArticleThumbWrap: { position: "relative", width: "20px", height: "20px", borderRadius: "6px", overflow: "hidden", flexShrink: 0 },
+  savedArticleThumbImg: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
+  savedArticlePlayBadge: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "8px", color: "#fff", textShadow: "0 0 3px rgba(0,0,0,0.9)" },
   savedArticleControls: { display: "inline-flex", alignItems: "center", gap: "8px", flexShrink: 0 },
   savedArticleBody: { display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", textAlign: "center" },
   savedArticleTitle: { color: "#f6f3ea", fontFamily: "Georgia, 'Times New Roman', serif", fontSize: "24px", lineHeight: 1.15, letterSpacing: "-0.02em", fontWeight: 400, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },

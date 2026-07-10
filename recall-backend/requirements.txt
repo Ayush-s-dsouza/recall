@@ -12,3 +12,4 @@ mcp
 cachetools
 pywebpush
 beautifulsoup4
+yt-dlp
