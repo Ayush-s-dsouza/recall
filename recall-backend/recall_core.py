@@ -1257,6 +1257,16 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
     extra_context = ""
     content_type = "article"
     thumbnail_url = None
+    # Set by the YouTube/Twitter/Reddit branches below — deterministically appended to
+    # `topics` after extraction (see CLAUDE.md's search-identity fix). Folding identity into
+    # content_text alone wasn't enough: measured directly, a single mention diluted across a
+    # 10,000-char transcript barely moves the content embedding, and Gemini's topic-extraction
+    # prompt (scoped to "what this is really about") doesn't reliably include a channel/
+    # subreddit/author name on its own. Appending it to the short, concentrated `topics`
+    # phrase gives it much stronger, undiluted representation in topic_embedding — confirmed
+    # directly: this took a real save's topic_similarity for a "lenny" query from 0.544
+    # (below the 0.58 floor, filtered out) to 0.644 (clears it).
+    identity_hint = None
 
     if is_youtube:
         yt_title, yt_author, transcript, yt_thumbnail, description = await fetch_youtube(url)
@@ -1266,10 +1276,20 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             await _finalize_placeholder(placeholder_id, user_id, url)
             return {"thin_content": True, "url": url}
         title = f"{yt_title} · {yt_author}" if yt_title and yt_author else (yt_title or url)
-        clean_text = transcript
+        # Fold the channel/uploader name into content_text itself, not just extra_context --
+        # extract_save_metadata's title prompt is explicitly instructed to describe "what
+        # this specific content is about — not the platform name", and extract_topics is
+        # similarly scoped to "what this is really about" — both can legitimately drop
+        # channel/show attribution even though a search for the channel's name should still
+        # find it. FTS only scans content_text, so this is the one place a signal is
+        # guaranteed to be searchable regardless of what Gemini decides to keep. Confirmed
+        # directly: a saved Lenny's Podcast episode had zero "lenny" signal in title/topics
+        # and only one incidental transcript mention — see CLAUDE.md's search-identity fix.
+        clean_text = f"{yt_author}\n\n{transcript}".strip() if yt_author else transcript
         extra_context = description
         content_type = media_ctype or "video"
         thumbnail_url = yt_thumbnail or None
+        identity_hint = yt_author or None
     elif is_tweet:
         clean_text, tweet_author, jina_title, expanded_url = await fetch_tweet(url)
         print(f"[tweet] author={repr(tweet_author)} jina_title={repr(jina_title)} expanded_url={repr(expanded_url)} clean_text_len={len(clean_text)} clean_text_preview={repr(clean_text[:150])}", flush=True)
@@ -1331,6 +1351,12 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             return {"thin_content": True, "url": url}
         if tweet_author:
             extra_context = f"Author: {tweet_author}"
+            # Same deterministic fold-in as YouTube's channel name (see CLAUDE.md's
+            # search-identity fix) — a search for the tweet author's name should reliably
+            # find their tweets, not depend on Gemini choosing to preserve "Author: X" from
+            # extra_context into the title/topics it synthesizes.
+            clean_text = f"{tweet_author}\n\n{clean_text}".strip()
+            identity_hint = tweet_author
         print(f"[tweet] final title passed to extract_save_metadata: {repr(title)}", flush=True)
     elif is_instagram:
         # Real caption text (see CLAUDE.md's video-support round) — previously this branch
@@ -1409,6 +1435,13 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             return {"thin_content": True, "url": url}
         clean_text = body_text
         extra_context = f"Subreddit: {subreddit}" if subreddit else ""
+        # Same deterministic fold-in as YouTube/Twitter (see CLAUDE.md's search-identity
+        # fix) — a search for "r/subredditname" or the bare subreddit name should reliably
+        # find posts from it, not depend on Gemini preserving "Subreddit: X" from
+        # extra_context into the title/topics it synthesizes.
+        if subreddit:
+            clean_text = f"r/{subreddit}\n\n{clean_text}".strip()
+            identity_hint = f"r/{subreddit}"
         # Image/link posts often have little or no selftext — fall back to vision analysis,
         # same pattern as Instagram's sparse-caption fallback
         if image_url and len(clean_text) < 200:
@@ -1496,6 +1529,11 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
 
     title, tag = await extract_save_metadata_async(title, clean_text, extra_context)
     topics = await extract_topics_async(title, clean_text, extra_context)
+    # Deterministically ensure the source identity (YouTube channel, subreddit, tweet
+    # author) ends up in the short, concentrated topics phrase — see identity_hint's
+    # definition above for why this is needed in addition to the content_text fold-in.
+    if identity_hint and identity_hint.lower() not in topics.lower():
+        topics = f"{topics}, {identity_hint}" if topics else identity_hint
     embedding = await get_embedding(f"{title} {clean_text}")
     topic_embedding = await get_embedding(topics, task_type="RETRIEVAL_DOCUMENT") if topics else None
 
@@ -1786,12 +1824,20 @@ async def do_search(query: str, user_id: str) -> dict:
         "match_user_id": user_id,
         "match_count": 20,
         "match_threshold": SEARCH_MIN_SEMANTIC_SIMILARITY,
-        "topic_query_embedding": query_embedding
+        "topic_query_embedding": query_embedding,
+        # Recall a row via topic_similarity too, not just content similarity — see
+        # sql/016_topic_recall.sql. Reuses SEARCH_TOPIC_MIN_SIMILARITY, the same floor
+        # already applied post-hoc for ranking, so there's one tunable constant, not two.
+        "topic_match_threshold": SEARCH_TOPIC_MIN_SIMILARITY
     }))
 
-    # Full-text search over content + title — video/image saves now carry real content
-    # (YouTube transcripts, Instagram captions, see CLAUDE.md's video-support round) so
-    # they're no longer excluded here.
+    # Full-text search over content_text ONLY — title is fetched for display but is not
+    # part of this filter (a prior version of this comment claimed "content + title", which
+    # was never actually true). Video/image saves now carry real content (YouTube
+    # transcripts, Instagram captions, see CLAUDE.md's video-support round) so they're no
+    # longer excluded here. Source-identity signals (YouTube channel, subreddit, tweet
+    # author) are folded directly into content_text at save time specifically because this
+    # filter never looks at title — see CLAUDE.md's search-identity fix.
     try:
         fts_result = await _exec(supabase.table("saves")
             .select("id, url, title, tag, content_type, thumbnail_url, created_at, content_text")
