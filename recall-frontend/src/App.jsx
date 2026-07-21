@@ -404,6 +404,9 @@ export default function App() {
   const [mcpConsentError, setMcpConsentError] = useState("")
   const [mcpConnections, setMcpConnections] = useState(null)
   const [mcpDisconnectingId, setMcpDisconnectingId] = useState(null)
+  const [composioConnections, setComposioConnections] = useState(null)
+  const [composioConnectingToolkit, setComposioConnectingToolkit] = useState(null)
+  const [composioDisconnectingToolkit, setComposioDisconnectingToolkit] = useState(null)
   const [legalSection, setLegalSection] = useState(() =>
     window.location.pathname === '/terms' ? 'terms' : 'privacy'
   )
@@ -614,6 +617,14 @@ export default function App() {
       fetchMcpConnections()
     }
   }, [view, user, mcpConnections])
+
+  useEffect(() => {
+    // Unlike mcpConnections (fetched when the separate "recall"/MCP-connector tab is opened),
+    // this section lives in the gear-icon Settings overlay, so it fetches when that opens.
+    if (showSettings && user && composioConnections === null) {
+      fetchComposioConnections()
+    }
+  }, [showSettings, user, composioConnections])
 
   useEffect(() => {
     if (view !== "search" || hasSearched || (showCalendar && selectedCalendarDay)) return
@@ -859,6 +870,17 @@ export default function App() {
       }
     }
 
+    // Composio Connect Link callback (currently: Notion only) — the OAuth dance itself is
+    // hosted entirely by Composio, so unlike the X flow below there's no code/state to
+    // validate here; this param is purely "the user finished the flow, go check if it's
+    // active now." Stash for the same post-auth-resolution consumption pattern as
+    // x_import_pending, since auth may not have resolved yet at this point in the mount effect.
+    const composioConnected = params.get('composio_connected')
+    if (composioConnected) {
+      window.history.replaceState({}, '', '/')
+      sessionStorage.setItem('composio_connect_pending', composioConnected)
+    }
+
     // X OAuth callback — must run before share-sheet extraction to avoid misreading ?code= as a URL.
     // Skipped on /mcp/consent: that path uses its own code/state params (see mcpConsentParams)
     // which would otherwise be misread as a stale/invalid X callback here.
@@ -1032,6 +1054,35 @@ export default function App() {
               setMessage('X import failed — try the bookmarklet import below instead.')
               setIsError(true)
               setXBookmarkletFallback(true)
+            })
+          )
+        }
+        // Composio connect callback — consume pending toolkit from the query-param stash above
+        const composioPending = sessionStorage.getItem('composio_connect_pending')
+        if (composioPending) {
+          sessionStorage.removeItem('composio_connect_pending')
+          setComposioConnectingToolkit(composioPending)
+          setShowSettings(true)
+          setOpenSettingsSection('composio')
+          getToken().then(token =>
+            fetch(`${BACKEND}/composio/connect/${composioPending}/finalize`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token }),
+            })
+            .then(r => r.json())
+            .then(data => {
+              setComposioConnectingToolkit(null)
+              setComposioConnections(null) // triggers a refetch via the showSettings effect
+              if (!data.connected) {
+                setMessage("Notion connection didn't complete — please try again.")
+                setIsError(true)
+              }
+            })
+            .catch(() => {
+              setComposioConnectingToolkit(null)
+              setMessage("Notion connection failed — please try again.")
+              setIsError(true)
             })
           )
         }
@@ -1226,6 +1277,57 @@ export default function App() {
       setMcpConnections(conns => conns.filter(c => c.client_id !== clientId))
     } finally {
       setMcpDisconnectingId(null)
+    }
+  }
+
+  const fetchComposioConnections = async () => {
+    const token = await getToken()
+    try {
+      const res = await fetch(`${BACKEND}/composio/connections?token=${encodeURIComponent(token)}`)
+      const data = await res.json()
+      setComposioConnections(data.connections || [])
+    } catch {
+      setComposioConnections([])
+    }
+  }
+
+  const connectComposio = async (toolkit) => {
+    setComposioConnectingToolkit(toolkit)
+    try {
+      const token = await getToken()
+      const callback_url = `${window.location.origin}/?composio_connected=${toolkit}`
+      const res = await fetch(`${BACKEND}/composio/connect/${toolkit}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, callback_url }),
+      })
+      const data = await res.json()
+      if (data.redirect_url) {
+        window.location.href = data.redirect_url
+      } else {
+        setComposioConnectingToolkit(null)
+        setMessage("Couldn't start the Notion connection — try again.")
+        setIsError(true)
+      }
+    } catch {
+      setComposioConnectingToolkit(null)
+      setMessage("Couldn't start the Notion connection — try again.")
+      setIsError(true)
+    }
+  }
+
+  const disconnectComposio = async (toolkit) => {
+    setComposioDisconnectingToolkit(toolkit)
+    try {
+      const token = await getToken()
+      await fetch(`${BACKEND}/composio/connections/${toolkit}/disconnect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      })
+      setComposioConnections(conns => conns.filter(c => c.toolkit !== toolkit))
+    } finally {
+      setComposioDisconnectingToolkit(null)
     }
   }
 
@@ -2792,6 +2894,52 @@ export default function App() {
                 <p style={styles.overlayNote}>Newsletter forwarding isn't configured on this deployment yet.</p>
               )}
             </div>
+          )}
+
+          {composioConnections !== null && (
+            <>
+              <div style={styles.settingsDivider} />
+
+              {/* Connected accounts — ReCall reading from a third-party account (Notion), not
+                  to be confused with "Connected apps" above (other apps connecting TO ReCall
+                  via MCP) — opposite direction. */}
+              <button
+                onClick={() => setOpenSettingsSection(s => s === 'composio' ? null : 'composio')}
+                style={styles.settingsAccordionHeader}
+              >
+                <span>Connected accounts</span>
+                <span style={styles.settingsAccordionChevron}>{openSettingsSection === 'composio' ? "▾" : "▸"}</span>
+              </button>
+              {openSettingsSection === 'composio' && (
+                <div style={styles.settingsAccordionBody}>
+                  <p style={styles.overlayNote}>Connect your Notion account so ReCall can read private/workspace-restricted pages you save, not just public ones.</p>
+                  {(() => {
+                    const conn = composioConnections.find(c => c.toolkit === 'notion')
+                    return (
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+                        <span style={{ fontSize: "13px", color: "#aca79b" }}>
+                          Notion
+                          {conn && <span style={{ color: "#666" }}> · connected {new Date(conn.created_at).toLocaleDateString()}</span>}
+                        </span>
+                        {conn ? (
+                          <button
+                            onClick={() => disconnectComposio('notion')}
+                            disabled={composioDisconnectingToolkit === 'notion'}
+                            style={styles.tokenHideButton}
+                          >{composioDisconnectingToolkit === 'notion' ? "Disconnecting…" : "Disconnect"}</button>
+                        ) : (
+                          <button
+                            onClick={() => connectComposio('notion')}
+                            disabled={composioConnectingToolkit === 'notion'}
+                            style={styles.tokenHideButton}
+                          >{composioConnectingToolkit === 'notion' ? "Connecting…" : "Connect"}</button>
+                        )}
+                      </div>
+                    )
+                  })()}
+                </div>
+              )}
+            </>
           )}
 
           <div style={styles.settingsDivider} />

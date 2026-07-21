@@ -13,3 +13,4 @@ cachetools
 pywebpush
 beautifulsoup4
 yt-dlp
+composio==0.18.0

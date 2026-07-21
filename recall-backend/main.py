@@ -45,6 +45,10 @@ from recall_core import (
     do_set_save_folders,
     process_newsletter_email,
     TWEET_URL_RE,
+    do_composio_connect,
+    do_composio_finalize_connection,
+    do_composio_list_connections,
+    do_composio_disconnect,
 )
 
 load_dotenv()
@@ -232,6 +236,13 @@ class FolderRenameRequest(BaseModel):
 
 class SaveFoldersRequest(BaseModel):
     folder_ids: list[str]
+    token: str
+
+class ComposioConnectRequest(BaseModel):
+    token: str
+    callback_url: str
+
+class ComposioTokenRequest(BaseModel):
     token: str
 
 
@@ -1077,6 +1088,53 @@ if _mcp_app is not None:
         await _exec(supabase.table("mcp_tokens").update({"revoked": True})
             .eq("client_id", client_id).eq("user_id", user_id))
         return {"success": True}
+
+
+@app.post("/composio/connect/{toolkit}")
+@limiter.limit("10/minute")
+async def composio_connect(toolkit: str, req: ComposioConnectRequest, request: Request):
+    """Starts a per-user Composio OAuth connection (currently: Notion only) via Composio's
+    hosted Connect Link — see recall_core.do_composio_connect. Mirrors /import/x-connect's
+    503-when-unconfigured pattern."""
+    try:
+        user_id = await get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    try:
+        return await do_composio_connect(toolkit, user_id, req.callback_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/composio/connect/{toolkit}/finalize")
+@limiter.limit("10/minute")
+async def composio_connect_finalize(toolkit: str, req: ComposioTokenRequest, request: Request):
+    try:
+        user_id = await get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    try:
+        return await do_composio_finalize_connection(toolkit, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/composio/connections")
+@limiter.limit("30/minute")
+async def composio_connections_list(token: str, request: Request):
+    try:
+        user_id = await get_user_id(token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return await do_composio_list_connections(user_id)
+
+@app.post("/composio/connections/{toolkit}/disconnect")
+@limiter.limit("20/minute")
+async def composio_disconnect(toolkit: str, req: ComposioTokenRequest, request: Request):
+    try:
+        user_id = await get_user_id(req.token)
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return await do_composio_disconnect(toolkit, user_id)
+
 
 @app.get("/")
 async def root():

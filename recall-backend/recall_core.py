@@ -11,6 +11,7 @@ import socket
 import ipaddress
 import asyncio
 import html as html_entities
+from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs, quote, urljoin
 from concurrent.futures import ThreadPoolExecutor
 
@@ -26,6 +27,8 @@ from google import genai
 from google.genai import types
 from pywebpush import webpush, WebPushException
 from bs4 import BeautifulSoup
+
+import composio_integration as composio_client
 
 load_dotenv()
 
@@ -640,14 +643,25 @@ async def _get_reddit_token() -> str:
 REDDIT_COMMENT_SKIP_AUTHORS = {"AutoModerator"}
 REDDIT_COMMENT_SKIP_BODIES = {"[deleted]", "[removed]"}
 
+_REDDIT_DIRECT_IMAGE_HOSTS = {"i.redd.it", "i.imgur.com", "preview.redd.it"}
+_REDDIT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+
 def _parse_reddit_listing(data):
     """Parse Reddit's comments-listing JSON shape — identical whether it came from the
-    authenticated oauth.reddit.com API or the unauthenticated .json endpoint.
+    authenticated oauth.reddit.com API, the unauthenticated .json endpoint, or Composio's
+    REDDIT_RETRIEVE_POST_COMMENTS action (adapted into this same 2-element shape by
+    composio_integration.get_reddit_post_listing()). Composio's response is a genuinely
+    reduced field set, though — confirmed directly against both a text post and several real
+    r/pics image posts: no subreddit_name_prefixed, no post_hint, no preview.images. The
+    fallbacks below cover that reduced shape without changing native-path behavior at all
+    (the native fields, when present, are always tried first).
     Returns (title, body_text, subreddit, post_hint, image_url, comments_text)."""
     post = data[0]["data"]["children"][0]["data"]
     title = decode_html_entities(post.get("title", ""))
     body_text = decode_html_entities(post.get("selftext", "") or "")
-    subreddit = post.get("subreddit_name_prefixed", "")
+    subreddit = post.get("subreddit_name_prefixed") or (
+        f"r/{post['subreddit']}" if post.get("subreddit") else ""
+    )
     post_hint = post.get("post_hint", "")
     image_url = ""
     if post_hint == "image":
@@ -656,6 +670,20 @@ def _parse_reddit_listing(data):
         images = (post.get("preview") or {}).get("images") or []
         if images:
             image_url = decode_html_entities(images[0].get("source", {}).get("url", ""))
+    if not image_url:
+        # Composio-shape fallback: thumbnail (when present, e.g. REDDIT_GET_NEW) is always a
+        # real preview.redd.it URL, never present on REDDIT_RETRIEVE_POST_COMMENTS though — so
+        # also fall back to the bare url field when it's a direct-media link, not the post's
+        # own permalink (confirmed directly: url IS the real i.redd.it link on image posts).
+        thumbnail = post.get("thumbnail", "")
+        if thumbnail.startswith("http"):
+            image_url = thumbnail
+        else:
+            candidate = post.get("url", "")
+            if candidate and candidate != post.get("permalink", ""):
+                host = urlparse(candidate).hostname or ""
+                if host in _REDDIT_DIRECT_IMAGE_HOSTS or candidate.lower().endswith(_REDDIT_IMAGE_EXTENSIONS):
+                    image_url = candidate
 
     comments = []
     for child in (data[1]["data"]["children"] if len(data) > 1 else []):
@@ -674,13 +702,14 @@ def _parse_reddit_listing(data):
     return title, body_text, subreddit, post_hint, image_url, comments_text
 
 async def fetch_reddit(url: str):
-    """Fetch a Reddit post + its top comments. Prefers Reddit's official OAuth API
-    (oauth.reddit.com) when REDDIT_CLIENT_ID/SECRET are configured — Reddit now gates
-    app registration behind manual approval ("Responsible Builder Policy"), so this is
-    often unavailable. Falls back to the unauthenticated reddit.com/<path>.json endpoint,
-    which needs no registration but rides Reddit's anti-bot tolerance rather than a
-    sanctioned API (see Known Issue #30/#31) — still far more reliable than the plain
-    HTML/Jina scrape this replaced, which got served a 'security check' interstitial.
+    """Fetch a Reddit post + its top comments. Prefers Composio's single shared Reddit
+    service connection (see Known Issue #30/#31 — Reddit's own "Responsible Builder Policy"
+    app-registration review never came through, and Composio already has its own pre-approved
+    Reddit OAuth app) when COMPOSIO_API_KEY is configured. Falls back to ReCall's own official
+    OAuth API (oauth.reddit.com, REDDIT_CLIENT_ID/SECRET) when configured, then to the
+    unauthenticated reddit.com/<path>.json endpoint, which needs no registration but rides
+    Reddit's anti-bot tolerance rather than a sanctioned API — still far more reliable than the
+    plain HTML/Jina scrape this replaced, which got served a 'security check' interstitial.
     Returns (title, body_text, subreddit, post_hint, image_url, comments_text)."""
     # A generic/obviously-bot User-Agent (the "compatible; ReCall/1.0" string used elsewhere
     # in this file) gets an outright 403 from Reddit even on a plain redirect-resolution GET —
@@ -702,6 +731,10 @@ async def fetch_reddit(url: str):
                 print(f"[reddit] could not extract post id url={url} resolved={resolved_url}", flush=True)
                 return "", "", "", "", "", ""
             post_id = m.group(1)
+
+            listing = await composio_client.get_reddit_post_listing(post_id)
+            if listing:
+                return _parse_reddit_listing(listing)
 
             token = await _get_reddit_token()
             if token:
@@ -882,6 +915,58 @@ async def fetch_og_html(url: str) -> str:
     except Exception:
         return ""
 
+# --- Composio connections (currently: Notion per-user OAuth only) ---
+# composio_connections is a non-authoritative local cache of per-user Composio connections —
+# checking it is a cheap indexed SELECT instead of a live Composio API round-trip on every
+# save. A stale 'active' row just means ReCall attempts the Composio path and falls through to
+# the existing fallback (Jina, for Notion) if the actual fetch comes back empty; the real
+# authority is always the fetch call itself, never this cache.
+
+async def _get_composio_connection(user_id: str, toolkit: str) -> dict | None:
+    result = await _exec(supabase.table("composio_connections")
+        .select("connected_account_id, status")
+        .eq("user_id", user_id).eq("toolkit", toolkit).eq("status", "active")
+        .limit(1))
+    return result.data[0] if result.data else None
+
+async def do_composio_connect(toolkit: str, user_id: str, callback_url: str) -> dict:
+    if toolkit != "notion":
+        raise ValueError("Unsupported toolkit")
+    if not composio_client.is_configured():
+        raise HTTPException(status_code=503, detail="Composio integration not configured")
+    redirect_url = await composio_client.create_notion_connect_link(user_id, callback_url)
+    if not redirect_url:
+        raise HTTPException(status_code=503, detail="Could not start Notion connection")
+    return {"redirect_url": redirect_url}
+
+async def do_composio_finalize_connection(toolkit: str, user_id: str) -> dict:
+    if toolkit != "notion":
+        raise ValueError("Unsupported toolkit")
+    status = await composio_client.get_connection_status(user_id, "notion")
+    if not status or status.get("status") != "ACTIVE":
+        return {"connected": False}
+    await _exec(supabase.table("composio_connections").upsert({
+        "user_id": user_id, "toolkit": "notion",
+        "connected_account_id": status["connected_account_id"], "status": "active",
+    }, on_conflict="user_id,toolkit"))
+    return {"connected": True}
+
+async def do_composio_list_connections(user_id: str) -> dict:
+    result = await _exec(supabase.table("composio_connections")
+        .select("toolkit, created_at")
+        .eq("user_id", user_id).eq("status", "active"))
+    return {"connections": result.data or []}
+
+async def do_composio_disconnect(toolkit: str, user_id: str) -> dict:
+    connection = await _get_composio_connection(user_id, toolkit)
+    if not connection:
+        return {"success": True}
+    await composio_client.disconnect_account(connection["connected_account_id"])
+    await _exec(supabase.table("composio_connections")
+        .update({"status": "revoked", "revoked_at": datetime.now(timezone.utc).isoformat()})
+        .eq("user_id", user_id).eq("toolkit", toolkit))
+    return {"success": True}
+
 # Boilerplate that can appear even on a genuinely public, successfully-fetched Notion page
 # (its "who can comment" widget) -- stripped as noise, never treated as a rejection signal.
 NOTION_NOISE_PHRASES = [
@@ -900,8 +985,20 @@ NOTION_AUTHWALL_SIGNATURES = [
     "sign in to see this page",
 ]
 
-async def fetch_notion(url: str) -> tuple[str, bool]:
-    """Fetch a public Notion page's real content via Jina Reader. A plain non-Jina fetch of a
+async def fetch_notion(url: str, user_id: str | None = None) -> tuple[str, bool]:
+    """Fetch a Notion page's real content. When user_id is set and has an active Composio
+    Notion connection, tries that first — reaches pages requiring the viewer to be logged into
+    a specific workspace, which the Jina path below structurally can't (confirmed directly:
+    NOTION_GET_PAGE_MARKDOWN returns full page content as markdown in one call, but only a
+    bare page_id UUID, never a title — same downstream title-synthesis pattern as the Jina
+    path already uses). Falls through to the existing public Jina Reader path if there's no
+    connection, or if the connected fetch comes back empty (page not shared with the
+    integration, deleted, or a transient failure) — a page might be both integration-shared
+    AND genuinely public, so this is a fallback, not a hard branch.
+    user_id is None for the anonymous /save/preview path — that call site must never touch
+    another user's connected Notion account, so it always uses the Jina-only path below.
+
+    The Jina path itself: fetches via Jina Reader. A plain non-Jina fetch of a
     Notion URL (what fetch_og_html() would do) hits a redirect loop and fails outright --
     confirmed directly against live URLs -- so fetch_og_html is deliberately never called here.
     jina_title from fetch_with_jina() is always empty for Notion (ReCall requests
@@ -911,6 +1008,13 @@ async def fetch_notion(url: str) -> tuple[str, bool]:
     Returns (clean_text, is_authwalled): clean_text is "" on outright fetch failure or when
     the login-wall signature fires; is_authwalled distinguishes the two for the caller's
     fallback message."""
+    if user_id and composio_client.is_configured():
+        connection = await _get_composio_connection(user_id, "notion")
+        if connection:
+            markdown, _title = await composio_client.get_notion_page_markdown(user_id, url)
+            if markdown and len(markdown.strip()) >= QUALITY_THRESHOLD:
+                return markdown.strip(), False
+
     jina_text, _ = await fetch_with_jina(url)
     if not jina_text:
         print(f"[notion] jina fetch failed/empty url={url}", flush=True)
@@ -1455,7 +1559,7 @@ async def process_save(url: str, user_id: str, placeholder_id: str | None = None
             extra_context = (extra_context + f"\n\n{comments_text}").strip()
             clean_text = (clean_text + "\n\n" + comments_text).strip()
     elif is_notion:
-        clean_text, was_authwalled = await fetch_notion(url)
+        clean_text, was_authwalled = await fetch_notion(url, user_id)
         print(f"[notion] authwalled={was_authwalled} clean_text_len={len(clean_text)} url={url}", flush=True)
         if len(clean_text.strip()) < QUALITY_THRESHOLD:
             fallback_title = (
