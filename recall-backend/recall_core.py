@@ -28,9 +28,14 @@ from google.genai import types
 from pywebpush import webpush, WebPushException
 from bs4 import BeautifulSoup
 
-import composio_integration as composio_client
-
 load_dotenv()
+
+# Must be imported AFTER load_dotenv() — composio_integration.py reads its Composio env vars
+# as module-level constants at import time, so importing it before .env is loaded permanently
+# freezes them empty for the life of the process (confirmed directly: this silently disabled
+# the entire Composio Reddit/Notion integration in local dev — see CLAUDE.md's Composio
+# section for the fix and how it was diagnosed).
+import composio_integration as composio_client
 
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
 
