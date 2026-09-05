@@ -1,4 +1,4 @@
-name: Keep Railway backend warm
+name: Keep Render backend warm
 
 on:
   schedule:
@@ -10,4 +10,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping health check endpoint
-        run: curl -sf https://recall-production-9941.up.railway.app/
+        run: curl -sf https://recall-ug0j.onrender.com/
