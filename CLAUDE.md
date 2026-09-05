@@ -25,7 +25,7 @@ ReCall is a PWA (Progressive Web App) for semantic search over saved internet co
 | Service | URL |
 |---|---|
 | Frontend (Vercel) | https://recall-iota-six.vercel.app |
-| Backend (Railway) | https://recall-production-9941.up.railway.app |
+| Backend (Render) | https://recall-ug0j.onrender.com |
 | Supabase project | https://ompfoouatzknuidnccsz.supabase.co |
 
 ---
@@ -49,7 +49,7 @@ ReCall is a PWA (Progressive Web App) for semantic search over saved internet co
 | Error monitoring | Sentry (`@sentry/react` frontend, `sentry-sdk[fastapi]` backend) |
 | Rate limiting | slowapi (per-IP, on `/save`, `/search`, and ~20 other mutating/expensive routes as of Known Issue #39) + a hand-rolled `cachetools.TTLCache`-based IP-keyed middleware for the mounted MCP OAuth sub-app (`/register`, `/token`, `/authorize`, `/revoke`), which slowapi's route decorators can't reach since it's a separately-mounted ASGI app |
 | Frontend deploy | Vercel |
-| Backend deploy | Railway (Nixpacks builder) |
+| Backend deploy | Render (free web service, `render.yaml` blueprint) |
 
 ---
 
@@ -60,8 +60,9 @@ ReCall/
 ├── CLAUDE.md                   ← this file
 ├── CONTRIBUTING.md              ← staging/production branch workflow + env var reference (Vercel `staging` branch vs `main`)
 ├── vercel.json                 ← SPA fallback rewrites (lives at root; Vercel root dir = recall-frontend)
+├── render.yaml                 ← Render Blueprint: recall-backend web service (root dir, build/start command, health check, plan: free) — documented reference, see Known Issue #44
 ├── .gitignore
-├── .github/workflows/keepalive.yml  ← cron ping to Railway's `GET /` every 10min, keeps the backend warm (Known Issue #38)
+├── .github/workflows/keepalive.yml  ← cron ping to Render's `GET /` every 10min, fights the free tier's 15-min spin-down (Known Issue #38, migrated from Railway in Known Issue #44)
 ├── recall-frontend/            ← React PWA
 │   ├── src/
 │   │   ├── App.jsx             ← entire frontend (single component file)
@@ -85,8 +86,7 @@ ReCall/
     ├── sql/                    ← hand-run migrations (no migration tool); 001 = MCP OAuth tables, 002-004 = fixes, 012 = saves(user_id,url) unique constraint (Known Issue #38), 013 = lock down save_folders RLS, 014 = RLS hardening for push_subscriptions/MCP OAuth tables + saves owner-policy reaffirmation (Known Issue #39), 015 = thumbnail_url column + broadened match_saves for video search (Known Issue #41), 016 = widen match_saves recall to fire on topic_similarity, not content similarity alone (Known Issue #42), 017 = composio_connections table for per-user Notion OAuth state (Known Issue #43)
     ├── scripts/                ← one-off maintenance scripts, run manually (not part of the deployed app) — reembed_saves.py, scan_junk_saves.py, reprocess_flagged_saves.py (see Known Issue #34), backfill_topics.py (see Known Issue #36), backfill_video_content.py (see Known Issue #41), backfill_source_identity.py (see Known Issue #42)
     ├── requirements.txt
-    ├── Procfile                ← `web: uvicorn main:app --host 0.0.0.0 --port $PORT`
-    ├── railway.json            ← Nixpacks build + start command
+    ├── .python-version          ← pins Python 3.13 for Render's build (matches local dev venv)
     └── .env                    ← NEVER commit; see env vars section below
 ```
 
@@ -99,7 +99,7 @@ ReCall/
 ```
 VITE_SUPABASE_URL=https://ompfoouatzknuidnccsz.supabase.co
 VITE_SUPABASE_ANON_KEY=<anon key — safe for client>
-VITE_BACKEND_URL=http://127.0.0.1:8000          # local dev; set to Railway URL in Vercel dashboard
+VITE_BACKEND_URL=http://127.0.0.1:8000          # local dev; set to Render URL in Vercel dashboard
 VITE_SENTRY_DSN=<Sentry frontend DSN — safe for client>
 VITE_POSTHOG_KEY=<PostHog project API key — safe for client>
 VITE_TWITTER_CLIENT_ID=<X OAuth 2.0 app Client ID — safe for client, used to build the authorize URL>
@@ -107,7 +107,7 @@ VITE_VAPID_PUBLIC_KEY=<same value as backend's VAPID_PUBLIC_KEY — public-safe,
 VITE_EMAIL_INBOUND_ADDRESS=<shared CloudMailin inbound address shown in Settings for newsletter forwarding — public-safe, it's the address you hand out>
 ```
 
-**On Vercel**, set `VITE_BACKEND_URL` to `https://recall-production-9941.up.railway.app` via the Vercel environment variable dashboard — do NOT hardcode it. `VITE_SENTRY_DSN`, `VITE_POSTHOG_KEY`, `VITE_TWITTER_CLIENT_ID`, `VITE_VAPID_PUBLIC_KEY`, and `VITE_EMAIL_INBOUND_ADDRESS` are also set in Vercel dashboard. All are public-safe by design.
+**On Vercel**, set `VITE_BACKEND_URL` to `https://recall-ug0j.onrender.com` via the Vercel environment variable dashboard — do NOT hardcode it. `VITE_SENTRY_DSN`, `VITE_POSTHOG_KEY`, `VITE_TWITTER_CLIENT_ID`, `VITE_VAPID_PUBLIC_KEY`, and `VITE_EMAIL_INBOUND_ADDRESS` are also set in Vercel dashboard. All are public-safe by design.
 
 ### Backend — `recall-backend/.env`
 
@@ -115,10 +115,11 @@ VITE_EMAIL_INBOUND_ADDRESS=<shared CloudMailin inbound address shown in Settings
 SUPABASE_URL=https://ompfoouatzknuidnccsz.supabase.co
 SUPABASE_SERVICE_KEY=<service role key — NEVER expose to client>
 GEMINI_API_KEY=<Gemini API key>
+JINA_API_KEY=<optional — Jina Reader API key, raises fetch_with_jina()'s rate limit past the free anonymous tier; if unset, Jina Reader calls still work but are more rate-limited>
 SENTRY_DSN=<Sentry backend DSN>
 CORS_ORIGINS=https://recall-iota-six.vercel.app,http://localhost:5173
 AUTH_VERIFY_MODE=<"network" (default) or "local" — see Known Issue #38. "network" keeps calling Supabase's GoTrue /auth/v1/user endpoint on every request but also canary-logs a local JWT-verification result alongside it for comparison; only switch to "local" (skips the network round-trip entirely) once canary logs confirm the two always agree>
-BACKEND_PUBLIC_URL=https://recall-production-9941.up.railway.app   # mcp_server.py OAuth issuer/resource URL; defaults to http://localhost:8000 for local dev
+BACKEND_PUBLIC_URL=https://recall-ug0j.onrender.com   # mcp_server.py OAuth issuer/resource URL; defaults to http://localhost:8000 for local dev — must exactly match the live backend URL or MCP clients' discovery docs silently point at a dead host
 FRONTEND_URL=https://recall-iota-six.vercel.app                    # where mcp_server.py's authorize() redirects for consent; defaults to http://localhost:5173
 TWITTER_CLIENT_ID=<X OAuth 2.0 app Client ID — bookmark import>
 TWITTER_CLIENT_SECRET=<X OAuth 2.0 app Client Secret — NEVER expose to client>
@@ -136,7 +137,7 @@ COMPOSIO_REDDIT_CONNECTED_ACCOUNT_ID=<the ONE shared Reddit service connection's
 COMPOSIO_NOTION_AUTH_CONFIG_ID=<Composio auth config id for the Notion toolkit — each ReCall user connects their own Notion account against this same config>
 ```
 
-**On Railway**, these are set as environment variables in the Railway dashboard. `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes. The three X API vars are all from the same X Developer Portal app; if unset, both import paths fall back gracefully (bookmark import shows a 503 + bookmarklet fallback; single-tweet save degrades to Jina/OG/syndication-API fallbacks — see Import X Bookmarks (#14) and Known Issue #23). The three Reddit vars are from a single Reddit "script" app; if unset, Reddit saves degrade to `thin_content` rather than erroring (see "Reddit post + comment fetching" below and Known Issue #30) — though as of Known Issue #43, Composio's Reddit connection is tried first and this scrape chain is now only the 2nd/3rd choice. The three VAPID vars power Web Push (see "Web Push notifications" #1c) — generate once with `npx web-push generate-vapid-keys`; if unset, `send_save_ready_push()` silently no-ops (no save behavior is affected either way). `EMAIL_WEBHOOK_SECRET` powers newsletter saving (see "Newsletter saving via email forwarding" below and Known Issue #32) — if unset, `/webhooks/email-inbound` rejects every request with 401. The four `COMPOSIO_*` vars power the Reddit-service-connection and Notion-per-user-OAuth paths (see Known Issue #43) — if `COMPOSIO_API_KEY` is unset, both `fetch_reddit()` and `fetch_notion()` fall straight through to their pre-existing behavior and every `/composio/*` endpoint returns a clean 503.
+**On Render**, these are set as environment variables in the Render dashboard (Settings → Environment). `CORS_ORIGINS` is comma-separated — update if the frontend domain ever changes. The three X API vars are all from the same X Developer Portal app; if unset, both import paths fall back gracefully (bookmark import shows a 503 + bookmarklet fallback; single-tweet save degrades to Jina/OG/syndication-API fallbacks — see Import X Bookmarks (#14) and Known Issue #23). The three Reddit vars are from a single Reddit "script" app; if unset, Reddit saves degrade to `thin_content` rather than erroring (see "Reddit post + comment fetching" below and Known Issue #30) — though as of Known Issue #43, Composio's Reddit connection is tried first and this scrape chain is now only the 2nd/3rd choice. The three VAPID vars power Web Push (see "Web Push notifications" #1c) — generate once with `npx web-push generate-vapid-keys`; if unset, `send_save_ready_push()` silently no-ops (no save behavior is affected either way). `EMAIL_WEBHOOK_SECRET` powers newsletter saving (see "Newsletter saving via email forwarding" below and Known Issue #32) — if unset, `/webhooks/email-inbound` rejects every request with 401. The four `COMPOSIO_*` vars power the Reddit-service-connection and Notion-per-user-OAuth paths (see Known Issue #43) — if `COMPOSIO_API_KEY` is unset, both `fetch_reddit()` and `fetch_notion()` fall straight through to their pre-existing behavior and every `/composio/*` endpoint returns a clean 503.
 
 ---
 
@@ -420,7 +421,7 @@ Sparse image/link posts get a vision-analysis fallback the same way Instagram ca
 Newsletters arrive as email, not a URL — every other save path assumes a URL. `process_newsletter_email()` (`recall_core.py`) is a **sibling** to `process_save`, not a branch inside it, since the input is a parsed email rather than something to fetch. It converges on the same `extract_save_metadata_async`/`get_embedding`/upsert tail every other source uses.
 
 1. **Ingestion**: a single shared CloudMailin inbound address (free tier, no custom domain) is shown to every user in Settings → "Save newsletters by email". Forwarding one issue manually saves it once; setting a Gmail filter to auto-forward a sender saves every future issue with zero ongoing effort.
-2. **Webhook**: CloudMailin POSTs the parsed email (JSON Normalized format — `envelope`, `headers`, `plain`/`html`, `attachments`) to `POST /webhooks/email-inbound`. Authenticity is verified via HTTP Basic Auth embedded in the target URL configured in the CloudMailin dashboard (`EMAIL_WEBHOOK_SECRET`), not a signature header.
+2. **Webhook**: CloudMailin POSTs the parsed email (JSON Normalized format — `envelope`, `headers`, `plain`/`html`, `attachments`) to `POST /webhooks/email-inbound`. Authenticity is verified via `EMAIL_WEBHOOK_SECRET`, accepted either as HTTP Basic Auth or (since CloudMailin's free tier stopped supporting embedded URL credentials and gates the header-based option behind a paid plan, see Known Issue #44) a `?secret=` query param on the target URL — not a signature header.
 3. **Resolving which ReCall user this belongs to** (`_resolve_forwarding_sender`) — there's no per-user address (see Known Issue #32), so the sender must be matched to a signed-in account by email:
    - Checks `headers["x_forwarded_for"]` first. Gmail filter-based auto-forwarding adds this header as `<forwarding mailbox> <destination>` — the *first* address is the Gmail account that owns the filter, **not** the newsletter's original sender. This must be checked before falling back to `From`, or auto-forwarded mail tries to match the newsletter's own sender address and never resolves.
    - Falls back to the `From` header, which is correct for a manual forward (the user composed that outgoing message themselves).
@@ -615,20 +616,25 @@ Atomically rotates a refresh token in one Postgres function call: locks the old 
 - **Environment variables** in Vercel dashboard:
   - `VITE_SUPABASE_URL`
   - `VITE_SUPABASE_ANON_KEY`
-  - `VITE_BACKEND_URL=https://recall-production-9941.up.railway.app`
+  - `VITE_BACKEND_URL=https://recall-ug0j.onrender.com`
   - `VITE_SENTRY_DSN`
   - `VITE_POSTHOG_KEY`
 
-### Backend — Railway
+### Backend — Render
 
-- **Builder**: Nixpacks (auto-detects Python from `requirements.txt`)
-- **Start command**: `uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips=*` — the `--proxy-headers --forwarded-allow-ips=*` flags were added in Known Issue #39 so `get_remote_address()` (rate limiting) sees the real client IP behind Railway's proxy instead of collapsing every request into one bucket
-- Configured via `railway.json` and `Procfile` (both specify the same start command); `railway.json` also sets `"healthcheckPath": "/"` (Known Issue #38)
-- **Keep-warm**: `.github/workflows/keepalive.yml` (repo root) pings `GET /` every 10 minutes via GitHub Actions cron, so the backend shouldn't go cold between saves (Known Issue #38). Needs a commit at least every 60 days or GitHub auto-disables the scheduled workflow.
-- **Environment variables** in Railway dashboard:
+- **Root directory**: `recall-backend` (Render's "Root Directory" field — this is a monorepo, the backend isn't at repo root)
+- **Runtime**: Python native runtime, pinned via `recall-backend/.python-version` (`3.13`, matching local dev) rather than relying on Render's own undocumented, service-creation-date-dependent default
+- **Build command**: `pip install -r requirements.txt`
+- **Start command**: `uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips=*` — the `--proxy-headers --forwarded-allow-ips=*` flags carry over from Railway for the identical reason (Known Issue #39): `get_remote_address()` (rate limiting) needs the real client IP behind Render's proxy
+- **Health check path**: `/`
+- Configured via `render.yaml` (repo root) — a committed Blueprint mirroring the role `railway.json`/`Procfile` used to play before the migration (Known Issue #44); this particular service instance was actually created via Render's manual dashboard form rather than a Blueprint apply, so `render.yaml` is the version-controlled reference for reproducing it, not literally wired to it
+- **Free tier**: 0.1 CPU / 512MB RAM, 750 free instance-hours/workspace/month, spins down after 15 min with zero inbound traffic (~1 min cold start on the next request) — must remain the only free service in this Render workspace for the 750hr/month math to cover an always-pinged instance
+- **Keep-warm**: `.github/workflows/keepalive.yml` (repo root) pings `GET /` every 10 minutes via GitHub Actions cron — same mechanism as before (Known Issue #38), now fighting a real spin-down rather than just a cold-start optimization. Needs a commit at least every 60 days or GitHub auto-disables the scheduled workflow.
+- **Environment variables** in the Render dashboard (Settings → Environment):
   - `SUPABASE_URL`
   - `SUPABASE_SERVICE_KEY`
   - `GEMINI_API_KEY`
+  - `JINA_API_KEY`
   - `SENTRY_DSN`
   - `CORS_ORIGINS`
   - `AUTH_VERIFY_MODE` (see Known Issue #38 — leave at default `network` until canary logs confirm local verification matches)
@@ -797,6 +803,8 @@ A lightning bolt / cursor-shaped path:
     - **Out of scope, and why**: service-worker app-shell precaching (`public/sw.js` still has zero caching — only `push`/`notificationclick` handlers) targets JS-bootstrap time, not the server round-trip this round addressed, and is already separately tracked under "Not Yet Built"; switching the whole Supabase client to its async variant would help concurrency/throughput under load, not this single request's floor latency, and would touch ~28+ call sites for a benefit orthogonal to this goal; no retry logic was added to `/save` since the ask was to fail fast, not retry.
     - **Estimated result** (not yet measured against live production traffic): roughly 150ms-1s for a warm backend, down from 3 blocking network round-trips plus a possible multi-second cold start — comfortably inside the 5s goal. Verification/rollout still open: canary-compare `AUTH_VERIFY_MODE=network`'s logged mismatches before flipping to `local`; confirm via Sentry/Railway logs that non-duplicate saves now show 1 Supabase call instead of 2; watch Railway's cold-start frequency before/after the keep-warm workflow goes live.
 
+**Update (Sept 2026):** the backend moved from Railway to Render's free tier (portfolio project, no longer scoped as a startup — see Known Issue #44) for cost reasons; the mechanisms this issue describes (keep-warm ping, local JWT verification, collapsed duplicate-check+insert, frontend token caching) are all unchanged, only the host changed. One new consideration Railway's paid tier didn't have: Render's free tier genuinely spins the instance *down* after 15 minutes with zero inbound traffic, not just "gets slower" — the keep-warm ping (`.github/workflows/keepalive.yml`) is now load-bearing rather than a pure latency optimization. If it ever silently stops firing (its own 60-day inactivity auto-disable), cold starts become real again on any request gap over 15 minutes — a harder failure mode than Railway's paid tier ever had.
+
 39. **Pre-launch security audit ahead of opening ReCall to an external beta cohort** — a full pass looking specifically for issues an anonymous/malicious external user could exploit, as opposed to prior rounds which were mostly correctness/relevance-focused. Found and fixed five distinct issues:
     - **SSRF via IPv4-mapped IPv6 literals** — `is_safe_url()` (`recall_core.py`) checked every resolved IP against `_PRIVATE_RANGES`, but an address like `::ffff:169.254.169.254` (the cloud metadata IP, IPv4-mapped into IPv6 form) is a distinct `ipaddress` type from any entry in those ranges, so `ip in net` silently returned `False` for every range — the check never fired for this address family. Fixed by unwrapping `IPv6Address.ipv4_mapped` before the range check.
     - **SSRF via unvalidated redirect chains** — every fetch of a user-influenced URL used `httpx`'s `follow_redirects=True`, which validates only the *initial* hostname and then blindly trusts every subsequent redirect hop — a public domain that 302s to an internal/metadata address would sail through untouched. New `safe_get()` helper (`recall_core.py`) re-validates each hop against `is_safe_url()` before following it (`follow_redirects=False` + manual loop, capped at 5 hops), and now replaces `follow_redirects=True` at all 12 call sites that fetch a user-influenced URL (`analyze_image`, `fetch_instagram`, `fetch_youtube`, `fetch_reddit`, `_fetch_tweet_card_title`, `fetch_with_jina`, `fetch_og_html`, `resolve_linkedin_redirect`, both t.co-resolution fallbacks in `process_save_preview`/`process_save`). `resolve_linkedin_redirect()` specifically was firing its request *before* validating the attacker-controlled `target` query param at all (a bare try/except only checked the *result*) — now validates first, and returns the original unresolved URL if the target is unsafe (same "bail to thin_content" path as an unresolvable redirect, see Known Issue #25).
@@ -833,6 +841,13 @@ A lightning bolt / cursor-shaped path:
     - **Composio's managed/shared OAuth (`initiate()`) was retired for all organizations as of 2026-07-03** in favor of `connected_accounts.link()`, a hosted-redirect flow where credentials never pass through this app's backend at all — `create_notion_connect_link()` is built against `link()`, not the older `initiate()`.
     - **Verified end-to-end, not just at the function level**: both Reddit and Notion were run through the complete `process_save()` pipeline (Gemini metadata/topic extraction, dual embeddings, DB insert) against a real ReCall account, produced correct titles/tags/topics, and the test rows were deleted afterward — the same "verify against a real account, then clean up" discipline as Known Issue #41's video-support verification.
 
+44. **Migrated backend hosting from Railway to Render's free tier — portfolio project no longer sized for paid infra.** ReCall's Railway deployment was set up when the project carried a startup framing; that ambition has since been sunset and the app now lives on as a resume/portfolio artifact with sporadic, low traffic — no reason to keep paying for Railway. Render's free web-service tier was chosen specifically over three alternatives: Cloudflare (ruled out — Workers' stateless per-request isolate model can't run a persistent ASGI process with background `asyncio.create_task` enrichment, three in-process caches, and a mounted stateful MCP OAuth sub-app; Cloudflare Containers could run it but requires the $5/mo Workers Paid plan, defeating the point), Oracle Cloud's Always Free VM (ruled out — real DevOps ownership of a VM/Docker/reverse-proxy/TLS stack disproportionate to a portfolio project), and Google Cloud Run (ruled out — its default CPU-throttled-outside-requests billing model would freeze this app's background enrichment entirely; the fix, "instance-based" billing, requires a live GCP billing account and open-ended cost risk versus Render's hard-capped 750 free instance-hours/month).
+    - **Railway's deploy was already dead before the migration started** — confirmed directly: `GET /` on the old Railway URL returned Railway's own `{"status":"error","code":404,"message":"Application not found"}`, and `railway status` showed the last deployment as `FAILED`/stopped, serving zero live traffic (the Railway trial had in fact already ended, unpaid, per the account's own billing history — the deploy failure was a symptom of that, not a new problem this migration caused). The migration wasn't just cost-avoidance, it replaced an already-broken production app.
+    - **A real, pre-existing bug surfaced during Render's fresh deploy, unrelated to the hosting platform itself**: `requirements.txt` pinned `mcp` with no version bound; a fresh `pip install` resolved the newly-released `mcp` 2.x (which renamed `FastMCP` → `MCPServer` and changed other APIs), while `mcp_server.py` is written entirely against the 1.x API. `main.py`'s own import of `mcp_server.py` is wrapped in a try/except that swallows the failure into a log line and leaves `_mcp_app = None` — every MCP route (`/mcp`, `/register`, `/authorize`, `/token`, `/.well-known/oauth-authorization-server`) then silently 404s with no error surfaced anywhere else. This likely explains why Railway's own last deploy attempt had also failed. Fixed by pinning `mcp<2` in `requirements.txt`. The local dev venv never hit this because it was `pip install`ed before `mcp` 2.x's release and never reinstalled since — a fresh clone, or `pip install --upgrade`, would hit the identical failure locally.
+    - **CloudMailin (the newsletter-forwarding webhook target, see "Newsletter saving via email forwarding" above) changed its own product mid-migration**: embedding `user:password@host` credentials directly in a target URL — the mechanism `EMAIL_WEBHOOK_SECRET`'s HTTP Basic Auth check originally assumed — is no longer accepted by CloudMailin's UI, and the replacement (a dashboard "Authorization Settings" section that builds the header for you) is gated behind a paid plan. Rather than pay CloudMailin to keep a portfolio project's newsletter-forwarding webhook secured, `/webhooks/email-inbound` (`main.py`) now also accepts the same secret as a `?secret=` query parameter — CloudMailin's free tier can pass one via the plain target-URL field — with the original Basic Auth header check kept alongside it (harmless, and still usable if a future plan change restores that path). Traded a small new exposure (the secret can appear in Render's own access logs, visible only to the account owner) for staying at $0.
+    - **`JINA_API_KEY` was discovered live on Railway with zero prior documentation anywhere in this file** — set directly in Railway's dashboard at some point to raise `fetch_with_jina()`'s rate limit past Jina Reader's free anonymous tier, but never mirrored into local `.env`, `render.yaml`, or CLAUDE.md's env var reference. Found only by pulling Railway's actual configured variables via `railway variable list` as the real source of truth for the migration — local `.env` had also silently drifted from production on `GEMINI_API_KEY` and both `COMPOSIO_REDDIT_*` ids. A reminder that a local `.env` file isn't guaranteed to reflect a live deployment's real configuration once dashboard-only edits accumulate; now added to `render.yaml` and the env var reference above.
+    - **Sequencing**: the new Render service was stood up and fully verified (health check, MCP OAuth discovery JSON, a real save-through-to-`ready`, a real search, a real MCP `/register` call, a real forwarded newsletter) before Vercel or CloudMailin were touched — though since Railway was already down, no live traffic was actually at risk during that window. `render.yaml` (repo root) + `recall-backend/.python-version` are now the committed, version-controlled config, replacing `railway.json`/`Procfile` (removed once Railway's status was confirmed cancelled via its own billing history).
+
 ---
 
 ## Current Status
@@ -858,7 +873,7 @@ A lightning bolt / cursor-shaped path:
 - Today's saves list below save form (fetched from Supabase, refreshed after each save)
 - Delete from Today list with trash icon + confirmation flow
 - PWA installable (manifest + icons)
-- Vercel (frontend) + Railway (backend) deployments live
+- Vercel (frontend) + Render (backend) deployments live
 - **Search — unified search bar** (single pill input with 🔍 icon, no separate button)
 - **Search — personalised suggestion chips** on empty state, derived from user's tag + source history via `/suggestions`; new-user nudge when library is empty
 - **Search — content excerpts** on each result card (first ~220 chars of saved text)
@@ -890,7 +905,7 @@ A lightning bolt / cursor-shaped path:
 - Browser extension for desktop saving
 - Bulk import / export
 - Gemini API budget alert (Google Cloud Console — manual task)
-- Uptime monitoring / Railway cold start keep-warm (UptimeRobot — manual task)
+- Uptime monitoring / Render free-tier spin-down keep-warm (UptimeRobot — manual task)
 - Google OAuth app verification (required for >100 users — needs live privacy policy URL first)
 - **Personal knowledge base / LLM Wiki layer** — planned, not yet built:
   - Jina Reader (`r.jina.ai`) as primary article fetch (replaces plain httpx GET; handles JS-rendered pages + "read more" content)

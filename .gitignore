@@ -20,3 +20,5 @@ Thumbs.db
 
 # Claude Code local settings (personal overrides — never commit)
 .claude/settings.local.json
+.vercel
+.env*
