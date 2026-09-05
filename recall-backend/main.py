@@ -308,12 +308,20 @@ async def push_unsubscribe(req: PushUnsubscribeRequest, request: Request):
 async def email_inbound_webhook(request: Request):
     """Receives parsed newsletter emails from CloudMailin (JSON Normalized format) when a
     user forwards (or auto-forwards via a Gmail filter) a newsletter to ReCall's shared
-    inbound address. Authenticity is verified via HTTP Basic Auth embedded in the target
-    URL configured in the CloudMailin dashboard, not a signature header."""
+    inbound address. Authenticity is verified via either HTTP Basic Auth embedded in the
+    target URL, or a `?secret=` query param on it — CloudMailin's free tier stopped
+    supporting embedded URL credentials and gates its Authorization Settings header
+    feature behind a paid plan, so the query param is the $0 path; either is accepted
+    so a future paid plan could still use the header instead."""
     secret = os.getenv("EMAIL_WEBHOOK_SECRET", "")
     auth_header = request.headers.get("authorization", "")
     expected = f"Basic {base64.b64encode(f'recall:{secret}'.encode()).decode()}"
-    if not secret or not secrets.compare_digest(auth_header, expected):
+    query_secret = request.query_params.get("secret", "")
+    authorized = secret and (
+        secrets.compare_digest(auth_header, expected)
+        or secrets.compare_digest(query_secret, secret)
+    )
+    if not authorized:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     payload = await request.json()
