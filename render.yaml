@@ -1,0 +1,54 @@
+services:
+  - name: recall-backend
+    type: web
+    runtime: python
+    plan: free
+    rootDir: recall-backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips=*
+    healthCheckPath: /
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: AUTH_VERIFY_MODE
+        sync: false
+      - key: BACKEND_PUBLIC_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: TWITTER_CLIENT_ID
+        sync: false
+      - key: TWITTER_CLIENT_SECRET
+        sync: false
+      - key: TWITTER_BEARER_TOKEN
+        sync: false
+      - key: REDDIT_CLIENT_ID
+        sync: false
+      - key: REDDIT_CLIENT_SECRET
+        sync: false
+      - key: REDDIT_USER_AGENT
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false
+      - key: EMAIL_WEBHOOK_SECRET
+        sync: false
+      - key: COMPOSIO_API_KEY
+        sync: false
+      - key: COMPOSIO_REDDIT_AUTH_CONFIG_ID
+        sync: false
+      - key: COMPOSIO_REDDIT_CONNECTED_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_NOTION_AUTH_CONFIG_ID
+        sync: false

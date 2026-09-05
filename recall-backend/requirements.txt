@@ -8,7 +8,7 @@ httpx
 slowapi
 sentry-sdk[fastapi]
 python-multipart
-mcp
+mcp<2
 cachetools
 pywebpush
 beautifulsoup4
